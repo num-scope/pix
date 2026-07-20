@@ -1,0 +1,35 @@
+{
+  "name": "pix",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "ready": "vp check && vp run -r test && vp run -r build",
+    "build": "vp run -r build",
+    "test": "vp run --no-cache -r test",
+    "dev": "vp run --no-cache @pix/desktop#dev",
+    "electron:install": "vp run --no-cache @pix/desktop#electron:install",
+    "smoke": "vp run --no-cache @pix/desktop#smoke",
+    "smoke:packaged": "vp run --no-cache @pix/desktop#smoke:packaged",
+    "e2e": "vp run --no-cache @pix/desktop#e2e",
+    "package": "vp run --no-cache @pix/desktop#package"
+  },
+  "devDependencies": {
+    "@types/node": "catalog:",
+    "typescript": "catalog:",
+    "vite": "catalog:",
+    "vite-plus": "catalog:",
+    "vitest": "catalog:"
+  },
+  "devEngines": {
+    "packageManager": {
+      "name": "pnpm",
+      "version": "11.15.1",
+      "onFail": "download"
+    }
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "packageManager": "pnpm@11.15.1"
+}

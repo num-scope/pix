@@ -1,0 +1,1017 @@
+@import "tailwindcss";
+
+/*
+ * Tokens lifted from OpenCowork dark theme (main.css :root / .dark).
+ * Structure: shadcn-style semantic colors + Pix product chrome.
+ * Not copying OpenCowork trademarks — only visual system.
+ */
+
+@theme {
+  --font-sans: "Inter", "SF Pro Text", "Segoe UI", system-ui, -apple-system, sans-serif;
+  --font-mono: "SF Mono", "JetBrains Mono", ui-monospace, Menlo, Consolas, monospace;
+  --radius-sm: 0.375rem;
+  --radius-md: 0.5rem;
+  --radius-lg: 0.625rem;
+  --radius-xl: 0.875rem;
+  --radius-2xl: 1rem;
+}
+
+:root,
+[data-theme="dark"] {
+  color-scheme: dark;
+  /* OpenCowork .dark exact */
+  --background: #191919;
+  --foreground: oklch(0.985 0.004 260);
+  --card: #242424;
+  --card-foreground: oklch(0.985 0.004 260);
+  --popover: #2b2b2b;
+  --popover-foreground: oklch(0.985 0.004 260);
+  --primary: oklch(0.72 0.12 255);
+  --primary-foreground: oklch(0.18 0.01 260);
+  --secondary: #2b2b2b;
+  --secondary-foreground: oklch(0.985 0.004 260);
+  --muted: #222222;
+  --muted-foreground: oklch(0.74 0.014 260);
+  --accent: #303030;
+  --accent-foreground: oklch(0.985 0.004 260);
+  --destructive: oklch(0.396 0.141 25.723);
+  --border: #3a3a3a;
+  --input: #3a3a3a;
+  --ring: oklch(0.62 0.09 255);
+  --sidebar: #151515;
+  --sidebar-foreground: oklch(0.985 0.004 260);
+  --sidebar-primary: oklch(0.72 0.12 255);
+  --sidebar-primary-foreground: oklch(0.18 0.01 260);
+  --sidebar-accent: #252525;
+  --sidebar-accent-foreground: oklch(0.985 0.004 260);
+  --sidebar-border: #303030;
+  --sidebar-ring: oklch(0.62 0.09 255);
+
+  --canvas: var(--background);
+  --surface: var(--card);
+  --surface-elevated: #242424;
+  --surface-hover: rgb(255 255 255 / 5%);
+  --surface-selected: #252525;
+  --text: var(--foreground);
+  --text-muted: var(--muted-foreground);
+  --text-subtle: #6e6e6e;
+  --bg-composer: #232323;
+  --success: #3ecf8e;
+  --warning: #f0a500;
+  --danger: #e05555;
+  --running: #4c8dff;
+  --code-bg: #0f0f0f;
+  --code-fg: #e8e8e2;
+  --bg-app: var(--canvas);
+  --bg-sidebar: var(--sidebar);
+  --bg-panel: var(--canvas);
+  --bg-elevated: var(--surface-elevated);
+  --bg-code: var(--code-bg);
+  --bg-hover: var(--surface-hover);
+  --bg-active: var(--surface-selected);
+  --border-strong: #3a3a3a;
+  --text-on-dark: var(--code-fg);
+  --sidebar-width: 272px;
+  --thread-max: 760px;
+  --review-width: 480px;
+  --shadow-soft: 0 16px 48px rgb(0 0 0 / 0.45);
+}
+
+[data-theme="light"] {
+  color-scheme: light;
+  --background: #ffffff;
+  --foreground: #171717;
+  --card: #ffffff;
+  --card-foreground: #171717;
+  --popover: #ffffff;
+  --popover-foreground: #171717;
+  --primary: #171717;
+  --primary-foreground: #fafafa;
+  --secondary: #f1f2f4;
+  --secondary-foreground: #171717;
+  --muted: #f1f2f4;
+  --muted-foreground: #5c5c57;
+  --accent: #e7e8ec;
+  --accent-foreground: #171717;
+  --destructive: #dc2626;
+  --border: #d9dbe2;
+  --input: #d9dbe2;
+  --ring: #0a84ff;
+  --sidebar: #f1f2f4;
+  --sidebar-foreground: #171717;
+  --sidebar-primary: #171717;
+  --sidebar-primary-foreground: #fafafa;
+  --sidebar-accent: #e7e8ec;
+  --sidebar-accent-foreground: #171717;
+  --sidebar-border: #d9dbe2;
+  --sidebar-ring: #0a84ff;
+  --canvas: var(--background);
+  --surface: var(--card);
+  --surface-elevated: #ffffff;
+  --surface-hover: rgb(0 0 0 / 4%);
+  --surface-selected: #e7e8ec;
+  --text: var(--foreground);
+  --text-muted: var(--muted-foreground);
+  --text-subtle: #8a8a84;
+  --bg-composer: #f4f5f7;
+  --bg-app: var(--canvas);
+  --bg-sidebar: var(--sidebar);
+  --bg-panel: var(--canvas);
+  --bg-elevated: var(--surface-elevated);
+  --bg-hover: var(--surface-hover);
+  --bg-active: var(--surface-selected);
+  --border-strong: #c8c9cf;
+  --code-bg: #f1f2f4;
+  --code-fg: #171717;
+  --shadow-soft: 0 12px 32px rgb(0 0 0 / 0.08);
+}
+
+html,
+body,
+#root {
+  width: 100%;
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  overflow: hidden;
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Shell layout — continuous canvas so frosted sidebar has something to sample */
+.app-shell {
+  @apply relative h-full w-full overflow-hidden;
+  color: var(--foreground);
+  /* Ambient depth: visible through translucent sidebar */
+  background:
+    radial-gradient(
+      1000px 700px at 8% 12%,
+      color-mix(in srgb, #3a3a48 35%, transparent),
+      transparent 60%
+    ),
+    radial-gradient(
+      900px 600px at 92% 88%,
+      color-mix(in srgb, #243040 28%, transparent),
+      transparent 55%
+    ),
+    var(--background);
+}
+
+/* macOS traffic lights (hiddenInset) sit in the 46px titlebar row.
+   Collapse control starts at --traffic-gutter (90px), matching Synara. */
+.sidebar-traffic-row,
+.drag-region {
+  -webkit-app-region: drag;
+  app-region: drag;
+}
+
+.sidebar-traffic-row button,
+.drag-region button {
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}
+
+/* Frosted glass sidebar — samples shell canvas behind overlay rail */
+.pix-sidebar-translucent {
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--sidebar) 42%, transparent) 0%,
+    color-mix(in srgb, var(--sidebar) 52%, transparent) 100%
+  ) !important;
+  border-color: color-mix(in srgb, var(--sidebar-border) 42%, transparent) !important;
+  -webkit-backdrop-filter: blur(40px) saturate(1.55) brightness(1.05);
+  backdrop-filter: blur(40px) saturate(1.55) brightness(1.05);
+  box-shadow:
+    1px 0 0 color-mix(in srgb, #fff 4%, transparent),
+    12px 0 40px -16px rgb(0 0 0 / 0.55);
+  isolation: isolate;
+}
+
+.pix-sidebar-opaque {
+  background: var(--sidebar) !important;
+  border-color: var(--sidebar-border) !important;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  box-shadow: none;
+}
+
+[data-theme="light"] .app-shell {
+  background:
+    radial-gradient(
+      1000px 700px at 8% 12%,
+      color-mix(in srgb, #d8dce8 50%, transparent),
+      transparent 60%
+    ),
+    radial-gradient(
+      900px 600px at 92% 88%,
+      color-mix(in srgb, #e4e8f0 40%, transparent),
+      transparent 55%
+    ),
+    var(--background);
+}
+
+[data-theme="light"] .pix-sidebar-translucent {
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--sidebar) 48%, transparent) 0%,
+    color-mix(in srgb, var(--sidebar) 58%, transparent) 100%
+  ) !important;
+  border-color: color-mix(in srgb, var(--sidebar-border) 40%, transparent) !important;
+  -webkit-backdrop-filter: blur(36px) saturate(1.4) brightness(1.02);
+  backdrop-filter: blur(36px) saturate(1.4) brightness(1.02);
+  box-shadow:
+    1px 0 0 color-mix(in srgb, #fff 55%, transparent),
+    10px 0 28px -14px rgb(0 0 0 / 0.12);
+}
+
+.sidebar {
+  @apply flex h-full min-w-0 flex-col border-r;
+  /* default overridden by pix-sidebar-* */
+  border-color: var(--sidebar-border);
+}
+
+.sidebar-chrome {
+  @apply flex h-full min-h-0 flex-col gap-1 p-2.5;
+}
+
+.brand-row {
+  @apply mb-1 flex h-9 items-center justify-between px-1;
+}
+
+.brand {
+  @apply m-0 text-[13px] font-semibold tracking-tight;
+}
+
+.brand-actions {
+  @apply flex items-center gap-0.5;
+}
+
+.sidebar-nav {
+  @apply mb-2 flex flex-col gap-0.5;
+}
+
+.nav-item {
+  @apply flex h-[34px] w-full items-center gap-2.5 rounded-lg px-2.5 text-left text-[13px] font-medium;
+  color: var(--muted-foreground);
+}
+
+.nav-item:hover {
+  background: var(--sidebar-accent);
+  color: var(--sidebar-accent-foreground);
+}
+
+.nav-item[data-active="true"] {
+  background: var(--sidebar-accent);
+  color: var(--sidebar-accent-foreground);
+}
+
+.nav-item-primary {
+  @apply font-semibold;
+  color: var(--sidebar-foreground);
+}
+
+.nav-badge {
+  @apply ml-auto text-[11px];
+  color: var(--text-subtle);
+}
+
+.btn-icon {
+  @apply inline-flex h-7 w-7 items-center justify-center rounded-lg;
+  color: var(--muted-foreground);
+}
+
+.btn-icon:hover {
+  background: var(--sidebar-accent);
+  color: var(--sidebar-foreground);
+}
+
+.btn-quiet {
+  @apply inline-flex h-6 items-center rounded-md px-2 text-[11px];
+  color: var(--text-subtle);
+}
+
+.btn-quiet:hover:not(:disabled) {
+  background: var(--sidebar-accent);
+  color: var(--sidebar-foreground);
+}
+
+.btn-quiet.danger:hover:not(:disabled) {
+  @apply bg-red-500/10 text-red-400;
+}
+
+.sidebar-block {
+  @apply mb-2 flex min-h-0 flex-col gap-0.5;
+}
+
+.sidebar-block-grow {
+  @apply min-h-0 flex-1;
+}
+
+.sidebar-block-head {
+  @apply flex items-center justify-between px-2 pt-2 pb-1 text-[11px] font-semibold tracking-wide uppercase;
+  color: var(--text-subtle);
+}
+
+.project-row {
+  @apply grid w-full grid-cols-[18px_minmax(0,1fr)] items-center gap-2 rounded-lg px-2 py-1.5 text-left;
+  color: var(--muted-foreground);
+}
+
+.project-row:hover {
+  background: var(--sidebar-accent);
+  color: var(--sidebar-foreground);
+}
+
+.project-row[data-active="true"] {
+  background: var(--sidebar-accent);
+  color: var(--sidebar-foreground);
+}
+
+.project-meta {
+  @apply flex min-w-0 flex-col;
+}
+
+.project-meta .title {
+  @apply truncate text-[13px] font-medium;
+}
+
+.project-meta .meta {
+  @apply truncate text-[11px];
+  color: var(--text-subtle);
+}
+
+.workspace-actions {
+  @apply flex flex-wrap gap-1 px-1 pb-1;
+}
+
+.thread-list {
+  @apply flex min-h-0 flex-1 flex-col gap-px overflow-auto px-0.5;
+}
+
+.sidebar-footer {
+  @apply mt-auto flex flex-col gap-1.5 border-t pt-2;
+  border-color: var(--sidebar-border);
+}
+
+.host-pill {
+  @apply max-w-full truncate rounded-full px-2 py-0.5 text-[11px] font-medium;
+  background: color-mix(in srgb, var(--sidebar-accent) 80%, transparent);
+  color: var(--text-subtle);
+}
+
+.host-pill[data-state="ready"],
+.host-pill[data-state="settled"] {
+  @apply bg-emerald-500/10 text-emerald-400;
+}
+
+.host-pill[data-state="running"] {
+  @apply bg-blue-500/10 text-blue-400;
+}
+
+.host-pill[data-state="error"],
+.host-pill[data-state="crashed"] {
+  @apply bg-red-500/10 text-red-400;
+}
+
+/* Content column must fill shell-main; pages without flex-1 only sized to content
+   and left a huge empty strip on the right. */
+.main-column {
+  @apply relative flex h-full min-h-0 w-full min-w-0 flex-1 flex-col;
+  background: var(--background);
+}
+
+.thread-header {
+  @apply flex min-h-11 items-center justify-between gap-3 px-4 py-2;
+}
+
+.thread-header h2 {
+  @apply m-0 text-[13px] font-semibold tracking-tight;
+}
+
+.thread-header .subtitle {
+  @apply text-[11px];
+  color: var(--text-subtle);
+}
+
+.header-controls {
+  @apply flex flex-wrap items-center justify-end gap-1;
+}
+
+/*
+ * Overlay scrollbar (pages + popups):
+ * - Native scrollbar is ALWAYS fully suppressed → never steals content width
+ *   (fixes shrink/expand when a classic thin bar toggles).
+ * - A floating `.pix-scroll-thumb` (injected by installOverlayScroll) paints on top
+ *   while scrolling, then fades out. Metrics never change with data-scrolling.
+ */
+.pix-scroll,
+.timeline-scroll,
+.page-body,
+.settings-page-body {
+  @apply min-h-0 min-w-0 overflow-x-hidden overflow-y-auto;
+  scrollbar-gutter: auto;
+  scrollbar-width: none; /* constant — do not toggle with data-scrolling */
+  scrollbar-color: transparent transparent;
+}
+.pix-scroll::-webkit-scrollbar,
+.timeline-scroll::-webkit-scrollbar,
+.page-body::-webkit-scrollbar,
+.settings-page-body::-webkit-scrollbar {
+  width: 0 !important;
+  height: 0 !important;
+  background: transparent;
+  display: none;
+}
+/* Floating thumb on document.body — never affects scrollport content width. */
+.pix-scroll-thumb {
+  position: fixed;
+  z-index: 10050; /* above FloatingMenu (10000) */
+  width: 6px;
+  border-radius: 999px;
+  pointer-events: none;
+  opacity: 0;
+  background: color-mix(in srgb, var(--muted-foreground) 48%, transparent);
+  transition: opacity 0.16s ease;
+  will-change: top, opacity;
+}
+.pix-scroll-thumb[data-visible="true"] {
+  opacity: 1;
+}
+
+.timeline-scroll {
+  @apply flex-1;
+}
+
+.timeline {
+  @apply mx-auto w-[min(760px,100%)] px-6 pt-6 pb-40;
+}
+
+.timeline.empty {
+  @apply flex min-h-full flex-col p-0;
+}
+
+.recent-workspaces {
+  @apply flex max-h-36 flex-col gap-px overflow-auto;
+}
+
+/* Secondary pages — always fill the content column width */
+.page {
+  @apply flex h-full min-h-0 w-full min-w-0 flex-1 flex-col overflow-hidden;
+  background: var(--background);
+  color: var(--foreground);
+}
+.page-header {
+  @apply flex shrink-0 items-center justify-between gap-3 border-b px-5 py-3;
+  border-color: var(--border);
+}
+.page-header h1 {
+  @apply m-0 text-[15px] leading-none font-semibold tracking-tight;
+}
+.page-header p {
+  @apply m-0 text-xs;
+  color: var(--muted-foreground);
+}
+.page-header-actions {
+  @apply flex shrink-0 items-center gap-1.5;
+}
+/* Scrollport has no horizontal padding so the scrollbar sits on the pane edge. */
+.page-body {
+  @apply flex-1;
+}
+.page-body-inner {
+  @apply px-5 py-4;
+}
+.page-toolbar {
+  @apply mb-3 flex flex-wrap items-center gap-2;
+}
+.item-list {
+  @apply flex flex-col gap-2;
+}
+.item-card {
+  @apply grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-1 rounded-xl border px-3.5 py-3;
+  border-color: var(--border);
+  background: var(--card);
+}
+.item-card .title {
+  @apply text-[13px] leading-snug font-semibold break-all;
+}
+.item-card .meta {
+  @apply mt-0.5 text-[11px] leading-snug break-all;
+  color: var(--muted-foreground);
+}
+.item-card .badges {
+  @apply flex flex-wrap items-center justify-end gap-1.5;
+}
+.empty-panel {
+  @apply flex flex-col items-start gap-1.5 rounded-xl border border-dashed p-5;
+  border-color: var(--border);
+  background: color-mix(in srgb, var(--card) 70%, transparent);
+}
+.empty-panel h2 {
+  @apply m-0 text-[13px] font-semibold;
+}
+.empty-panel p {
+  @apply m-0 max-w-xl text-xs leading-relaxed;
+  color: var(--muted-foreground);
+}
+.install-form {
+  @apply mb-3 grid grid-cols-[minmax(0,1fr)_11.5rem_auto] items-end gap-2.5 rounded-xl border p-3;
+  border-color: var(--border);
+  background: var(--card);
+}
+.install-label {
+  @apply flex min-w-0 flex-col gap-1.5 text-[11px] leading-none font-medium;
+  color: var(--text-subtle);
+}
+.install-label input,
+.install-label select {
+  @apply h-8 w-full min-w-0 rounded-lg border px-2.5 text-[13px] leading-none font-normal tracking-normal normal-case outline-none;
+  border-color: var(--border);
+  background-color: color-mix(in srgb, var(--background) 88%, transparent);
+  color: var(--foreground);
+}
+/* Scope select: hide native arrow, draw a subtle chevron on the right. */
+.install-label select {
+  @apply cursor-pointer appearance-none pr-8;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%236e6e6e' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  background-size: 12px 12px;
+}
+[data-theme="light"] .install-label select {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%238a8a84' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+}
+.install-label input:focus-visible,
+.install-label select:focus-visible {
+  border-color: color-mix(in srgb, var(--ring, #0a84ff) 55%, var(--border));
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ring, #0a84ff) 18%, transparent);
+}
+.install-label input:disabled,
+.install-label select:disabled {
+  @apply cursor-not-allowed opacity-50;
+}
+.install-label select:disabled {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%236e6e6e' stroke-width='2' stroke-linecap='round' stroke-linejoin='round' opacity='0.5'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+}
+.install-actions {
+  @apply flex h-8 items-stretch;
+}
+.form-error {
+  @apply mb-2 text-xs text-red-400;
+}
+.form-hint {
+  @apply mb-3 text-[11px] leading-snug;
+  color: var(--text-subtle);
+}
+.page-tabs {
+  @apply flex shrink-0 items-center gap-1 border-b px-5 pt-2 pb-0;
+  border-color: var(--border);
+}
+.page-tab {
+  @apply inline-flex h-8 items-center justify-center rounded-t-md px-3 text-xs leading-none font-medium;
+  color: var(--muted-foreground);
+}
+.page-tab[data-active="true"] {
+  border-bottom: 2px solid var(--foreground);
+  color: var(--foreground);
+}
+.page-tab[data-active="false"] {
+  @apply cursor-default opacity-55;
+}
+.chip {
+  @apply inline-flex h-6 items-center justify-center rounded-full border px-2 text-[11px] leading-none font-medium whitespace-nowrap;
+  border-color: var(--border);
+  background: color-mix(in srgb, var(--muted) 60%, transparent);
+  color: var(--muted-foreground);
+}
+.btn-secondary,
+a.btn-secondary {
+  @apply inline-flex h-8 items-center justify-center gap-1 rounded-lg border px-3 text-xs leading-none font-medium whitespace-nowrap no-underline transition-colors;
+  border-color: var(--border);
+  color: var(--foreground);
+  background: transparent;
+  box-sizing: border-box;
+}
+.btn-secondary:hover:not(:disabled),
+a.btn-secondary:hover {
+  background: var(--accent);
+}
+.btn-secondary:disabled {
+  @apply cursor-not-allowed opacity-40;
+}
+.btn-secondary:focus-visible,
+a.btn-secondary:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ring, #0a84ff) 22%, transparent);
+}
+.btn-primary {
+  @apply inline-flex h-8 items-center justify-center gap-1 rounded-lg px-3.5 text-xs leading-none font-medium whitespace-nowrap text-white transition-colors;
+  background: #0a84ff;
+  border: none;
+  box-sizing: border-box;
+}
+.btn-primary:hover:not(:disabled) {
+  background: #0077ed;
+}
+.btn-primary:disabled {
+  @apply cursor-not-allowed opacity-40;
+}
+.btn-primary:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px color-mix(in srgb, #0a84ff 30%, transparent);
+}
+.btn-ghost {
+  @apply inline-flex h-8 items-center justify-center gap-1 rounded-lg px-2.5 text-xs leading-none font-medium whitespace-nowrap transition-colors;
+  color: var(--muted-foreground);
+  background: transparent;
+  border: none;
+  box-sizing: border-box;
+}
+.btn-ghost:hover:not(:disabled) {
+  background: var(--accent);
+  color: var(--foreground);
+}
+.btn-ghost:disabled {
+  @apply cursor-not-allowed opacity-40;
+}
+.btn-ghost.danger {
+  color: var(--muted-foreground);
+}
+.btn-ghost.danger:hover:not(:disabled) {
+  @apply bg-red-500/10 text-red-400;
+}
+.btn-sm {
+  @apply h-7 px-2 text-[11px];
+}
+
+/* Review / palette */
+.review-panel {
+  @apply flex h-full w-[min(480px,40vw)] min-w-[280px] shrink-0 flex-col border-l;
+  border-color: var(--border);
+  background: var(--card);
+}
+.review-panel header {
+  @apply flex h-12 items-center justify-between border-b px-3;
+  border-color: var(--border);
+}
+.review-panel header h2 {
+  @apply m-0 text-[13px] font-semibold;
+}
+.review-body {
+  @apply min-h-0 overflow-auto p-3;
+}
+.review-body pre {
+  @apply m-0 overflow-auto rounded-md p-2.5 font-mono text-xs leading-relaxed wrap-break-word whitespace-pre-wrap;
+  background: var(--muted);
+  color: var(--foreground);
+}
+.empty-note {
+  @apply text-[13px];
+  color: var(--muted-foreground);
+}
+.palette-backdrop {
+  @apply fixed inset-0 z-50 flex items-start justify-center bg-black/45 pt-[12vh];
+}
+.palette-panel {
+  @apply w-[min(520px,92vw)] overflow-hidden rounded-xl border shadow-2xl;
+  border-color: var(--border);
+  background: var(--popover);
+}
+.palette-input {
+  @apply w-full border-0 border-b bg-transparent px-3.5 py-3 text-sm outline-none;
+  border-color: var(--border);
+  color: var(--foreground);
+}
+.palette-list {
+  @apply m-0 max-h-80 list-none overflow-auto p-1;
+}
+.palette-item {
+  @apply flex w-full items-center justify-between gap-2.5 rounded-lg px-2.5 py-2 text-left text-[13px];
+  color: var(--foreground);
+}
+.palette-item[data-active="true"],
+.palette-item:hover {
+  background: var(--accent);
+}
+.palette-item kbd {
+  @apply font-mono text-[11px];
+  color: var(--text-subtle);
+}
+.palette-empty {
+  @apply p-2.5 text-xs;
+  color: var(--muted-foreground);
+}
+
+/* ── Codex / ChatGPT settings page ─────────────────────────────────────── */
+.settings-page {
+  @apply flex h-full min-h-0 w-full min-w-0 flex-1 flex-col overflow-hidden;
+  background: var(--background);
+}
+/* Pure solid band under the window top — no border/divider; content scrolls below it. */
+.settings-page-top-cap {
+  @apply shrink-0;
+  height: 46px; /* TITLEBAR_HEIGHT_PX — matches traffic-light row */
+  background: var(--background);
+}
+.settings-page-body {
+  @apply flex-1;
+}
+.settings-page-shell {
+  /* Horizontal inset on content only — not on the scrollport (keeps scrollbar flush). */
+  @apply mx-auto w-full max-w-[820px] px-8 pt-6 pb-16;
+}
+.settings-page-title-row {
+  @apply mb-8 flex items-center justify-between gap-3;
+}
+.settings-page-title {
+  @apply m-0 text-left text-[22px] font-medium tracking-tight text-[var(--foreground)];
+}
+.settings-page-title-action {
+  @apply shrink-0;
+}
+.settings-page-sections {
+  @apply flex flex-col gap-8;
+}
+
+/* Archived sessions page (Codex-style grouped list) */
+.archived-toolbar {
+  @apply mb-6 flex flex-wrap items-center gap-2;
+}
+.archived-search {
+  @apply flex h-9 min-w-0 flex-1 items-center gap-2 rounded-full border border-[var(--border)] px-3;
+  background: color-mix(in srgb, var(--muted-foreground) 8%, transparent);
+}
+.archived-search input {
+  @apply min-w-0 flex-1 border-0 bg-transparent text-[13px] text-[var(--foreground)] outline-none placeholder:text-[var(--text-subtle)];
+}
+.archived-filter {
+  @apply h-9 cursor-pointer appearance-none rounded-full border border-[var(--border)] bg-[var(--secondary)] px-3 pr-8 text-[12.5px] text-[var(--foreground)] outline-none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23999' stroke-width='2'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+}
+.archived-delete-all {
+  @apply inline-flex h-8 items-center gap-1.5 rounded-full border border-red-500/25 bg-red-500/10 px-3 text-[12.5px] font-medium text-red-400 transition-colors hover:bg-red-500/15;
+}
+.archived-group {
+  @apply mb-6;
+}
+.archived-group-header {
+  @apply mb-2 flex items-center gap-2 px-0.5;
+}
+.archived-group-name {
+  @apply flex min-w-0 flex-1 items-center gap-2 text-[14px] font-medium text-[var(--foreground)];
+}
+.archived-group-meta {
+  @apply flex shrink-0 items-center gap-1 text-[12px] text-[var(--muted-foreground)];
+}
+.archived-group-menu {
+  @apply relative;
+}
+.archived-group-menu-panel {
+  @apply absolute top-full right-0 z-50 mt-1 min-w-[220px] overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--popover)] py-1 shadow-2xl;
+}
+.archived-group-menu-item {
+  @apply flex w-full items-center gap-2 px-3 py-2 text-left text-[13px] text-red-400 hover:bg-red-500/10;
+}
+.archived-card {
+  @apply overflow-hidden rounded-[14px] border border-[var(--border)] bg-[var(--card)];
+}
+.archived-item {
+  @apply flex items-center gap-3 border-b border-[var(--border)] px-3.5 py-3 last:border-b-0;
+}
+.archived-item-copy {
+  @apply min-w-0 flex-1;
+}
+.archived-item-title {
+  @apply truncate text-[13.5px] font-medium text-[var(--foreground)];
+}
+.archived-item-date {
+  @apply mt-0.5 text-[12px] text-[var(--muted-foreground)];
+}
+.archived-item-actions {
+  @apply flex shrink-0 items-center gap-1.5;
+}
+.archived-icon-btn {
+  @apply inline-flex h-8 w-8 items-center justify-center rounded-lg text-[var(--muted-foreground)] hover:bg-[var(--accent)] hover:text-red-500;
+}
+.archived-unarchive-btn {
+  @apply inline-flex h-8 items-center rounded-full border border-[var(--border)] bg-[var(--secondary,#f1f2f4)] px-3 text-[12.5px] text-[var(--foreground)] hover:bg-[var(--accent)];
+}
+.settings-section-block {
+  @apply flex flex-col gap-2;
+}
+.settings-section-label {
+  @apply m-0 px-0.5 text-[13px] font-normal text-[var(--muted-foreground)];
+}
+.settings-section-hint {
+  @apply m-0;
+}
+.settings-card {
+  @apply overflow-hidden rounded-[14px] border border-[var(--border)] bg-[var(--card)];
+}
+.settings-row {
+  @apply flex items-start justify-between gap-6 border-b border-[var(--border)] px-4 py-3.5;
+}
+/* Title-only rows: no reserved description space, vertically centered. */
+.settings-row-compact {
+  @apply items-center py-2.5;
+}
+.settings-row-last,
+.settings-row:last-child {
+  @apply border-b-0;
+}
+.settings-row-title {
+  @apply text-[13.5px] leading-snug font-medium text-[var(--foreground)];
+}
+.settings-row-desc {
+  @apply mt-1 text-[12px] leading-relaxed text-[var(--muted-foreground)];
+}
+.settings-row-control {
+  @apply flex items-center;
+}
+.settings-row-control-multiline {
+  @apply pt-0.5;
+}
+.settings-toggle {
+  @apply relative h-[22px] w-[40px] shrink-0 rounded-full transition-colors;
+}
+.settings-toggle-on {
+  background: #0a84ff;
+}
+.settings-toggle-off {
+  background: color-mix(in srgb, var(--muted-foreground) 28%, var(--border));
+}
+[data-theme="light"] .settings-toggle-off {
+  background: #d1d5db;
+}
+.settings-toggle-knob {
+  @apply absolute top-[2px] left-[2px] h-[18px] w-[18px] rounded-full bg-white shadow-sm transition-transform;
+}
+.settings-toggle-on .settings-toggle-knob {
+  transform: translateX(18px);
+}
+.settings-select {
+  @apply h-7 max-w-[160px] cursor-pointer appearance-none rounded-full border border-[var(--border)] bg-[var(--secondary,#f1f2f4)] px-3 pr-7 text-[12px] text-[var(--foreground)] outline-none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%235c5c57' stroke-width='2'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 8px center;
+}
+.settings-select:hover {
+  background-color: var(--accent);
+}
+.settings-select:focus-visible {
+  border-color: color-mix(in srgb, var(--ring, #0a84ff) 55%, var(--border));
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ring, #0a84ff) 22%, transparent);
+}
+.settings-pill-btn {
+  @apply inline-flex h-7 items-center justify-center rounded-full border border-[var(--border)] bg-[var(--secondary,#f1f2f4)] px-3 text-[12px] leading-none whitespace-nowrap text-[var(--foreground)] transition-colors hover:bg-[var(--accent)] disabled:pointer-events-none disabled:opacity-40;
+}
+.settings-pill-btn-danger:hover:not(:disabled) {
+  border-color: color-mix(in srgb, #ef4444 35%, var(--border));
+  background: color-mix(in srgb, #ef4444 12%, transparent);
+  color: #ef4444;
+}
+.settings-primary-btn {
+  @apply inline-flex h-8 shrink-0 items-center justify-center rounded-lg px-3.5 text-[13px] font-medium text-white transition-colors;
+  background: #0a84ff;
+}
+.settings-primary-btn:hover:not(:disabled) {
+  background: #0077ed;
+}
+.settings-primary-btn:disabled {
+  @apply cursor-not-allowed opacity-40;
+}
+.settings-primary-btn:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px color-mix(in srgb, #0a84ff 30%, transparent);
+}
+.settings-inline-link {
+  @apply border-0 bg-transparent p-0 text-[12px] text-[#0a84ff] hover:underline;
+}
+.settings-input {
+  @apply h-8 w-full rounded-lg border border-[var(--border)] bg-transparent px-2.5 text-[13px] text-[var(--foreground)] outline-none;
+}
+.settings-input:focus-visible {
+  border-color: color-mix(in srgb, #0a84ff 55%, var(--border));
+  box-shadow: 0 0 0 2px color-mix(in srgb, #0a84ff 18%, transparent);
+}
+.settings-key-row {
+  @apply flex w-full min-w-0 items-center gap-2;
+}
+.settings-key-input {
+  @apply min-w-0 flex-1;
+}
+.settings-field {
+  @apply flex flex-col gap-1 px-4 py-2 text-[12px] text-[var(--muted-foreground)];
+}
+.settings-provider-form {
+  @apply flex flex-col gap-1 border-b border-[var(--border)] pb-3;
+}
+.settings-form-error {
+  @apply m-0 text-[12px] text-red-400;
+}
+.settings-form-note {
+  @apply m-0 text-[12px] text-[var(--muted-foreground)];
+}
+.settings-status-chip {
+  @apply rounded-full px-2 py-0.5 text-[11px] text-[var(--muted-foreground)];
+  background: color-mix(in srgb, var(--muted-foreground) 14%, transparent);
+}
+.settings-snapshot {
+  @apply m-0 max-h-64 overflow-auto rounded-lg p-3 font-mono text-[11px] leading-relaxed;
+  background: var(--muted);
+  color: var(--foreground);
+}
+.settings-range {
+  @apply h-1.5 w-full accent-[#0a84ff];
+}
+.settings-model-badge {
+  @apply inline-flex shrink-0 items-center rounded-full px-2 py-0.5 text-[11px] font-medium;
+}
+.settings-model-badge-default {
+  background: color-mix(in srgb, #0a84ff 16%, transparent);
+  color: #0a84ff;
+}
+.settings-model-badge-session {
+  background: color-mix(in srgb, #34c759 16%, transparent);
+  color: #248a3d;
+}
+[data-theme="dark"] .settings-model-badge-session {
+  color: #30d158;
+}
+
+/* Project / thread context menu — top-layer portal (fixed + z-index) */
+.project-context-menu {
+  background: var(--popover, #242424);
+  color: var(--popover-foreground, var(--foreground));
+  border-color: var(--border) !important;
+  box-shadow:
+    0 16px 48px rgb(0 0 0 / 0.22),
+    0 0 0 1px color-mix(in srgb, var(--border) 80%, transparent);
+}
+
+[data-theme="dark"] .project-context-menu {
+  box-shadow:
+    0 16px 48px rgb(0 0 0 / 0.55),
+    0 0 0 1px color-mix(in srgb, var(--sidebar-border) 60%, transparent);
+}
+
+/* Settings rail (left) — Codex hierarchy */
+.settings-rail-back {
+  @apply flex h-8 w-full items-center gap-1.5 rounded-lg px-2 text-left text-[13px] font-medium text-[var(--sidebar-foreground)] transition-colors;
+}
+.settings-rail-back:hover {
+  background: color-mix(in srgb, var(--sidebar-accent) 80%, transparent);
+}
+.settings-rail-search {
+  @apply flex h-8 min-w-0 items-center gap-2 rounded-full border border-[var(--sidebar-border)] px-2.5;
+  background: color-mix(in srgb, var(--sidebar-foreground) 6%, transparent);
+}
+.settings-rail-group-label {
+  @apply px-2.5 pb-1 pt-3 text-[11px] font-normal text-[var(--text-subtle)];
+}
+.settings-rail-item {
+  @apply flex h-[32px] w-full min-w-0 items-center gap-2.5 rounded-[10px] px-2.5 text-left text-[13px] font-normal transition-colors;
+  color: var(--muted-foreground);
+}
+.settings-rail-item:hover {
+  background: color-mix(in srgb, var(--sidebar-accent) 70%, transparent);
+  color: var(--sidebar-foreground);
+}
+.settings-rail-item[data-active="true"] {
+  background: var(--sidebar-accent);
+  color: var(--sidebar-accent-foreground);
+}
+
+@media (max-width: 900px) {
+  .install-form {
+    @apply grid-cols-1;
+  }
+
+  .install-actions {
+    @apply w-full;
+  }
+
+  .install-actions .btn-primary {
+    @apply w-full;
+  }
+
+  .page-header {
+    @apply flex-wrap items-center;
+  }
+
+  .page-header-actions {
+    @apply w-full flex-wrap justify-end;
+  }
+
+  .app-shell.sidebar-open .sidebar {
+    @apply absolute inset-y-0 left-0 z-30 w-[min(272px,88vw)] shadow-2xl;
+  }
+}

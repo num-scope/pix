@@ -1,0 +1,50 @@
+{
+  "name": "@pix/desktop",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/main/main.mjs",
+  "scripts": {
+    "build": "vp build --config vite.renderer.config.ts && vp build --config vite.preload.config.ts && vp build --config vite.main.config.ts && vp build --config vite.agent.config.ts",
+    "dev": "pnpm run build && node scripts/launch-m0.mjs",
+    "start": "node scripts/launch-m0.mjs",
+    "smoke": "node scripts/launch-m0.mjs --smoke",
+    "smoke:packaged": "node scripts/smoke-packaged-m0.mjs",
+    "e2e": "pnpm run build && playwright test",
+    "e2e:ui": "pnpm run build && playwright test --ui",
+    "electron:install": "install-electron",
+    "package": "pnpm run build && electron-builder --dir --config electron-builder.yml",
+    "test": "vp test --run --config vite.renderer.config.ts"
+  },
+  "dependencies": {
+    "@earendil-works/pi-coding-agent": "catalog:",
+    "@pix/agent-runtime": "workspace:*",
+    "@pix/contracts": "workspace:*",
+    "@silvia-odwyer/photon-node": "catalog:",
+    "class-variance-authority": "catalog:",
+    "clsx": "catalog:",
+    "lucide-react": "catalog:",
+    "react": "catalog:",
+    "react-dom": "catalog:",
+    "tailwind-merge": "catalog:",
+    "zustand": "catalog:"
+  },
+  "devDependencies": {
+    "@pix/test-utils": "workspace:*",
+    "@playwright/test": "catalog:",
+    "@tailwindcss/vite": "catalog:",
+    "@types/node": "catalog:",
+    "@types/react": "catalog:",
+    "@types/react-dom": "catalog:",
+    "electron": "catalog:",
+    "electron-builder": "catalog:",
+    "playwright": "catalog:",
+    "tailwindcss": "catalog:",
+    "typescript": "catalog:",
+    "vite": "catalog:",
+    "vite-plus": "catalog:"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  }
+}

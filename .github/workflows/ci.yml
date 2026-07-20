@@ -1,0 +1,92 @@
+# Multi-platform CI: install → check → test → build → package (unsigned dir)
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Avoid interactive electron download prompts in CI.
+  ELECTRON_BUILDER_CACHE: ${{ github.workspace }}/.cache/electron-builder
+  ELECTRON_CACHE: ${{ github.workspace }}/.cache/electron
+
+jobs:
+  build:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            platform: linux
+          - os: windows-latest
+            platform: win
+          - os: macos-latest
+            platform: mac
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.15.1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint / typecheck
+        run: pnpm exec vp check
+
+      - name: Unit tests
+        run: pnpm test
+
+      - name: Build all packages
+        run: pnpm build
+
+      - name: Install Electron binary
+        run: pnpm electron:install
+
+      - name: Package desktop (unsigned dir)
+        run: pnpm package
+        env:
+          # electron-builder may try to publish when CI=true on some versions.
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+
+      - name: List package output
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="apps/desktop/release/m0"
+          if [[ -d "$out" ]]; then
+            echo "Package output under $out:"
+            find "$out" -maxdepth 3 -type f -o -type d | head -n 80
+          else
+            echo "Missing package output: $out" >&2
+            exit 1
+          fi
+
+      - name: Upload package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pix-m0-${{ matrix.platform }}-${{ runner.os }}-${{ runner.arch }}
+          path: apps/desktop/release/m0/**
+          if-no-files-found: error
+          retention-days: 14
