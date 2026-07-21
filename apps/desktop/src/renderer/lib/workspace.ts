@@ -36,6 +36,34 @@ export function isEphemeralWorkspacePath(path: string): boolean {
 }
 
 /**
+ * Auto scratch folders from ensureDefault: Documents/Pix/YYYY-MM-DD[ -N].
+ * Used as a host cwd when no project is open — not a real user project for the rail.
+ * Does not match Documents/Pix/worktrees/...
+ */
+export function isAutoDefaultWorkspacePath(path: string): boolean {
+  const normalized = path.replace(/\\/g, "/").replace(/\/+$/, "");
+  return /\/Pix\/\d{4}-\d{2}-\d{2}(-\d+)?$/i.test(normalized);
+}
+
+/**
+ * Pure-conversation home: Documents/Pix/conversations[/…].
+ * Global「新建会话」uses this cwd — never shown as a project in the rail.
+ */
+export function isConversationWorkspacePath(path: string): boolean {
+  const normalized = path.replace(/\\/g, "/").replace(/\/+$/, "");
+  return /\/Pix\/conversations(?:\/|$)/i.test(normalized);
+}
+
+/** Paths that must never appear as projects in the sidebar recent/current rail. */
+export function isNonProjectWorkspacePath(path: string): boolean {
+  return (
+    isEphemeralWorkspacePath(path) ||
+    isAutoDefaultWorkspacePath(path) ||
+    isConversationWorkspacePath(path)
+  );
+}
+
+/**
  * Product recent list: drop ephemerals, drop current cwd, dedupe, cap.
  * Pure helper — unit-tested without Electron.
  */
@@ -49,7 +77,7 @@ export function filterRecentWorkspaces(
   const out: string[] = [];
   for (const raw of paths) {
     if (typeof raw !== "string" || !raw.trim()) continue;
-    if (isEphemeralWorkspacePath(raw)) continue;
+    if (isNonProjectWorkspacePath(raw)) continue;
     const path = raw.replace(/\\/g, "/").replace(/\/+$/, "");
     if (current && path === current) continue;
     if (seen.has(path)) continue;
@@ -64,8 +92,8 @@ export function filterRecentWorkspaces(
 export function prependRecentPath(paths: string[], path: string, max = 12): string[] {
   const normalized = path.trim();
   if (!normalized) return paths;
-  if (isEphemeralWorkspacePath(normalized)) {
-    // Still allow lastWorkspace for resume, but don't grow recent with junk.
+  if (isNonProjectWorkspacePath(normalized)) {
+    // Scratch / fixture dirs must not grow the recent projects list.
     return paths.filter((item) => item !== normalized).slice(0, max);
   }
   return [normalized, ...paths.filter((item) => item !== normalized)].slice(0, max);

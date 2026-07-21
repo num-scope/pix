@@ -40,7 +40,7 @@ export function anchorFromElement(el: HTMLElement | null): AnchorRect | null {
   };
 }
 
-export type FloatingMenuPlacement = "bottom" | "top" | "right";
+export type FloatingMenuPlacement = "bottom" | "top" | "right" | "left";
 
 export function FloatingMenu(props: {
   open: boolean;
@@ -84,6 +84,16 @@ export function FloatingMenu(props: {
       top = anchor.top;
       if (left + menuW > window.innerWidth - pad) {
         left = Math.max(pad, anchor.left - menuW - 4);
+      }
+      if (top + menuH > window.innerHeight - pad) {
+        top = Math.max(pad, window.innerHeight - menuH - pad);
+      }
+      top = Math.max(pad, top);
+    } else if (placement === "left") {
+      left = anchor.left - menuW - 4;
+      top = anchor.top;
+      if (left < pad) {
+        left = Math.min(anchor.right + 4, window.innerWidth - menuW - pad);
       }
       if (top + menuH > window.innerHeight - pad) {
         top = Math.max(pad, window.innerHeight - menuH - pad);

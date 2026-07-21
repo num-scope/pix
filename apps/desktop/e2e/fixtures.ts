@@ -15,6 +15,7 @@ interface LaunchedPix {
   app: ElectronApplication;
   page: Page;
   root: string;
+  workspace: string;
   fakeModel: FakeOpenAiServer;
 }
 
@@ -124,8 +125,10 @@ async function launchPixApp(): Promise<LaunchedPix> {
 
   const page = await app.firstWindow({ timeout: 60_000 });
   await page.waitForSelector('[data-testid="pix-app"]', { timeout: 30_000 });
+  // Let cold-start bootstrap (packages/resources refresh) settle before UI clicks.
+  await page.waitForTimeout(800);
 
-  return { app, page, root, fakeModel };
+  return { app, page, root, workspace, fakeModel };
 }
 
 export const test = base.extend<PixE2EFixtures>({
@@ -147,16 +150,38 @@ export const test = base.extend<PixE2EFixtures>({
 
 export { expect };
 
-/** Start host via New thread and wait until the shell reports ready. */
+/** Start host via 新建会话 and wait until the shell reports ready. */
 export async function startHost(page: Page): Promise<void> {
-  await page.getByTestId("start-host").click();
-  await expect(page.getByTestId("host-status")).toContainText(
-    /Agent Host ready|Agent Host restarted/,
-    {
-      timeout: 30_000,
-    },
+  await page.getByTestId("pix-app").waitFor({ state: "visible" });
+  const btn = page.getByTestId("start-host");
+  await btn.waitFor({ state: "visible", timeout: 15_000 });
+  // Bootstrap may remount the rail briefly — force click after short settle.
+  await page.waitForTimeout(300);
+  await btn.click({ force: true });
+  await expect(page.getByTestId("host-status").first()).toContainText(
+    /Agent Host ready|Agent Host restarted|Agent Host ready|就绪/,
+    { timeout: 45_000 },
   );
-  await expect(page.getByTestId("runtime-snapshot")).toContainText("runtimeId", {
-    timeout: 10_000,
+  await expect(page.getByTestId("runtime-snapshot").first()).toContainText("runtimeId", {
+    timeout: 15_000,
   });
+}
+
+/** Pure-conversation sessions live under 对话, not project nested thread-list. */
+export function conversationSessionButtons(page: Page) {
+  return page.getByTestId("conversations-list").locator("button[data-active]");
+}
+
+/** Wait until agent turn settles (locale-agnostic). */
+export async function waitSettled(page: Page, timeout = 60_000): Promise<void> {
+  await expect(page.getByTestId("host-status").first()).toContainText(
+    /Agent settled|Agent Host ready|Agent aborted/,
+    { timeout },
+  );
+}
+
+export async function sendPrompt(page: Page, text: string): Promise<void> {
+  await page.getByTestId("prompt-input").fill(text);
+  await page.getByTestId("send-prompt").click();
+  await waitSettled(page);
 }

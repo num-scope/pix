@@ -1,10 +1,10 @@
 /**
  * Sidebar hierarchy:
- * - 置顶 / 项目 → expand → 会话 (sessions under that project)
- * - 对话 → 对话 list (conversations; independent section)
+ * - 置顶 / 项目 → only places that show **projects** (expand → 会话 under that project)
+ * - 对话 → **conversations only** — never project sessions (even if same disk session exists)
  *
- * Session row: hover pin/archive; right-click full menu.
- * Conversation row: same actions, 对话 wording.
+ * A thread whose cwd is a known project (pinned / recent / current) is a **session**
+ * and appears only under that project. Everything else is a **conversation**.
  */
 import type { SessionThreadSummary } from "@pix/contracts";
 import {
@@ -34,7 +34,9 @@ import {
   type ReactNode,
 } from "react";
 import { anchorFromEvent, FloatingMenu, type AnchorRect } from "./FloatingMenu.tsx";
+import { ConfirmDialog } from "./ConfirmDialog.tsx";
 import { RenameDialog } from "./RenameDialog.tsx";
+import { loadConfirmArchive, loadConfirmDelete } from "../lib/behavior-prefs.ts";
 import { t, type Locale, type MessageKey } from "../lib/i18n.ts";
 import {
   PROJECT_THREADS_PAGE,
@@ -63,7 +65,9 @@ import {
   partitionProjects,
   projectDisplayName,
   setProjectAlias,
+  mergeManualThreadOrder,
   setThreadAlias,
+  sortThreadsByMode,
   sortThreadsWithPins,
   threadDisplayTitle,
   toggleExpandedProject,
@@ -72,10 +76,14 @@ import {
   unarchiveThread,
 } from "../lib/project-prefs.ts";
 import {
+  loadConversationManualOrder,
+  loadConversationSortMode,
   loadGroupMode,
   loadProjectsSectionOpen,
   loadSortMode,
   loadThreadsSectionOpen,
+  saveConversationManualOrder,
+  saveConversationSortMode,
   saveGroupMode,
   saveProjectsSectionOpen,
   saveSortMode,
@@ -84,7 +92,7 @@ import {
   type SortMode,
 } from "../lib/sidebar-organize.ts";
 import { cn } from "../lib/utils.ts";
-import { workspaceLabel } from "../lib/workspace.ts";
+import { isNonProjectWorkspacePath, workspaceLabel } from "../lib/workspace.ts";
 import type { ThreadRunState } from "../lib/timeline.ts";
 
 export interface ProjectListProps {
@@ -120,10 +128,13 @@ export function ProjectList(props: ProjectListProps) {
   /** `project:<path>` | `thread:<id>` — content rendered in top-layer FloatingMenu */
   const [menuKey, setMenuKey] = useState<string | null>(null);
   const [menuAnchor, setMenuAnchor] = useState<AnchorRect | null>(null);
-  const [organizeOpen, setOrganizeOpen] = useState(false);
+  /** Which section's organize menu is open (projects vs conversations). */
+  const [organizeKind, setOrganizeKind] = useState<"projects" | "threads" | null>(null);
   const [organizeAnchor, setOrganizeAnchor] = useState<AnchorRect | null>(null);
   const [groupMode, setGroupMode] = useState<GroupMode>(loadGroupMode);
   const [sortMode, setSortMode] = useState<SortMode>(loadSortMode);
+  const [conversationSortMode, setConversationSortMode] = useState<SortMode>(loadConversationSortMode);
+  const [conversationManualOrder, setConversationManualOrder] = useState(loadConversationManualOrder);
   const [projectsOpen, setProjectsOpen] = useState(loadProjectsSectionOpen);
   const [threadsOpen, setThreadsOpen] = useState(loadThreadsSectionOpen);
   const [listVisible, setListVisible] = useState(PROJECT_THREADS_PAGE);
@@ -132,13 +143,40 @@ export function ProjectList(props: ProjectListProps) {
     | { kind: "thread"; id: string; value: string }
     | null
   >(null);
+  const [confirm, setConfirm] = useState<
+    | { kind: "delete-thread"; id: string; name: string }
+    | { kind: "archive-thread"; id: string; name: string }
+    | { kind: "archive-project"; path: string; name: string }
+    | { kind: "remove-project"; path: string; name: string }
+    | null
+  >(null);
+
+  // Keep pin/archive/alias in sync when header (or other) mutates prefs.
+  useEffect(() => {
+    const sync = () => {
+      setPinnedThreads(loadPinnedThreads());
+      setArchivedThreads(loadArchivedThreads());
+      setThreadAliases(loadThreadAliases());
+      setUnreadThreads(loadUnreadThreads());
+      setDeletedThreads(loadDeletedThreads());
+    };
+    window.addEventListener("pix-thread-prefs", sync);
+    return () => window.removeEventListener("pix-thread-prefs", sync);
+  }, []);
 
   const allPaths = useMemo(() => {
     // Include pinned paths even if they drop out of "recent" so 置顶 group stays populated.
+    // Never promote conversation/scratch dirs as real projects.
     const list: string[] = [];
-    if (props.workspacePath) list.push(props.workspacePath);
-    for (const p of props.recentWorkspaces) list.push(p);
-    for (const p of pinned) list.push(p);
+    if (props.workspacePath && !isNonProjectWorkspacePath(props.workspacePath)) {
+      list.push(props.workspacePath);
+    }
+    for (const p of props.recentWorkspaces) {
+      if (!isNonProjectWorkspacePath(p)) list.push(p);
+    }
+    for (const p of pinned) {
+      if (!isNonProjectWorkspacePath(p)) list.push(p);
+    }
     return list;
   }, [props.workspacePath, props.recentWorkspaces, pinned]);
 
@@ -147,25 +185,35 @@ export function ProjectList(props: ProjectListProps) {
     [allPaths, pinned, archived],
   );
 
-  // Default expand active workspace when grouping by project.
+  /** Normalized paths that count as "projects" in the rail (置顶 + 项目). */
+  const projectKeys = useMemo(() => {
+    const set = new Set<string>();
+    for (const p of allPaths) {
+      const key = p.replace(/\\/g, "/").replace(/\/+$/, "");
+      if (key) set.add(key);
+    }
+    return set;
+  }, [allPaths]);
+
+  // Expand active workspace once when it becomes current — never collapse others (avoids switch flash).
   useEffect(() => {
     if (groupMode !== "project" || !props.workspacePath) return;
-    if (!isExpandedProject(props.workspacePath, expanded)) {
-      setExpanded(toggleExpandedProject(props.workspacePath));
-    }
+    if (isExpandedProject(props.workspacePath, expanded)) return;
+    setExpanded(toggleExpandedProject(props.workspacePath));
+    // Only react to workspace identity / group mode — not to expand toggles.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [props.workspacePath, groupMode]);
 
   const closeMenus = useCallback(() => {
     setMenuKey(null);
     setMenuAnchor(null);
-    setOrganizeOpen(false);
+    setOrganizeKind(null);
     setOrganizeAnchor(null);
   }, []);
 
   function openItemMenu(key: string, event: ReactMouseEvent) {
     event.stopPropagation();
-    setOrganizeOpen(false);
+    setOrganizeKind(null);
     setOrganizeAnchor(null);
     if (menuKey === key) {
       setMenuKey(null);
@@ -176,16 +224,16 @@ export function ProjectList(props: ProjectListProps) {
     setMenuAnchor(anchorFromEvent(event.currentTarget));
   }
 
-  function openOrganizeMenu(event: ReactMouseEvent) {
+  function openOrganizeMenu(kind: "projects" | "threads", event: ReactMouseEvent) {
     event.stopPropagation();
     setMenuKey(null);
     setMenuAnchor(null);
-    if (organizeOpen) {
-      setOrganizeOpen(false);
+    if (organizeKind === kind) {
+      setOrganizeKind(null);
       setOrganizeAnchor(null);
       return;
     }
-    setOrganizeOpen(true);
+    setOrganizeKind(kind);
     setOrganizeAnchor(anchorFromEvent(event.currentTarget));
   }
 
@@ -213,18 +261,25 @@ export function ProjectList(props: ProjectListProps) {
     }, 0);
   }
 
-  function handleArchive(path: string) {
+  function doArchiveProject(path: string) {
     setArchived(archiveProject(path));
-    closeMenus();
   }
 
-  function handleRemove(path: string) {
+  function handleArchive(path: string) {
     closeMenus();
+    const name = displayName(path);
+    if (loadConfirmArchive()) {
+      setConfirm({ kind: "archive-project", path, name });
+      return;
+    }
+    doArchiveProject(path);
+  }
+
+  function doRemoveProject(path: string) {
+    const key = path.replace(/\\/g, "/").replace(/\/+$/, "");
     props.onRemoveRecent(path);
     setPinned((prev) => {
-      const key = path.replace(/\\/g, "/").replace(/\/+$/, "");
       const next = prev.filter((p) => p.replace(/\\/g, "/").replace(/\/+$/, "") !== key);
-      // persist pin list without removed path
       try {
         localStorage.setItem("pix.projects.pinned", JSON.stringify(next));
       } catch {
@@ -232,7 +287,26 @@ export function ProjectList(props: ProjectListProps) {
       }
       return next;
     });
-    setArchived((prev) => prev.filter((p) => p !== path));
+    // Hide from 置顶/项目 immediately (also drop archived flag if present).
+    setArchived((prev) => {
+      const next = prev.filter((p) => p.replace(/\\/g, "/").replace(/\/+$/, "") !== key);
+      try {
+        localStorage.setItem("pix.projects.archived", JSON.stringify(next));
+      } catch {
+        // ignore
+      }
+      return next;
+    });
+  }
+
+  function handleRemove(path: string) {
+    closeMenus();
+    const name = displayName(path);
+    if (loadConfirmDelete()) {
+      setConfirm({ kind: "remove-project", path, name });
+      return;
+    }
+    doRemoveProject(path);
   }
 
   function handleReveal(path: string) {
@@ -253,24 +327,44 @@ export function ProjectList(props: ProjectListProps) {
     closeMenus();
   }
 
-  function handleArchiveThread(id: string) {
+  function doArchiveThread(id: string) {
     if (isArchivedThread(id, archivedThreads)) {
       setArchivedThreads(unarchiveThread(id));
-    } else {
-      const thread =
-        props.threads.find((t) => t.id === id) ??
-        Object.values(props.threadsByCwd)
-          .flat()
-          .find((t) => t.id === id);
-      const meta: { title?: string; path?: string; cwd?: string } = {};
-      if (thread) {
-        meta.title = threadDisplayTitle(thread.id, threadAliases, thread.title);
-        meta.path = thread.path;
-        meta.cwd = thread.cwd;
-      }
-      setArchivedThreads(archiveThread(id, Object.keys(meta).length ? meta : undefined));
+      return;
     }
+    const thread =
+      props.threads.find((t) => t.id === id) ??
+      Object.values(props.threadsByCwd)
+        .flat()
+        .find((t) => t.id === id);
+    const meta: { title?: string; path?: string; cwd?: string } = {};
+    if (thread) {
+      meta.title = threadDisplayTitle(thread.id, threadAliases, thread.title);
+      meta.path = thread.path;
+      meta.cwd = thread.cwd;
+    }
+    setArchivedThreads(archiveThread(id, Object.keys(meta).length ? meta : undefined));
+  }
+
+  function handleArchiveThread(id: string) {
     closeMenus();
+    if (isArchivedThread(id, archivedThreads)) {
+      doArchiveThread(id);
+      return;
+    }
+    const thread =
+      props.threads.find((t) => t.id === id) ??
+      Object.values(props.threadsByCwd)
+        .flat()
+        .find((t) => t.id === id);
+    const name = thread
+      ? threadDisplayTitle(thread.id, threadAliases, thread.title)
+      : id.slice(0, 8);
+    if (loadConfirmArchive()) {
+      setConfirm({ kind: "archive-thread", id, name });
+      return;
+    }
+    doArchiveThread(id);
   }
 
   function handleToggleUnread(id: string) {
@@ -288,12 +382,37 @@ export function ProjectList(props: ProjectListProps) {
     closeMenus();
   }
 
-  function handleDeleteThread(id: string) {
+  function doDeleteThread(id: string) {
     setDeletedThreads(deleteThreadLocal(id));
     setPinnedThreads(loadPinnedThreads());
     setArchivedThreads(loadArchivedThreads());
     setUnreadThreads(loadUnreadThreads());
+  }
+
+  function handleDeleteThread(id: string) {
     closeMenus();
+    const thread =
+      props.threads.find((t) => t.id === id) ??
+      Object.values(props.threadsByCwd)
+        .flat()
+        .find((t) => t.id === id);
+    const name = thread
+      ? threadDisplayTitle(thread.id, threadAliases, thread.title)
+      : id.slice(0, 8);
+    if (loadConfirmDelete()) {
+      setConfirm({ kind: "delete-thread", id, name });
+      return;
+    }
+    doDeleteThread(id);
+  }
+
+  function runConfirm() {
+    if (!confirm) return;
+    if (confirm.kind === "delete-thread") doDeleteThread(confirm.id);
+    else if (confirm.kind === "archive-thread") doArchiveThread(confirm.id);
+    else if (confirm.kind === "archive-project") doArchiveProject(confirm.path);
+    else if (confirm.kind === "remove-project") doRemoveProject(confirm.path);
+    setConfirm(null);
   }
 
   function openThreadContextMenu(
@@ -363,14 +482,16 @@ export function ProjectList(props: ProjectListProps) {
   }
 
   /**
-   * Named group `item` so only the hovered row shows actions —
-   * not parent project when hovering a nested conversation.
+   * Overlay actions (absolute) so titles can fade to the row edge by default,
+   * then retract with padding on hover to stop before the buttons.
+   * Named group `item` so only the hovered row shows actions.
    */
   function RowActions(props: { open: boolean; testIdPrefix: string; children: ReactNode }) {
     return (
       <div
         className={cn(
-          "ml-auto flex shrink-0 items-center justify-end gap-0.5 transition-opacity",
+          "absolute right-1 top-1/2 z-[1] flex -translate-y-1/2 items-center justify-end gap-0.5",
+          "transition-opacity",
           props.open
             ? "pointer-events-auto opacity-100"
             : "pointer-events-none opacity-0 group-hover/item:pointer-events-auto group-hover/item:opacity-100 group-focus-within/item:pointer-events-auto group-focus-within/item:opacity-100",
@@ -421,15 +542,22 @@ export function ProjectList(props: ProjectListProps) {
       <div key={`${kind}-${thread.id}`} className="relative min-w-0">
         <div
           className={cn(
-            "group/item flex w-full min-w-0 items-center rounded-md px-2 py-0.5 text-sm transition-colors",
-            "text-[var(--muted-foreground)] hover:bg-[var(--sidebar-accent)] hover:text-[var(--sidebar-foreground)]",
-            thread.active && "text-[var(--sidebar-foreground)]",
+            "group/item relative flex w-full min-w-0 items-center rounded-md px-2 py-1 text-sm",
+            "text-[var(--sidebar-foreground)]",
+            // Selected session only — soft fill, no hover bg flash.
+            thread.active && "bg-[color-mix(in_srgb,var(--sidebar-foreground)_7%,transparent)]",
           )}
           onContextMenu={(e) => openThreadContextMenu(thread, e, kind)}
         >
           <button
             type="button"
-            className={cn("flex min-w-0 flex-1 items-center gap-1.5 text-left", indent && "pl-6")}
+            className={cn(
+              "flex min-w-0 flex-1 items-center gap-1.5 text-left transition-[padding]",
+              indent && "pl-6",
+              // Default: full width (fade to row end). Hover/open: leave room for actions.
+              "pr-0 group-hover/item:pr-14 group-focus-within/item:pr-14",
+              showMenu && "pr-14",
+            )}
             data-active={thread.active ? "true" : "false"}
             data-kind={kind}
             data-state={thread.active ? props.runState : "idle"}
@@ -440,10 +568,12 @@ export function ProjectList(props: ProjectListProps) {
                   ? "thread-item-current"
                   : `${testPrefix}-item-${thread.id}`
             }
-            title={title}
+            // Conversations: title only (never project path / name). Sessions may show path in tooltip.
+            title={kind === "conversation" ? title : `${title}\n${thread.cwd || thread.path}`}
             onClick={() => {
               if (unread) setUnreadThreads(markThreadUnread(thread.id, false));
-              if (!thread.active) props.onSwitchThread(thread.path, thread.cwd);
+              // Always switch — re-open is needed after failed loads / cross-workspace hops.
+              props.onSwitchThread(thread.path, thread.cwd);
             }}
           >
             {unread ? (
@@ -452,7 +582,9 @@ export function ProjectList(props: ProjectListProps) {
             {pinnedHere ? (
               <Pin className="size-3 shrink-0 opacity-50" strokeWidth={1.75} aria-hidden />
             ) : null}
-            <span className="min-w-0 flex-1 truncate leading-4 text-left">{title}</span>
+            <span className="sidebar-title-fade min-w-0 flex-1 overflow-hidden whitespace-nowrap leading-4 text-left">
+              {title}
+            </span>
             {thread.active && props.running ? (
               <Loader2 className="size-3 shrink-0 animate-spin text-blue-400" />
             ) : null}
@@ -497,17 +629,41 @@ export function ProjectList(props: ProjectListProps) {
 
   function threadsForProjectPath(path: string, active: boolean): SessionThreadSummary[] {
     const key = path.replace(/\\/g, "/").replace(/\/+$/, "");
+    // Prefer stable per-cwd cache so cross-project switches never flash an empty/wrong list.
+    // Fall back to live `props.threads` only when this project is active and cache is empty.
+    const cached =
+      props.threadsByCwd[key] ??
+      props.threadsByCwd[path] ??
+      Object.entries(props.threadsByCwd).find(
+        ([k]) => k.replace(/\\/g, "/").replace(/\/+$/, "") === key,
+      )?.[1] ??
+      [];
     let list: SessionThreadSummary[];
-    if (active && props.threads.length > 0) {
+    if (cached.length > 0) {
+      list = cached;
+      // Merge active flags / titles from live host list when available (same project).
+      if (active && props.threads.length > 0) {
+        const liveById = new Map(props.threads.map((t) => [t.id, t]));
+        list = cached.map((t) => {
+          const live = liveById.get(t.id);
+          return live
+            ? {
+                ...t,
+                active: live.active,
+                title: live.title || t.title,
+                modifiedAt: live.modifiedAt || t.modifiedAt,
+              }
+            : { ...t, active: false };
+        });
+        // Append any live threads missing from cache (new session just created).
+        for (const live of props.threads) {
+          if (!list.some((t) => t.id === live.id)) list.push(live);
+        }
+      }
+    } else if (active && props.threads.length > 0) {
       list = props.threads;
     } else {
-      list =
-        props.threadsByCwd[key] ??
-        props.threadsByCwd[path] ??
-        Object.entries(props.threadsByCwd).find(
-          ([k]) => k.replace(/\\/g, "/").replace(/\/+$/, "") === key,
-        )?.[1] ??
-        [];
+      list = [];
     }
     const visible = list.filter(
       (t) => !isArchivedThread(t.id, archivedThreads) && !isDeletedThread(t.id, deletedThreads),
@@ -566,14 +722,18 @@ export function ProjectList(props: ProjectListProps) {
         {/* group/item only on project row — nested threads are siblings, not inside this group */}
         <div
           className={cn(
-            "group/item flex w-full min-w-0 items-center rounded-md px-2 py-0.5 text-left text-sm transition-colors",
-            "text-[var(--muted-foreground)] hover:bg-[var(--sidebar-accent)] hover:text-[var(--sidebar-foreground)]",
-            active && "text-[var(--sidebar-foreground)]",
+            // Project row: no selected highlight, no hover bg.
+            "group/item relative flex w-full min-w-0 items-center rounded-md px-2 py-0.5 text-left text-sm",
+            "text-[var(--sidebar-foreground)]",
           )}
         >
           <button
             type="button"
-            className="flex min-w-0 flex-1 items-center gap-2 text-left"
+            className={cn(
+              "flex min-w-0 flex-1 items-center gap-2 text-left transition-[padding]",
+              "pr-0 group-hover/item:pr-14 group-focus-within/item:pr-14",
+              showMenu && "pr-14",
+            )}
             data-testid={active ? "workspace-current" : "recent-workspace-item"}
             data-path={path}
             title={path}
@@ -588,7 +748,7 @@ export function ProjectList(props: ProjectListProps) {
           >
             <Folder className="size-4 shrink-0 opacity-70" strokeWidth={1.75} />
             <span
-              className="min-w-0 flex-1 truncate leading-4"
+              className="sidebar-title-fade min-w-0 flex-1 overflow-hidden whitespace-nowrap leading-4"
               data-testid={active ? "workspace-name" : undefined}
             >
               {name}
@@ -628,23 +788,13 @@ export function ProjectList(props: ProjectListProps) {
   }
 
   /**
-   * 对话分组：始终展示「对话」列表（独立于项目下的会话）。
-   * - 按项目：当前工作区对话（与项目下会话同源，但属于对话分区）
-   * - 在一个列表中：所有项目对话平铺
+   * 对话分区：只收「不属于任何已知项目」的会话。
+   * 项目下的会话绝不能出现在这里（严重产品约束）。
    */
   const conversationList = useMemo(() => {
     const seen = new Set<string>();
     const all: SessionThreadSummary[] = [];
-    const sources =
-      groupMode === "list"
-        ? [...Object.values(props.threadsByCwd).flat(), ...props.threads]
-        : props.threads.length > 0
-          ? props.threads
-          : props.workspacePath
-            ? (props.threadsByCwd[props.workspacePath.replace(/\\/g, "/").replace(/\/+$/, "")] ??
-              props.threadsByCwd[props.workspacePath] ??
-              [])
-            : [];
+    const sources = [...Object.values(props.threadsByCwd).flat(), ...props.threads];
     for (const t of sources) {
       if (
         seen.has(t.id) ||
@@ -653,19 +803,52 @@ export function ProjectList(props: ProjectListProps) {
       ) {
         continue;
       }
+      const cwdKey = (t.cwd || "").replace(/\\/g, "/").replace(/\/+$/, "");
+      // Bound to a project in 置顶/项目 → session under that project only.
+      if (cwdKey && projectKeys.has(cwdKey)) continue;
       seen.add(t.id);
       all.push(t);
     }
-    return sortThreadsWithPins(all, pinnedThreads);
+    return sortThreadsByMode(all, conversationSortMode, pinnedThreads, conversationManualOrder);
   }, [
-    groupMode,
     props.threadsByCwd,
     props.threads,
-    props.workspacePath,
+    projectKeys,
     archivedThreads,
     deletedThreads,
     pinnedThreads,
+    conversationSortMode,
+    conversationManualOrder,
   ]);
+
+  // In manual mode, append newly appeared conversation ids so order stays stable.
+  useEffect(() => {
+    if (conversationSortMode !== "manual") return;
+    const ids = conversationList.map((t) => t.id);
+    const next = mergeManualThreadOrder(conversationManualOrder, ids);
+    if (
+      next.length === conversationManualOrder.length &&
+      next.every((id, i) => id === conversationManualOrder[i])
+    ) {
+      return;
+    }
+    setConversationManualOrder(next);
+    saveConversationManualOrder(next);
+  }, [conversationList, conversationSortMode, conversationManualOrder]);
+
+  function setConversationSort(mode: SortMode) {
+    if (mode === "manual") {
+      // Seed manual order from current visual list so order stays stable after switch.
+      const ids = conversationList.map((t) => t.id);
+      const next = mergeManualThreadOrder(conversationManualOrder, ids);
+      setConversationManualOrder(next);
+      saveConversationManualOrder(next);
+    }
+    setConversationSortMode(mode);
+    saveConversationSortMode(mode);
+    closeMenus();
+  }
+
   const conversationVisible = conversationList.slice(0, listVisible);
   const conversationHasMore = conversationList.length > listVisible;
 
@@ -701,14 +884,14 @@ export function ProjectList(props: ProjectListProps) {
               aria-hidden
             />
           </button>
-          <SectionActions open={organizeOpen} testIdPrefix="projects-section">
+          <SectionActions open={organizeKind === "projects"} testIdPrefix="projects-section">
             <button
               type="button"
               data-testid="projects-organize-btn"
               className="inline-flex h-6 w-6 items-center justify-center rounded-md text-[var(--muted-foreground)] hover:bg-[var(--sidebar-accent)] hover:text-[var(--sidebar-foreground)]"
               title={tr("organize.title")}
               aria-label={tr("organize.title")}
-              onClick={openOrganizeMenu}
+              onClick={(e) => openOrganizeMenu("projects", e)}
             >
               <MoreHorizontal className="size-3.5" strokeWidth={1.75} />
             </button>
@@ -728,14 +911,15 @@ export function ProjectList(props: ProjectListProps) {
         {projectsOpen ? (
           <div className="min-w-0 space-y-0.5 overflow-x-hidden" data-testid="recent-workspaces">
             {restPaths.length === 0 && pinnedPaths.length === 0 ? (
-              <div
-                className="rounded-md px-2 py-0.5 text-sm hover:bg-[var(--sidebar-accent)]"
-                data-testid="workspace-current"
-              >
-                <span data-testid="workspace-name">
-                  {props.workspacePath ? displayName(props.workspacePath) : tr("workspace.none")}
-                </span>
-              </div>
+              // Keep list empty when no real project — never show auto date folders or stubs.
+              props.workspacePath && !isNonProjectWorkspacePath(props.workspacePath) ? (
+                <div
+                  className="rounded-md px-2 py-0.5 text-sm hover:bg-[var(--sidebar-accent)]"
+                  data-testid="workspace-current"
+                >
+                  <span data-testid="workspace-name">{displayName(props.workspacePath)}</span>
+                </div>
+              ) : null
             ) : (
               restPaths.map(renderCard)
             )}
@@ -754,9 +938,9 @@ export function ProjectList(props: ProjectListProps) {
             onClick={toggleThreads}
           >
             <span className="min-w-0 truncate">{tr("section.threads")}</span>
-            {props.threads.length > 0 ? (
+            {conversationList.length > 0 ? (
               <span className="shrink-0 font-normal tracking-normal opacity-70">
-                ({props.threads.length})
+                ({conversationList.length})
               </span>
             ) : null}
             <ChevronRight
@@ -768,8 +952,18 @@ export function ProjectList(props: ProjectListProps) {
               aria-hidden
             />
           </button>
-          {/* Global 新建会话 — no project binding (same as sidebar top). */}
-          <SectionActions testIdPrefix="threads-section">
+          {/* Organize + global 新建会话 — no project binding. */}
+          <SectionActions open={organizeKind === "threads"} testIdPrefix="threads-section">
+            <button
+              type="button"
+              data-testid="threads-organize-btn"
+              className="inline-flex h-6 w-6 items-center justify-center rounded-md text-[var(--muted-foreground)] hover:bg-[var(--sidebar-accent)] hover:text-[var(--sidebar-foreground)]"
+              title={tr("organize.title")}
+              aria-label={tr("organize.title")}
+              onClick={(e) => openOrganizeMenu("threads", e)}
+            >
+              <MoreHorizontal className="size-3.5" strokeWidth={1.75} />
+            </button>
             <button
               type="button"
               data-testid="threads-new-btn"
@@ -790,15 +984,11 @@ export function ProjectList(props: ProjectListProps) {
             data-testid="conversations-list"
             data-kind="conversation"
           >
-            {conversationList.length === 0 ? (
-              <p className="px-2 py-0.5 text-[12px] text-[var(--text-subtle)]">
-                {tr("thread.empty")}
-              </p>
-            ) : (
-              conversationVisible.map((t) =>
-                renderThreadButton(t, { indent: false, kind: "conversation" }),
-              )
-            )}
+            {conversationList.length === 0
+              ? null
+              : conversationVisible.map((t) =>
+                  renderThreadButton(t, { indent: false, kind: "conversation" }),
+                )}
             {conversationHasMore ? (
               <button
                 type="button"
@@ -980,7 +1170,7 @@ export function ProjectList(props: ProjectListProps) {
       </FloatingMenu>
 
       <FloatingMenu
-        open={organizeOpen && Boolean(organizeAnchor)}
+        open={organizeKind === "projects" && Boolean(organizeAnchor)}
         anchor={organizeAnchor}
         onClose={closeMenus}
         testId="projects-organize-menu"
@@ -1023,6 +1213,62 @@ export function ProjectList(props: ProjectListProps) {
           testId="organize-sort-manual"
         />
       </FloatingMenu>
+
+      <FloatingMenu
+        open={organizeKind === "threads" && Boolean(organizeAnchor)}
+        anchor={organizeAnchor}
+        onClose={closeMenus}
+        testId="threads-organize-menu"
+        minWidth={200}
+      >
+        <p className="px-3 pt-1 pb-1.5 text-[11px] text-[var(--text-subtle)]">
+          {tr("organize.sort")}
+        </p>
+        <CheckItem
+          label={tr("organize.sortPriority")}
+          checked={conversationSortMode === "priority"}
+          onClick={() => setConversationSort("priority")}
+          testId="threads-organize-sort-priority"
+        />
+        <CheckItem
+          label={tr("organize.sortRecent")}
+          checked={conversationSortMode === "recent"}
+          onClick={() => setConversationSort("recent")}
+          testId="threads-organize-sort-recent"
+        />
+        <CheckItem
+          label={tr("organize.sortManual")}
+          checked={conversationSortMode === "manual"}
+          onClick={() => setConversationSort("manual")}
+          testId="threads-organize-sort-manual"
+        />
+      </FloatingMenu>
+
+      <ConfirmDialog
+        open={Boolean(confirm)}
+        title={
+          confirm?.kind === "delete-thread" || confirm?.kind === "remove-project"
+            ? tr("confirm.deleteTitle")
+            : tr("confirm.archiveTitle")
+        }
+        message={
+          confirm
+            ? confirm.kind === "delete-thread" || confirm.kind === "remove-project"
+              ? tr("confirm.deleteMessage", { name: confirm.name })
+              : tr("confirm.archiveMessage", { name: confirm.name })
+            : ""
+        }
+        confirmLabel={
+          confirm?.kind === "delete-thread" || confirm?.kind === "remove-project"
+            ? tr("confirm.delete")
+            : tr("confirm.archive")
+        }
+        cancelLabel={tr("common.cancel")}
+        danger={confirm?.kind === "delete-thread" || confirm?.kind === "remove-project"}
+        testId="project-list-confirm"
+        onConfirm={runConfirm}
+        onCancel={() => setConfirm(null)}
+      />
 
       <RenameDialog
         open={Boolean(renameTarget)}

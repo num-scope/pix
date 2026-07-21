@@ -60,10 +60,10 @@ Produces an unsigned platform app directory under `apps/desktop/release/app/` vi
 
 ## CI & Release
 
-| Workflow | File | When | What |
-| -------- | ---- | ---- | ---- |
-| **CI** | `.github/workflows/ci.yml` | PR + push to `main` | install → lint/types → unit tests → `pnpm build` on Linux, Windows, macOS |
-| **Release** | `.github/workflows/release.yml` | push `v*` tag (or manual) | multi-platform `pnpm package` → zip → **GitHub Release** with assets |
+| Workflow    | File                            | When                      | What                                                                      |
+| ----------- | ------------------------------- | ------------------------- | ------------------------------------------------------------------------- |
+| **CI**      | `.github/workflows/ci.yml`      | PR + push to `main`       | install → lint/types → unit tests → `pnpm build` on Linux, Windows, macOS |
+| **Release** | `.github/workflows/release.yml` | push `v*` tag (or manual) | multi-platform `pnpm package` → zip → **GitHub Release** with assets      |
 
 ### Cut a release
 

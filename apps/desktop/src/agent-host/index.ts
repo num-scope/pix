@@ -489,6 +489,20 @@ async function handleCommand(command: HostCommand): Promise<void> {
         });
         break;
       }
+      case "util.complete-text": {
+        if (!handle) throw new Error("Agent Host is not ready");
+        const text = await handle.completeText(command.prompt, {
+          ...(command.systemPrompt ? { systemPrompt: command.systemPrompt } : {}),
+          ...(command.model ? { model: command.model } : {}),
+        });
+        post({
+          protocolVersion: IPC_PROTOCOL_VERSION,
+          type: "util.text",
+          requestId: command.requestId,
+          text,
+        });
+        break;
+      }
       case "extensionUi.respond": {
         if (!handle || command.runtimeId !== handle.runtimeId) break;
         handle.respondExtensionUi(command.response);

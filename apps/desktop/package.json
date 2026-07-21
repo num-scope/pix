@@ -26,6 +26,9 @@
     "lucide-react": "catalog:",
     "react": "catalog:",
     "react-dom": "catalog:",
+    "react-markdown": "catalog:",
+    "rehype-sanitize": "catalog:",
+    "remark-gfm": "catalog:",
     "tailwind-merge": "catalog:",
     "zustand": "catalog:"
   },

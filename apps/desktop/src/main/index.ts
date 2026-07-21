@@ -1,8 +1,12 @@
 import {
   IPC_PROTOCOL_VERSION,
   type ExtensionUiResponse,
+  type CatalogPackage,
+  type DetectedApp,
   type GitBranchInfo,
+  type GitChangeItem,
   type GitContextInfo,
+  type GitStatusSummary,
   type GitWorktreeInfo,
   type HostCommand,
   type HostEvent,
@@ -24,6 +28,9 @@ import {
   BrowserWindow,
   dialog,
   ipcMain,
+  nativeImage,
+  Notification,
+  screen,
   shell,
   utilityProcess,
   type UtilityProcess,
@@ -31,6 +38,7 @@ import {
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { readFileSync, writeFileSync, existsSync, mkdirSync, lstatSync } from "node:fs";
+import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { setTimeout as delay } from "node:timers/promises";
@@ -173,7 +181,7 @@ async function createGitBranch(
   branch: string,
   checkout = true,
 ): Promise<GitContextInfo> {
-  const name = branch.trim();
+  const name = applyBranchPrefix(branch);
   if (!name) throw new Error("分支名不能为空");
   if (checkout) await runGit(cwd, ["checkout", "-b", name]);
   else await runGit(cwd, ["branch", name]);
@@ -215,15 +223,200 @@ async function listGitWorktrees(cwd: string): Promise<GitWorktreeInfo[]> {
   return items;
 }
 
+function defaultWorktreeRootForRepo(repoCwd: string): string {
+  const repoName = basename(repoCwd.replace(/\\/g, "/").replace(/\/+$/, "")) || "repo";
+  return join(app.getPath("documents"), "Pix", "worktrees", repoName);
+}
+
+function resolveWorktreeRoot(repoCwd: string, configured?: string): string {
+  const custom = configured?.trim();
+  if (custom) return custom;
+  return defaultWorktreeRootForRepo(repoCwd);
+}
+
+function uniqueWorktreePath(root: string, baseName: string): string {
+  mkdirSync(root, { recursive: true });
+  const safe = baseName.replace(/[^\w.-]+/g, "-").replace(/^-+|-+$/g, "") || localDateFolderName();
+  let path = join(root, safe);
+  if (!existsSync(path)) return path;
+  let n = 2;
+  while (existsSync(join(root, `${safe}-${n}`))) n += 1;
+  return join(root, `${safe}-${n}`);
+}
+
+function getWorktreePrefsView(repoCwd?: string): WorktreePrefs {
+  const prefs = loadDesktopPrefs();
+  const configured = prefs.worktreeRoot?.trim() ?? "";
+  const sampleCwd = repoCwd?.trim() || app.getPath("documents");
+  const defaultRoot = defaultWorktreeRootForRepo(sampleCwd);
+  const limit =
+    typeof prefs.worktreeAutoDeleteLimit === "number" &&
+    Number.isFinite(prefs.worktreeAutoDeleteLimit)
+      ? Math.min(100, Math.max(1, Math.floor(prefs.worktreeAutoDeleteLimit)))
+      : 10;
+  return {
+    root: resolveWorktreeRoot(sampleCwd, configured),
+    rootConfigured: configured,
+    // Default ON (recommended) when never set.
+    autoDelete: prefs.worktreeAutoDelete !== false,
+    autoDeleteLimit: limit,
+    defaultRoot,
+  };
+}
+
+function setWorktreePrefs(patch: {
+  rootConfigured?: string;
+  autoDelete?: boolean;
+  autoDeleteLimit?: number;
+}): WorktreePrefs {
+  const prefs = loadDesktopPrefs();
+  if (patch.rootConfigured !== undefined) {
+    const v = patch.rootConfigured.trim();
+    if (v) prefs.worktreeRoot = v;
+    else delete prefs.worktreeRoot;
+  }
+  if (patch.autoDelete !== undefined) prefs.worktreeAutoDelete = patch.autoDelete;
+  if (patch.autoDeleteLimit !== undefined) {
+    prefs.worktreeAutoDeleteLimit = Math.min(100, Math.max(1, Math.floor(patch.autoDeleteLimit)));
+  }
+  saveDesktopPrefs(prefs);
+  return getWorktreePrefsView();
+}
+
+function getGitPrefs(): GitPrefs {
+  const prefs = loadDesktopPrefs();
+  return {
+    branchPrefix: prefs.gitBranchPrefix?.trim() || "pix/",
+    pullMode: prefs.gitPullMode === "squash" ? "squash" : "merge",
+    forcePush: prefs.gitForcePush === true,
+    draftPr: prefs.gitDraftPr === true,
+    customCommitCommand: prefs.gitCustomCommitCommand?.trim() ?? "",
+    customPrCommand: prefs.gitCustomPrCommand?.trim() ?? "",
+    modelProvider: prefs.gitModelProvider?.trim() ?? "",
+    modelId: prefs.gitModelId?.trim() ?? "",
+  };
+}
+
+function setGitPrefs(patch: Partial<GitPrefs>): GitPrefs {
+  const prefs = loadDesktopPrefs();
+  if (patch.branchPrefix !== undefined) {
+    const v = patch.branchPrefix.trim();
+    if (v) prefs.gitBranchPrefix = v;
+    else delete prefs.gitBranchPrefix;
+  }
+  if (patch.pullMode !== undefined) {
+    prefs.gitPullMode = patch.pullMode === "squash" ? "squash" : "merge";
+  }
+  if (patch.forcePush !== undefined) prefs.gitForcePush = patch.forcePush;
+  if (patch.draftPr !== undefined) prefs.gitDraftPr = patch.draftPr;
+  if (patch.customCommitCommand !== undefined) {
+    const v = patch.customCommitCommand.trim();
+    if (v) prefs.gitCustomCommitCommand = v;
+    else delete prefs.gitCustomCommitCommand;
+  }
+  if (patch.customPrCommand !== undefined) {
+    const v = patch.customPrCommand.trim();
+    if (v) prefs.gitCustomPrCommand = v;
+    else delete prefs.gitCustomPrCommand;
+  }
+  if (patch.modelProvider !== undefined || patch.modelId !== undefined) {
+    const provider = (patch.modelProvider ?? prefs.gitModelProvider ?? "").trim();
+    const id = (patch.modelId ?? prefs.gitModelId ?? "").trim();
+    if (provider && id) {
+      prefs.gitModelProvider = provider;
+      prefs.gitModelId = id;
+    } else {
+      delete prefs.gitModelProvider;
+      delete prefs.gitModelId;
+    }
+  }
+  saveDesktopPrefs(prefs);
+  return getGitPrefs();
+}
+
+function applyBranchPrefix(name: string): string {
+  const raw = name.trim();
+  if (!raw) return raw;
+  const prefix = getGitPrefs().branchPrefix;
+  if (!prefix) return raw;
+  if (raw.startsWith(prefix)) return raw;
+  return `${prefix}${raw}`;
+}
+
+async function runShellTemplate(
+  template: string,
+  vars: Record<string, string>,
+  cwd: string,
+): Promise<void> {
+  let cmd = template;
+  for (const [key, value] of Object.entries(vars)) {
+    cmd = cmd.split(`{{${key}}}`).join(value);
+  }
+  if (process.platform === "win32") {
+    await execFileAsync("cmd", ["/c", cmd], { cwd, windowsHide: true, maxBuffer: 4 * 1024 * 1024 });
+  } else {
+    await execFileAsync("sh", ["-c", cmd], { cwd, windowsHide: true, maxBuffer: 4 * 1024 * 1024 });
+  }
+}
+
+/** Remove oldest managed linked worktrees under root until count <= limit. Never removes main. */
+async function pruneManagedWorktrees(repoCwd: string): Promise<void> {
+  const prefs = loadDesktopPrefs();
+  // Default ON when unset; only skip when user explicitly disabled.
+  if (prefs.worktreeAutoDelete === false) return;
+  const limit =
+    typeof prefs.worktreeAutoDeleteLimit === "number" &&
+    Number.isFinite(prefs.worktreeAutoDeleteLimit)
+      ? Math.min(100, Math.max(1, Math.floor(prefs.worktreeAutoDeleteLimit)))
+      : 10;
+  const root = resolveWorktreeRoot(repoCwd, prefs.worktreeRoot).replace(/\\/g, "/");
+  const items = await listGitWorktrees(repoCwd);
+  const managed = items
+    .filter((w) => !w.main && !w.bare)
+    .map((w) => ({
+      path: w.path,
+      key: w.path.replace(/\\/g, "/").replace(/\/+$/, ""),
+    }))
+    .filter((w) => w.key === root || w.key.startsWith(`${root}/`));
+  if (managed.length <= limit) return;
+  // Prefer removing oldest by directory mtime when available.
+  const ranked = managed
+    .map((w) => {
+      let mtime = 0;
+      try {
+        mtime = lstatSync(w.path).mtimeMs;
+      } catch {
+        mtime = 0;
+      }
+      return { ...w, mtime };
+    })
+    .sort((a, b) => a.mtime - b.mtime);
+  const toRemove = ranked.slice(0, Math.max(0, ranked.length - limit));
+  for (const item of toRemove) {
+    try {
+      await runGit(repoCwd, ["worktree", "remove", "--force", item.path]);
+    } catch {
+      // best-effort
+    }
+  }
+}
+
 async function createGitWorktree(
   cwd: string,
-  options: { path: string; branch?: string; newBranch?: string },
+  options: { path?: string; branch?: string; newBranch?: string },
 ): Promise<{ path: string; context: GitContextInfo }> {
-  const target = options.path.trim();
+  const prefs = loadDesktopPrefs();
+  let target = options.path?.trim() ?? "";
+  if (!target) {
+    const root = resolveWorktreeRoot(cwd, prefs.worktreeRoot);
+    const base = options.newBranch?.trim() || options.branch?.trim() || localDateFolderName();
+    target = uniqueWorktreePath(root, base);
+  }
   if (!target) throw new Error("工作树路径不能为空");
+  mkdirSync(dirname(target), { recursive: true });
   const args = ["worktree", "add"];
   if (options.newBranch?.trim()) {
-    args.push("-b", options.newBranch.trim(), target);
+    args.push("-b", applyBranchPrefix(options.newBranch), target);
     if (options.branch?.trim()) args.push(options.branch.trim());
   } else if (options.branch?.trim()) {
     args.push(target, options.branch.trim());
@@ -231,13 +424,539 @@ async function createGitWorktree(
     args.push(target);
   }
   await runGit(cwd, args);
+  await pruneManagedWorktrees(cwd);
   return { path: target, context: readGitContext(target) };
+}
+
+async function gitStatus(cwd: string): Promise<GitStatusSummary> {
+  const branchOut = (
+    await runGit(cwd, ["rev-parse", "--abbrev-ref", "HEAD"]).catch(() => "")
+  ).trim();
+  const porcelain = await runGit(cwd, ["status", "--porcelain", "-b"]).catch(() => "");
+  const lines = porcelain.split("\n").filter(Boolean);
+  let upstream: string | undefined;
+  let ahead = 0;
+  let behind = 0;
+  const changes: GitChangeItem[] = [];
+  for (const line of lines) {
+    if (line.startsWith("## ")) {
+      // ## main...origin/main [ahead 1, behind 2]
+      const head = line.slice(3);
+      const dots = head.indexOf("...");
+      const branchPart = dots >= 0 ? head.slice(0, dots) : head.split(" ")[0];
+      void branchPart;
+      if (dots >= 0) {
+        const rest = head.slice(dots + 3);
+        const up = rest.split(/[\s[]/)[0]?.trim();
+        if (up) upstream = up;
+      }
+      const aheadM = /ahead (\d+)/.exec(head);
+      const behindM = /behind (\d+)/.exec(head);
+      if (aheadM) ahead = Number(aheadM[1]);
+      if (behindM) behind = Number(behindM[1]);
+      continue;
+    }
+    // XY path  or XY orig -> path
+    const code = line.slice(0, 2);
+    let path = line.slice(3).trim();
+    const arrow = path.indexOf(" -> ");
+    if (arrow >= 0) path = path.slice(arrow + 4);
+    const staged = code[0] !== " " && code[0] !== "?";
+    const status =
+      code.trim() === "??"
+        ? "??"
+        : code[0] !== " " && code[0] !== "?"
+          ? code[0]
+          : code[1] || code[0];
+    changes.push({ path, status: status || "M", staged });
+  }
+  let insertions = 0;
+  let deletions = 0;
+  try {
+    const numstat = await runGit(cwd, ["diff", "--numstat", "HEAD"]);
+    for (const line of numstat.split("\n")) {
+      const parts = line.trim().split(/\s+/);
+      if (parts.length < 3) continue;
+      const a = parts[0] === "-" ? 0 : Number(parts[0]);
+      const d = parts[1] === "-" ? 0 : Number(parts[1]);
+      if (Number.isFinite(a)) insertions += a;
+      if (Number.isFinite(d)) deletions += d;
+    }
+    // Untracked files not in HEAD diff — count roughly as additions via status ??
+    const untracked = changes.filter((c) => c.status === "??").length;
+    if (untracked > 0 && insertions === 0 && deletions === 0) {
+      // leave zeros; file list still shows under expanded changes
+    }
+  } catch {
+    // no commits yet or not a repo
+  }
+
+  const summary: GitStatusSummary = {
+    ahead,
+    behind,
+    changes,
+    clean: changes.length === 0,
+    insertions,
+    deletions,
+  };
+  if (branchOut && branchOut !== "HEAD") summary.branch = branchOut;
+  if (upstream) summary.upstream = upstream;
+  return summary;
+}
+
+const DEFAULT_COMMIT_INSTRUCTION =
+  "Write a concise git commit message for the changes below. Prefer conventional commits when appropriate. Output only the commit message text — no quotes, markdown fences, or commentary.";
+
+async function generateCommitMessage(cwd: string): Promise<string> {
+  if (!supervisor) throw new Error("Agent Host is not ready");
+  const git = getGitPrefs();
+  const instruction = git.customCommitCommand.trim() || DEFAULT_COMMIT_INSTRUCTION;
+  const branch = (await runGit(cwd, ["rev-parse", "--abbrev-ref", "HEAD"]).catch(() => "")).trim();
+  const status = await gitStatus(cwd);
+  const fileList =
+    status.changes.length > 0
+      ? status.changes.map((c) => `${c.status} ${c.path}`).join("\n")
+      : "(no listed changes)";
+  // Prefer unstaged+staged combined view; keep size bounded for the model.
+  const diff =
+    (await runGit(cwd, ["diff", "HEAD"]).catch(async () => runGit(cwd, ["diff"]).catch(() => ""))) ||
+    "";
+  const truncatedDiff = diff.length > 14_000 ? `${diff.slice(0, 14_000)}\n…(truncated)` : diff;
+  const prompt = [
+    instruction,
+    "",
+    `Repository: ${cwd}`,
+    `Branch: ${branch || "(unknown)"}`,
+    "",
+    "Changed files:",
+    fileList,
+    "",
+    "Diff:",
+    truncatedDiff || "(empty diff)",
+    "",
+    "Reply with ONLY the commit message.",
+  ].join("\n");
+
+  const text = await supervisor.completeText(prompt, {
+    systemPrompt:
+      "You write git commit messages. Follow the user instruction carefully. Output only the commit message text.",
+    ...(git.modelProvider && git.modelId
+      ? { model: { provider: git.modelProvider, id: git.modelId } }
+      : {}),
+  });
+  // Strip accidental fences / quotes
+  return text
+    .replace(/^```[\w]*\n?/, "")
+    .replace(/\n?```$/, "")
+    .replace(/^["']|["']$/g, "")
+    .trim();
+}
+
+async function gitCommit(cwd: string, message: string): Promise<GitStatusSummary> {
+  let msg = message.trim();
+  if (!msg) {
+    msg = await generateCommitMessage(cwd);
+  }
+  if (!msg) throw new Error("无法生成提交说明");
+  await runGit(cwd, ["add", "-A"]);
+  await runGit(cwd, ["commit", "-m", msg]);
+  return gitStatus(cwd);
+}
+
+async function gitPull(cwd: string): Promise<GitStatusSummary> {
+  const mode = getGitPrefs().pullMode;
+  if (mode === "squash") {
+    await runGit(cwd, ["pull", "--squash"]);
+  } else {
+    // Merge strategy (allow non-ff merges).
+    await runGit(cwd, ["pull", "--no-rebase", "--no-ff"]);
+  }
+  return gitStatus(cwd);
+}
+
+async function gitPush(cwd: string): Promise<GitStatusSummary> {
+  const force = getGitPrefs().forcePush;
+  if (force) {
+    await runGit(cwd, ["push", "--force", "-u", "HEAD"]);
+  } else {
+    await runGit(cwd, ["push", "-u", "HEAD"]);
+  }
+  return gitStatus(cwd);
+}
+
+async function gitCommitAndPush(cwd: string, message: string): Promise<GitStatusSummary> {
+  await gitCommit(cwd, message);
+  return gitPush(cwd);
+}
+
+async function openCreatePullRequest(cwd: string): Promise<void> {
+  const git = getGitPrefs();
+  const remote = (await runGit(cwd, ["remote", "get-url", "origin"]).catch(() => "")).trim();
+  const branch = (await runGit(cwd, ["rev-parse", "--abbrev-ref", "HEAD"]).catch(() => "")).trim();
+  // customPrCommand is an AI prompt for PR helpers — not a shell command.
+  if (!remote) throw new Error("未配置 origin 远程");
+  let url = remote;
+  if (url.startsWith("git@")) {
+    // git@github.com:org/repo.git
+    url = url.replace(/^git@([^:]+):/, "https://$1/").replace(/\.git$/, "");
+  } else {
+    url = url.replace(/\.git$/, "");
+  }
+  if (url.includes("github.com") && branch) {
+    const draft = git.draftPr ? "&draft=true" : "";
+    url = `${url}/compare/${encodeURIComponent(branch)}?expand=1${draft}`;
+  } else if (url.includes("gitlab") && branch) {
+    const draft = git.draftPr ? "&merge_request[draft]=true" : "";
+    url = `${url}/-/merge_requests/new?merge_request[source_branch]=${encodeURIComponent(branch)}${draft}`;
+  }
+  await shell.openExternal(url);
+}
+
+/** Resolve a macOS .app bundle path (Applications + System Utilities + ~/Applications). */
+function resolveMacAppPath(appName: string): string | undefined {
+  const names = [appName];
+  // Common aliases
+  if (appName === "iTerm") names.push("iTerm2");
+  if (appName === "iTerm2") names.push("iTerm");
+  const roots = [
+    "/Applications",
+    "/System/Applications",
+    "/System/Applications/Utilities",
+    join(homedir(), "Applications"),
+  ];
+  for (const root of roots) {
+    for (const name of names) {
+      const p = join(root, `${name}.app`);
+      if (existsSync(p)) return p;
+    }
+  }
+  return undefined;
+}
+
+async function fileIconDataUrl(filePath: string): Promise<string | undefined> {
+  try {
+    const img = await app.getFileIcon(filePath, { size: "normal" });
+    if (img.isEmpty()) return undefined;
+    // Prefer PNG for crisp UI chips.
+    const png = img.toPNG();
+    if (!png?.length) return img.toDataURL();
+    return `data:image/png;base64,${png.toString("base64")}`;
+  } catch {
+    return undefined;
+  }
+}
+
+async function listOpenTargets(cwd: string): Promise<DetectedApp[]> {
+  const apps: DetectedApp[] = [];
+  const push = (item: DetectedApp) => {
+    if (!apps.some((a) => a.id === item.id)) apps.push(item);
+  };
+
+  if (process.platform === "darwin") {
+    // Finder
+    {
+      const finderPath =
+        resolveMacAppPath("Finder") ?? "/System/Library/CoreServices/Finder.app";
+      const iconDataUrl = existsSync(finderPath)
+        ? await fileIconDataUrl(finderPath)
+        : undefined;
+      push({
+        id: "finder",
+        name: "Finder",
+        kind: "finder",
+        target: "Finder",
+        ...(iconDataUrl ? { iconDataUrl } : {}),
+      });
+    }
+
+    const candidates: Array<{
+      id: string;
+      name: string;
+      kind: DetectedApp["kind"];
+      app: string;
+    }> = [
+      { id: "cursor", name: "Cursor", kind: "ide", app: "Cursor" },
+      { id: "vscode", name: "Visual Studio Code", kind: "ide", app: "Visual Studio Code" },
+      {
+        id: "vscode-insiders",
+        name: "VS Code Insiders",
+        kind: "ide",
+        app: "Visual Studio Code - Insiders",
+      },
+      { id: "zed", name: "Zed", kind: "ide", app: "Zed" },
+      { id: "webstorm", name: "WebStorm", kind: "ide", app: "WebStorm" },
+      { id: "intellij", name: "IntelliJ IDEA", kind: "ide", app: "IntelliJ IDEA" },
+      // Terminals — include System/Utilities (Terminal.app is no longer only in /Applications)
+      { id: "terminal", name: "Terminal", kind: "terminal", app: "Terminal" },
+      { id: "iterm", name: "iTerm", kind: "terminal", app: "iTerm" },
+      { id: "iterm2", name: "iTerm2", kind: "terminal", app: "iTerm2" },
+      { id: "warp", name: "Warp", kind: "terminal", app: "Warp" },
+      { id: "ghostty", name: "Ghostty", kind: "terminal", app: "Ghostty" },
+      { id: "alacritty", name: "Alacritty", kind: "terminal", app: "Alacritty" },
+      { id: "kitty", name: "Kitty", kind: "terminal", app: "kitty" },
+      { id: "hyper", name: "Hyper", kind: "terminal", app: "Hyper" },
+      { id: "wezterm", name: "WezTerm", kind: "terminal", app: "WezTerm" },
+    ];
+
+    const seenBundles = new Set<string>();
+    for (const c of candidates) {
+      const appPath = resolveMacAppPath(c.app);
+      if (!appPath) continue;
+      const bundleKey = appPath.replace(/\\/g, "/").toLowerCase();
+      if (seenBundles.has(bundleKey)) continue;
+      seenBundles.add(bundleKey);
+      const iconDataUrl = await fileIconDataUrl(appPath);
+      const launchName = basename(appPath, ".app");
+      push({
+        id: c.id,
+        name: c.name === "iTerm2" || c.name === "iTerm" ? launchName : c.name,
+        kind: c.kind,
+        target: launchName,
+        ...(iconDataUrl ? { iconDataUrl } : {}),
+      });
+    }
+  } else if (process.platform === "win32") {
+    push({ id: "explorer", name: "Explorer", kind: "finder", target: "explorer" });
+    for (const c of [
+      { id: "cursor", name: "Cursor", kind: "ide" as const, target: "cursor" },
+      { id: "vscode", name: "Visual Studio Code", kind: "ide" as const, target: "code" },
+      { id: "wt", name: "Windows Terminal", kind: "terminal" as const, target: "wt" },
+      { id: "cmd", name: "Command Prompt", kind: "terminal" as const, target: "cmd" },
+      { id: "powershell", name: "PowerShell", kind: "terminal" as const, target: "powershell" },
+    ]) {
+      push({ ...c });
+    }
+  } else {
+    push({ id: "files", name: "Files", kind: "finder", target: "xdg-open" });
+    for (const c of [
+      { id: "cursor", name: "Cursor", kind: "ide" as const, target: "cursor" },
+      { id: "vscode", name: "Visual Studio Code", kind: "ide" as const, target: "code" },
+      {
+        id: "terminal",
+        name: "Terminal",
+        kind: "terminal" as const,
+        target: "x-terminal-emulator",
+      },
+      { id: "gnome-terminal", name: "GNOME Terminal", kind: "terminal" as const, target: "gnome-terminal" },
+      { id: "konsole", name: "Konsole", kind: "terminal" as const, target: "konsole" },
+    ]) {
+      push({ ...c });
+    }
+  }
+
+  void cwd;
+  return apps;
+}
+
+/** Official gallery: npm registry search for keyword `pi-package` (same as pi.dev/packages). */
+async function searchPiPackageCatalog(
+  query?: string,
+  size = 20,
+  from = 0,
+): Promise<{ packages: CatalogPackage[]; total: number }> {
+  const q = query?.trim() ?? "";
+  const text = q ? `keywords:pi-package ${q}` : "keywords:pi-package";
+  const limit = Math.min(100, Math.max(1, Math.floor(size)));
+  const offset = Math.max(0, Math.floor(from));
+  const url = `https://registry.npmjs.org/-/v1/search?text=${encodeURIComponent(text)}&size=${limit}&from=${offset}`;
+  const res = await fetch(url, {
+    headers: { Accept: "application/json", "User-Agent": "pix-desktop" },
+  });
+  if (!res.ok) {
+    throw new Error(`插件目录请求失败 (${res.status})`);
+  }
+  const data = (await res.json()) as {
+    total?: number;
+    objects?: Array<{
+      package?: {
+        name?: string;
+        description?: string;
+        version?: string;
+        date?: string;
+        keywords?: string[];
+        publisher?: { username?: string };
+      };
+      downloads?: { weekly?: number };
+    }>;
+  };
+  const items: CatalogPackage[] = [];
+  for (const obj of data.objects ?? []) {
+    const pkg = obj.package;
+    if (!pkg?.name) continue;
+    const entry: CatalogPackage = {
+      name: pkg.name,
+      description: pkg.description?.trim() || "",
+      version: pkg.version || "latest",
+      source: `npm:${pkg.name}`,
+    };
+    if (pkg.publisher?.username) entry.publisher = pkg.publisher.username;
+    if (typeof obj.downloads?.weekly === "number") entry.weeklyDownloads = obj.downloads.weekly;
+    if (pkg.date) entry.updatedAt = pkg.date;
+    if (Array.isArray(pkg.keywords))
+      entry.keywords = pkg.keywords.filter((k) => typeof k === "string");
+    items.push(entry);
+  }
+  const total =
+    typeof data.total === "number" && Number.isFinite(data.total)
+      ? Math.max(data.total, items.length + offset)
+      : offset + items.length;
+  return { packages: items, total };
+}
+
+async function openInApp(appId: string, cwd: string): Promise<void> {
+  const apps = await listOpenTargets(cwd);
+  const found = apps.find((a) => a.id === appId);
+  if (!found) throw new Error(`未找到应用: ${appId}`);
+
+  if (found.kind === "finder") {
+    // Open folder itself (not "reveal file") for project roots.
+    if (process.platform === "darwin") {
+      await execFileAsync("open", [cwd], { windowsHide: true });
+      return;
+    }
+    if (process.platform === "win32") {
+      await execFileAsync("explorer", [cwd], { windowsHide: true });
+      return;
+    }
+    await execFileAsync("xdg-open", [cwd], { windowsHide: true });
+    return;
+  }
+
+  if (process.platform === "darwin") {
+    // Terminal apps: open with working directory
+    if (found.kind === "terminal") {
+      if (found.id === "terminal") {
+        // Apple Terminal via AppleScript so cwd is applied.
+        const script = `tell application "Terminal" to do script "cd ${cwd.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+        await execFileAsync("osascript", ["-e", script], { windowsHide: true });
+        return;
+      }
+      if (found.id === "iterm" || found.id === "iterm2") {
+        const script = `tell application "iTerm"
+  activate
+  try
+    tell current window
+      create tab with default profile
+      tell current session
+        write text "cd ${cwd.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"
+      end tell
+    end tell
+  on error
+    create window with default profile
+    tell current session of current window
+      write text "cd ${cwd.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"
+    end tell
+  end try
+end tell`;
+        await execFileAsync("osascript", ["-e", script], { windowsHide: true });
+        return;
+      }
+    }
+    await execFileAsync("open", ["-a", found.target, cwd], { windowsHide: true });
+    return;
+  }
+  if (process.platform === "win32") {
+    if (found.id === "wt") {
+      await execFileAsync("wt", ["-d", cwd], { windowsHide: true, shell: true });
+      return;
+    }
+    if (found.id === "cmd") {
+      await execFileAsync("cmd", ["/c", "start", "cmd", "/k", `cd /d ${cwd}`], {
+        windowsHide: true,
+        shell: true,
+      });
+      return;
+    }
+    if (found.id === "powershell") {
+      await execFileAsync(
+        "powershell",
+        ["-NoExit", "-Command", `Set-Location -LiteralPath '${cwd.replace(/'/g, "''")}'`],
+        { windowsHide: true, shell: true },
+      );
+      return;
+    }
+    await execFileAsync(found.target, [cwd], { windowsHide: true, shell: true });
+    return;
+  }
+  if (found.kind === "terminal") {
+    await execFileAsync(found.target, ["--working-directory", cwd], { windowsHide: true }).catch(
+      async () => {
+        await execFileAsync(found.target, [cwd], { windowsHide: true });
+      },
+    );
+    return;
+  }
+  await execFileAsync(found.target, [cwd], { windowsHide: true });
+}
+
+/** Restored BrowserWindow geometry (userData/pix-desktop.json). */
+interface WindowBoundsPrefs {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  isMaximized?: boolean;
 }
 
 interface DesktopPrefs {
   recentWorkspaces: string[];
   lastWorkspace?: string;
+  /** Last main window position / size. */
+  window?: WindowBoundsPrefs;
+  /** Absolute root for new git worktrees; empty/undefined = Documents/Pix/worktrees/<repo>. */
+  worktreeRoot?: string;
+  /** When false, disable auto-prune. Default / unset = enabled (recommended). */
+  worktreeAutoDelete?: boolean;
+  /** Max managed worktrees to keep when auto-delete is on (default 10). */
+  worktreeAutoDeleteLimit?: number;
+  /** Prefixed onto new branch names when not already present. */
+  gitBranchPrefix?: string;
+  /** How `git pull` merges remote changes. */
+  gitPullMode?: "merge" | "squash";
+  /** Always force-push (uses --force). */
+  gitForcePush?: boolean;
+  /** Open create-PR links as draft when supported. */
+  gitDraftPr?: boolean;
+  /**
+   * AI prompt for commit-message helpers (not a shell command).
+   * Empty = default AI / manual message strategy.
+   */
+  gitCustomCommitCommand?: string;
+  /**
+   * AI prompt for PR title/body helpers (not a shell command).
+   * Empty = default AI / browser create-PR flow.
+   */
+  gitCustomPrCommand?: string;
+  /** Model used for AI-assisted git ops (commit message / PR helpers). Empty = session default. */
+  gitModelProvider?: string;
+  gitModelId?: string;
 }
+
+const WINDOW_MIN_WIDTH = 760;
+const WINDOW_MIN_HEIGHT = 560;
+const WINDOW_DEFAULT_WIDTH = 1440;
+const WINDOW_DEFAULT_HEIGHT = 900;
+
+export type WorktreePrefs = {
+  root: string;
+  /** Empty string means default. */
+  rootConfigured: string;
+  autoDelete: boolean;
+  autoDeleteLimit: number;
+  defaultRoot: string;
+};
+
+export type GitPrefs = {
+  branchPrefix: string;
+  pullMode: "merge" | "squash";
+  forcePush: boolean;
+  draftPr: boolean;
+  customCommitCommand: string;
+  customPrCommand: string;
+  /** Empty provider/id = use current session / pi default model. */
+  modelProvider: string;
+  modelId: string;
+};
 
 function prefsPath(): string {
   return join(app.getPath("userData"), "pix-desktop.json");
@@ -259,15 +978,81 @@ function isEphemeralWorkspacePath(path: string): boolean {
   );
 }
 
+/**
+ * Auto scratch from ensureDefault: …/Pix/YYYY-MM-DD[ -N].
+ * Not a user project — must not land in recent/last or the sidebar 项目 list.
+ */
+function isAutoDefaultWorkspacePath(path: string): boolean {
+  const normalized = path.replace(/\\/g, "/").replace(/\/+$/, "");
+  return /\/Pix\/\d{4}-\d{2}-\d{2}(-\d+)?$/i.test(normalized);
+}
+
+/** Pure-conversation home: …/Pix/conversations[/…] — never a sidebar project. */
+function isConversationWorkspacePath(path: string): boolean {
+  const normalized = path.replace(/\\/g, "/").replace(/\/+$/, "");
+  return /\/Pix\/conversations(?:\/|$)/i.test(normalized);
+}
+
+function isNonProjectWorkspacePath(path: string): boolean {
+  return (
+    isEphemeralWorkspacePath(path) ||
+    isAutoDefaultWorkspacePath(path) ||
+    isConversationWorkspacePath(path)
+  );
+}
+
 function durableWorkspacePath(cwd: string | undefined): string | undefined {
   if (!cwd || typeof cwd !== "string") return undefined;
-  if (isEphemeralWorkspacePath(cwd)) return undefined;
+  if (isNonProjectWorkspacePath(cwd)) return undefined;
   try {
     if (!existsSync(cwd)) return undefined;
   } catch {
     return undefined;
   }
   return cwd;
+}
+
+/** Local calendar date as YYYY-MM-DD (no timezone suffix). */
+function localDateFolderName(date = new Date()): string {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, "0");
+  const d = String(date.getDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+}
+
+/**
+ * Default project root: Documents/Pix/<YYYY-MM-DD>.
+ * Reuses today's folder when it already exists as a directory.
+ */
+function ensureDefaultWorkspacePath(): string {
+  const root = join(app.getPath("documents"), "Pix");
+  mkdirSync(root, { recursive: true });
+  const base = localDateFolderName();
+  const path = join(root, base);
+  if (!existsSync(path)) {
+    mkdirSync(path, { recursive: true });
+    return path;
+  }
+  try {
+    if (lstatSync(path).isDirectory()) return path;
+  } catch {
+    // fall through to a unique suffix
+  }
+  let n = 2;
+  while (existsSync(join(root, `${base}-${n}`))) n += 1;
+  const unique = join(root, `${base}-${n}`);
+  mkdirSync(unique, { recursive: true });
+  return unique;
+}
+
+/**
+ * Global「新建会话」home — pure conversations, never listed as a project.
+ * Documents/Pix/conversations
+ */
+function ensureConversationWorkspacePath(): string {
+  const path = join(app.getPath("documents"), "Pix", "conversations");
+  mkdirSync(path, { recursive: true });
+  return path;
 }
 
 function saveDesktopPrefs(prefs: DesktopPrefs): void {
@@ -279,6 +1064,7 @@ function saveDesktopPrefs(prefs: DesktopPrefs): void {
 /**
  * Load prefs and scrub fixture/temp paths left by older smoke launches.
  * If lastWorkspace is dead, fall back to the first durable recent project.
+ * Preserves unrelated fields (git, window bounds, worktree, …).
  */
 function loadDesktopPrefs(): DesktopPrefs {
   try {
@@ -297,10 +1083,15 @@ function loadDesktopPrefs(): DesktopPrefs {
       durableWorkspacePath(
         typeof parsed.lastWorkspace === "string" ? parsed.lastWorkspace : undefined,
       ) ?? recentWorkspaces[0];
+    const windowBounds = normalizeWindowBoundsPrefs(parsed.window);
     const cleaned: DesktopPrefs = {
+      ...parsed,
       recentWorkspaces,
       ...(lastWorkspace ? { lastWorkspace } : {}),
+      ...(windowBounds ? { window: windowBounds } : {}),
     };
+    if (!lastWorkspace) delete cleaned.lastWorkspace;
+    if (!windowBounds) delete cleaned.window;
     // Persist scrub so a deleted /tmp workspace cannot keep blocking send/start.
     const dirty =
       JSON.stringify(parsed.recentWorkspaces ?? []) !== JSON.stringify(recentWorkspaces) ||
@@ -316,18 +1107,124 @@ function rememberWorkspace(cwd: string): void {
   const prefs = loadDesktopPrefs();
   // Keep lastWorkspace for resume; only grow "recent" with durable project paths.
   const cleaned = prefs.recentWorkspaces.filter(
-    (item) => item !== cwd && !isEphemeralWorkspacePath(item),
+    (item) => item !== cwd && !isNonProjectWorkspacePath(item),
   );
-  // Fixture / temp dirs must not become the cold-start resume target.
-  if (isEphemeralWorkspacePath(cwd)) {
+  // Fixture / temp / auto date folders must not become the cold-start resume target
+  // or pollute the sidebar 项目 list (e.g. Documents/Pix/2026-07-21).
+  if (isNonProjectWorkspacePath(cwd)) {
     const last = durableWorkspacePath(prefs.lastWorkspace) ?? cleaned[0];
-    saveDesktopPrefs({
+    const next: DesktopPrefs = {
+      ...prefs,
       recentWorkspaces: cleaned.slice(0, 8),
-      ...(last ? { lastWorkspace: last } : {}),
-    });
+    };
+    if (last) next.lastWorkspace = last;
+    else delete next.lastWorkspace;
+    saveDesktopPrefs(next);
     return;
   }
-  saveDesktopPrefs({ recentWorkspaces: [cwd, ...cleaned].slice(0, 8), lastWorkspace: cwd });
+  saveDesktopPrefs({
+    ...prefs,
+    recentWorkspaces: [cwd, ...cleaned].slice(0, 8),
+    lastWorkspace: cwd,
+  });
+}
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
+/** Validate stored window geometry; drop off-screen / nonsense values. */
+function normalizeWindowBoundsPrefs(raw: unknown): WindowBoundsPrefs | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const o = raw as Record<string, unknown>;
+  if (!isFiniteNumber(o.x) || !isFiniteNumber(o.y) || !isFiniteNumber(o.width) || !isFiniteNumber(o.height)) {
+    return undefined;
+  }
+  const width = Math.max(WINDOW_MIN_WIDTH, Math.round(o.width));
+  const height = Math.max(WINDOW_MIN_HEIGHT, Math.round(o.height));
+  const x = Math.round(o.x);
+  const y = Math.round(o.y);
+  return {
+    x,
+    y,
+    width,
+    height,
+    ...(o.isMaximized === true ? { isMaximized: true } : {}),
+  };
+}
+
+/**
+ * Ensure saved bounds still intersect some display (monitor unplugged, resolution change).
+ * Returns options suitable for BrowserWindow constructor (+ optional maximize after show).
+ */
+function resolveWindowCreateOptions(saved: WindowBoundsPrefs | undefined): {
+  x?: number;
+  y?: number;
+  width: number;
+  height: number;
+  isMaximized: boolean;
+} {
+  const width = saved?.width ?? WINDOW_DEFAULT_WIDTH;
+  const height = saved?.height ?? WINDOW_DEFAULT_HEIGHT;
+  const isMaximized = saved?.isMaximized === true;
+  if (saved === undefined) {
+    return { width, height, isMaximized: false };
+  }
+  try {
+    const area = { x: saved.x, y: saved.y, width, height };
+    const visible = screen.getAllDisplays().some((d) => {
+      const b = d.workArea;
+      return (
+        area.x < b.x + b.width &&
+        area.x + area.width > b.x &&
+        area.y < b.y + b.height &&
+        area.y + area.height > b.y
+      );
+    });
+    if (!visible) return { width, height, isMaximized: false };
+    return { x: saved.x, y: saved.y, width, height, isMaximized };
+  } catch {
+    return { width, height, isMaximized: false };
+  }
+}
+
+function persistMainWindowBounds(win: BrowserWindow): void {
+  if (win.isDestroyed()) return;
+  try {
+    // Prefer normal (unmaximized) bounds so restore after maximize still has size.
+    const bounds =
+      typeof win.getNormalBounds === "function" ? win.getNormalBounds() : win.getBounds();
+    const nextBounds: WindowBoundsPrefs = {
+      x: Math.round(bounds.x),
+      y: Math.round(bounds.y),
+      width: Math.max(WINDOW_MIN_WIDTH, Math.round(bounds.width)),
+      height: Math.max(WINDOW_MIN_HEIGHT, Math.round(bounds.height)),
+      ...(win.isMaximized() ? { isMaximized: true } : {}),
+    };
+    const prefs = loadDesktopPrefs();
+    saveDesktopPrefs({ ...prefs, window: nextBounds });
+  } catch {
+    // ignore
+  }
+}
+
+function attachWindowBoundsPersistence(win: BrowserWindow): void {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const schedule = () => {
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(() => {
+      timer = undefined;
+      persistMainWindowBounds(win);
+    }, 250);
+  };
+  win.on("resize", schedule);
+  win.on("move", schedule);
+  win.on("maximize", schedule);
+  win.on("unmaximize", schedule);
+  win.on("close", () => {
+    if (timer) clearTimeout(timer);
+    persistMainWindowBounds(win);
+  });
 }
 
 interface Deferred<T> {
@@ -403,17 +1300,21 @@ class HostSupervisor {
   removeRecentWorkspace(cwd: string): string[] {
     const prefs = loadDesktopPrefs();
     const normalized = cwd.replace(/\\/g, "/").replace(/\/+$/, "");
-    const recent = prefs.recentWorkspaces.filter(
-      (item) => item.replace(/\\/g, "/").replace(/\/+$/, "") !== normalized,
-    );
-    const lastWorkspace =
-      prefs.lastWorkspace?.replace(/\\/g, "/").replace(/\/+$/, "") === normalized
-        ? undefined
-        : prefs.lastWorkspace;
-    saveDesktopPrefs({
+    const samePath = (item: string) => item.replace(/\\/g, "/").replace(/\/+$/, "") === normalized;
+    const recent = prefs.recentWorkspaces.filter((item) => !samePath(item));
+    const next: DesktopPrefs = {
+      ...prefs,
       recentWorkspaces: recent,
-      ...(lastWorkspace ? { lastWorkspace } : {}),
-    });
+    };
+    if (prefs.lastWorkspace && samePath(prefs.lastWorkspace)) {
+      delete next.lastWorkspace;
+    }
+    // If removing the live project, detach so it leaves the sidebar "current" slot.
+    const active = this.#workspaceCwd?.replace(/\\/g, "/").replace(/\/+$/, "");
+    if (active === normalized) {
+      void this.clearActiveWorkspace().catch(() => undefined);
+    }
+    saveDesktopPrefs(next);
     return recent;
   }
 
@@ -425,7 +1326,7 @@ class HostSupervisor {
     const active = this.#workspaceCwd?.replace(/\\/g, "/").replace(/\/+$/, "");
     return prefs.recentWorkspaces
       .filter((item) => {
-        if (typeof item !== "string" || isEphemeralWorkspacePath(item)) return false;
+        if (typeof item !== "string" || isNonProjectWorkspacePath(item)) return false;
         if (!active) return true;
         const path = item.replace(/\\/g, "/").replace(/\/+$/, "");
         return path !== active;
@@ -457,22 +1358,26 @@ class HostSupervisor {
     return this.#startPromise;
   }
 
-  async openWorkspace(cwd: string, options?: { resumeRecent?: boolean }): Promise<HostSnapshot> {
+  async openWorkspace(
+    cwd: string,
+    options?: { resumeRecent?: boolean; sessionFile?: string },
+  ): Promise<HostSnapshot> {
     rememberWorkspace(cwd);
     this.#workspaceCwd = cwd;
     this.#requireExplicitWorkspace = false;
-    // Drop any pinned session before stop; exit handler must not resurrect it for the new cwd.
-    this.#sessionFile = undefined;
-    this.#resumeRecent = options?.resumeRecent === true;
+    // Prefer explicit session when switching into a project (avoids open→default→switch flicker).
+    this.#sessionFile = options?.sessionFile;
+    this.#resumeRecent = options?.resumeRecent === true && !options?.sessionFile;
     await this.stop().catch(() => undefined);
     // stop()'s child exit path may have run after our pre-clear; re-assert intent.
-    this.#sessionFile = undefined;
+    this.#sessionFile = options?.sessionFile;
     this.#snapshot = undefined;
     this.#host = undefined;
-    this.#resumeRecent = options?.resumeRecent === true;
+    this.#resumeRecent = options?.resumeRecent === true && !options?.sessionFile;
     return this.start({
       cwd,
-      resumeRecent: options?.resumeRecent === true,
+      ...(options?.sessionFile ? { sessionFile: options.sessionFile } : {}),
+      resumeRecent: options?.resumeRecent === true && !options?.sessionFile,
       force: true,
     });
   }
@@ -498,7 +1403,7 @@ class HostSupervisor {
       this.#workspaceCwd = undefined;
       this.#requireExplicitWorkspace = true;
       // Ensure the project remains in recent (was often only shown as "current").
-      if (previous && !isEphemeralWorkspacePath(previous)) {
+      if (previous && !isNonProjectWorkspacePath(previous)) {
         rememberWorkspace(previous);
       }
     }
@@ -521,15 +1426,17 @@ class HostSupervisor {
       }),
     ]);
 
+    // Pi home state (packages/resources/settings) must work without a user project.
+    // Prefer supervisor workspace (set by openPath / start options) over PIX_WORKSPACE
+    // so e2e/product can switch projects even when PIX_WORKSPACE is set for fixtures.
+    // Fallback: PIX_WORKSPACE → last durable project → Documents/Pix/YYYY-MM-DD scratch.
     const cwd =
-      process.env.PIX_WORKSPACE ??
       this.#workspaceCwd ??
+      process.env.PIX_WORKSPACE ??
       (this.#requireExplicitWorkspace
         ? undefined
-        : durableWorkspacePath(loadDesktopPrefs().lastWorkspace));
-    if (!cwd) {
-      throw new Error("未选择工作区，请先从侧边栏打开文件夹");
-    }
+        : durableWorkspacePath(loadDesktopPrefs().lastWorkspace)) ??
+      ensureDefaultWorkspacePath();
     this.#workspaceCwd = cwd;
     rememberWorkspace(cwd);
     const command: HostCommand = {
@@ -650,7 +1557,17 @@ class HostSupervisor {
     threads: SessionThreadSummary[];
     history: SessionHistoryMessage[];
   }> {
-    if (!this.#host) await this.start();
+    // Ensure a live runtime exists. Prefer opening the target session file directly
+    // so we do not start a throwaway session then switch (flash + missing history).
+    if (!this.#host || !this.#snapshot) {
+      this.#sessionFile = sessionPath;
+      this.#requireExplicitWorkspace = false;
+      await this.start({
+        ...(this.#workspaceCwd ? { cwd: this.#workspaceCwd } : {}),
+        sessionFile: sessionPath,
+        force: true,
+      });
+    }
     const event = await this.#request({
       protocolVersion: IPC_PROTOCOL_VERSION,
       type: "session.switch",
@@ -660,6 +1577,13 @@ class HostSupervisor {
     if (event.type !== "session.opened")
       throw new Error("Agent Host returned an unexpected session.switch response");
     this.#acceptSnapshot(event.snapshot);
+    // Keep supervisor workspace pointer aligned with the session's project cwd.
+    if (event.snapshot.cwd) {
+      this.#workspaceCwd = event.snapshot.cwd;
+      this.#requireExplicitWorkspace = false;
+      this.#sessionFile = event.snapshot.sessionFile ?? sessionPath;
+      rememberWorkspace(event.snapshot.cwd);
+    }
     return { snapshot: event.snapshot, threads: event.threads, history: event.history };
   }
 
@@ -784,6 +1708,25 @@ class HostSupervisor {
     if (event.type !== "model.list")
       throw new Error("Agent Host returned an unexpected model.list response");
     return event.models;
+  }
+
+  async completeText(
+    prompt: string,
+    options?: { systemPrompt?: string; model?: { provider: string; id: string } },
+  ): Promise<string> {
+    if (!this.#host) await this.start();
+    const command = {
+      protocolVersion: IPC_PROTOCOL_VERSION,
+      type: "util.complete-text" as const,
+      requestId: randomUUID(),
+      prompt,
+      ...(options?.systemPrompt ? { systemPrompt: options.systemPrompt } : {}),
+      ...(options?.model ? { model: options.model } : {}),
+    } satisfies HostCommand;
+    const event = await this.#request(command);
+    if (event.type !== "util.text")
+      throw new Error("Agent Host returned an unexpected util.complete-text response");
+    return event.text;
   }
 
   async setModel(provider: string, id: string): Promise<HostSnapshot> {
@@ -1212,6 +2155,42 @@ async function runCrashRecoveryProbe(
   console.log(JSON.stringify(report));
 }
 
+/** App package root (apps/desktop) whether running from src or dist/main. */
+function packageRoot(): string {
+  // dist/main → ../.. ; file:// main might be nested differently
+  const fromDist = join(currentDirectory, "../..");
+  if (existsSync(join(fromDist, "package.json"))) return fromDist;
+  const fromNested = join(currentDirectory, "../../..");
+  if (existsSync(join(fromNested, "package.json"))) return fromNested;
+  return fromDist;
+}
+
+function resolveAppIconPath(): string | undefined {
+  const root = packageRoot();
+  // Prefer PNG for dock.setIcon (full-bleed square). Packaged .app uses .icns from builder.
+  for (const rel of ["build/icon.png", "build/icon.icns"]) {
+    const path = join(root, rel);
+    if (existsSync(path)) return path;
+  }
+  return undefined;
+}
+
+/**
+ * macOS Dock: system applies the squircle mask — artwork must be a full square.
+ * Pre-drawn rounded corners make the icon look smaller / differently framed than
+ * VS Code, Cursor, ChatGPT, etc.
+ * Dev: Electron binary has no Pix .icns, so set the dock image explicitly.
+ */
+function applyDockIcon(iconPath: string | undefined): void {
+  if (process.platform !== "darwin" || !iconPath || !app.dock) return;
+  const image = nativeImage.createFromPath(iconPath);
+  if (image.isEmpty()) return;
+  // Normalize to a square bitmap so Dock scaling matches other apps.
+  const size = Math.max(image.getSize().width, image.getSize().height, 128);
+  const squared = image.resize({ width: size, height: size, quality: "best" });
+  app.dock.setIcon(squared);
+}
+
 async function createWindow(): Promise<void> {
   // Keep in sync with apps/desktop/src/renderer/lib/desktop-chrome.ts (Synara-aligned).
   const titlebarHeight = 46;
@@ -1221,20 +2200,22 @@ async function createWindow(): Promise<void> {
     y: Math.round(titlebarHeight / 2 - trafficDotRadius),
   };
 
-  // Packaged: electron-builder embeds the app icon. Dev: load from build resources.
-  const iconPath = existsSync(join(currentDirectory, "../../build/icon.png"))
-    ? join(currentDirectory, "../../build/icon.png")
-    : existsSync(join(currentDirectory, "../../../build/icon.png"))
-      ? join(currentDirectory, "../../../build/icon.png")
-      : undefined;
+  const iconPath = resolveAppIconPath();
+  applyDockIcon(iconPath);
+
+  const savedWindow = resolveWindowCreateOptions(loadDesktopPrefs().window);
 
   mainWindow = new BrowserWindow({
-    width: 1440,
-    height: 900,
-    minWidth: 760,
-    minHeight: 560,
+    width: savedWindow.width,
+    height: savedWindow.height,
+    ...(savedWindow.x !== undefined && savedWindow.y !== undefined
+      ? { x: savedWindow.x, y: savedWindow.y }
+      : {}),
+    minWidth: WINDOW_MIN_WIDTH,
+    minHeight: WINDOW_MIN_HEIGHT,
     title: "Pix",
-    ...(iconPath && process.platform !== "darwin" ? { icon: iconPath } : {}),
+    show: false,
+    ...(iconPath ? { icon: iconPath } : {}),
     // macOS: traffic lights sit in the sidebar titlebar row (Synara/Codex style).
     ...(process.platform === "darwin"
       ? {
@@ -1249,13 +2230,73 @@ async function createWindow(): Promise<void> {
       preload: join(currentDirectory, "..", "preload", "preload.cjs"),
     },
   });
+  attachWindowBoundsPersistence(mainWindow);
+  mainWindow.once("ready-to-show", () => {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    if (savedWindow.isMaximized) mainWindow.maximize();
+    mainWindow.show();
+  });
   supervisor = new HostSupervisor(mainWindow);
   await mainWindow.loadFile(join(currentDirectory, "..", "renderer", "index.html"));
+  // Fallback if ready-to-show already fired before listener (rare on some platforms).
+  if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.isVisible()) {
+    if (savedWindow.isMaximized) mainWindow.maximize();
+    mainWindow.show();
+  }
+}
+
+// Windows Action Center groups notifications by AppUserModelID.
+if (process.platform === "win32") {
+  app.setAppUserModelId("dev.pix.app");
+}
+// Prefer product name over "Electron" in notification center (dev + packaged).
+app.setName("Pix");
+
+/** Keep Notification instances alive until closed (GC otherwise drops them before show). */
+const liveOsNotifications = new Set<InstanceType<typeof Notification>>();
+
+function showOsNotification(payload: {
+  title: string;
+  body?: string;
+  silent?: boolean;
+}): boolean {
+  try {
+    if (!Notification.isSupported()) return false;
+    const title = payload?.title?.trim();
+    if (!title) return false;
+    const body = payload.body?.trim();
+    const iconPath = resolveAppIconPath();
+    const options: {
+      title: string;
+      body?: string;
+      silent?: boolean;
+      icon?: string;
+    } = {
+      title,
+      silent: payload.silent === true,
+      ...(body ? { body } : {}),
+    };
+    // macOS uses the app icon; Windows/Linux benefit from an explicit icon.
+    if (iconPath && process.platform !== "darwin") {
+      options.icon = iconPath;
+    }
+    const n = new Notification(options);
+    liveOsNotifications.add(n);
+    const drop = () => liveOsNotifications.delete(n);
+    n.once("close", drop);
+    n.once("click", drop);
+    n.show();
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 void app
   .whenReady()
   .then(async () => {
+    // Set Dock icon as early as possible (dev: Electron binary; packaged: .icns in bundle).
+    applyDockIcon(resolveAppIconPath());
     await createWindow();
 
     ipcMain.handle(
@@ -1307,14 +2348,84 @@ void app
       "pix:workspace:create-git-worktree",
       async (
         _event,
-        options: { path: string; branch?: string; newBranch?: string; cwd?: string },
+        options: { path?: string; branch?: string; newBranch?: string; cwd?: string },
       ) => {
         const path = resolveWorkspaceCwd(options?.cwd, supervisor?.getWorkspaceCwd());
         return createGitWorktree(path, options);
       },
     );
+    ipcMain.handle("pix:workspace:get-worktree-prefs", (_event, cwd?: string) => {
+      const path =
+        typeof cwd === "string" && cwd.trim() ? cwd : (supervisor?.getWorkspaceCwd() ?? undefined);
+      return getWorktreePrefsView(path);
+    });
+    ipcMain.handle(
+      "pix:workspace:set-worktree-prefs",
+      (
+        _event,
+        patch: { rootConfigured?: string; autoDelete?: boolean; autoDeleteLimit?: number },
+      ) => setWorktreePrefs(patch ?? {}),
+    );
+    ipcMain.handle("pix:workspace:get-git-prefs", () => getGitPrefs());
+    ipcMain.handle(
+      "pix:workspace:set-git-prefs",
+      (
+        _event,
+        patch: {
+          branchPrefix?: string;
+          pullMode?: "merge" | "squash";
+          forcePush?: boolean;
+          draftPr?: boolean;
+          customCommitCommand?: string;
+          customPrCommand?: string;
+          modelProvider?: string;
+          modelId?: string;
+        },
+      ) => setGitPrefs(patch ?? {}),
+    );
     ipcMain.handle("pix:workspace:reveal-in-folder", (_event, cwd: string) => {
       if (typeof cwd === "string" && cwd.trim()) shell.showItemInFolder(cwd);
+    });
+    ipcMain.handle("pix:workspace:ensure-default", () => ensureDefaultWorkspacePath());
+    ipcMain.handle("pix:workspace:ensure-conversation", () => ensureConversationWorkspacePath());
+    ipcMain.handle("pix:workspace:git-status", async (_event, cwd?: string) => {
+      const path = resolveWorkspaceCwd(cwd, supervisor?.getWorkspaceCwd());
+      return gitStatus(path);
+    });
+    ipcMain.handle("pix:workspace:git-commit", async (_event, message: string, cwd?: string) => {
+      const path = resolveWorkspaceCwd(cwd, supervisor?.getWorkspaceCwd());
+      return gitCommit(path, message);
+    });
+    ipcMain.handle("pix:workspace:git-pull", async (_event, cwd?: string) => {
+      const path = resolveWorkspaceCwd(cwd, supervisor?.getWorkspaceCwd());
+      return gitPull(path);
+    });
+    ipcMain.handle("pix:workspace:git-push", async (_event, cwd?: string) => {
+      const path = resolveWorkspaceCwd(cwd, supervisor?.getWorkspaceCwd());
+      return gitPush(path);
+    });
+    ipcMain.handle(
+      "pix:workspace:git-commit-and-push",
+      async (_event, message: string, cwd?: string) => {
+        const path = resolveWorkspaceCwd(cwd, supervisor?.getWorkspaceCwd());
+        return gitCommitAndPush(path, message);
+      },
+    );
+    ipcMain.handle("pix:workspace:git-generate-commit-message", async (_event, cwd?: string) => {
+      const path = resolveWorkspaceCwd(cwd, supervisor?.getWorkspaceCwd());
+      return generateCommitMessage(path);
+    });
+    ipcMain.handle("pix:workspace:open-create-pr", async (_event, cwd?: string) => {
+      const path = resolveWorkspaceCwd(cwd, supervisor?.getWorkspaceCwd());
+      return openCreatePullRequest(path);
+    });
+    ipcMain.handle("pix:workspace:list-open-targets", async (_event, cwd?: string) => {
+      const path = resolveWorkspaceCwd(cwd, supervisor?.getWorkspaceCwd());
+      return listOpenTargets(path);
+    });
+    ipcMain.handle("pix:workspace:open-in-app", async (_event, appId: string, cwd?: string) => {
+      const path = resolveWorkspaceCwd(cwd, supervisor?.getWorkspaceCwd());
+      return openInApp(appId, path);
     });
     ipcMain.handle("pix:workspace:pick-folder", async () => {
       if (!mainWindow) return undefined;
@@ -1380,6 +2491,11 @@ void app
     ipcMain.handle("pix:packages:update", (_event, source?: string) =>
       supervisor?.updatePackage(source),
     );
+    ipcMain.handle(
+      "pix:packages:search-catalog",
+      (_event, query?: string, size?: number, from?: number) =>
+        searchPiPackageCatalog(query, size, from),
+    );
     ipcMain.handle("pix:resources:list", () => supervisor?.listResources());
     ipcMain.handle("pix:extension-ui:respond", (_event, response: ExtensionUiResponse) =>
       supervisor?.extensionUiRespond(response),
@@ -1387,6 +2503,12 @@ void app
     if (process.env.PIX_ENABLE_TEST_COMMANDS === "1") {
       ipcMain.handle("pix:test:crash-host", () => supervisor?.crashHost());
     }
+
+    ipcMain.handle(
+      "pix:notifications:show",
+      (_event, payload: { title: string; body?: string; silent?: boolean }) =>
+        showOsNotification(payload),
+    );
 
     if (process.env.PIX_AUTO_START === "1") {
       const snapshot = await supervisor?.start();

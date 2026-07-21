@@ -342,13 +342,66 @@ export function sortThreadsWithPins<T extends { id: string; modifiedAt: string }
   threads: T[],
   pinned: readonly string[],
 ): T[] {
+  return sortThreadsByMode(threads, "priority", pinned);
+}
+
+export type ThreadSortMode = "priority" | "recent" | "manual";
+
+/**
+ * Sort sidebar threads/conversations.
+ * - priority: pinned first (pin order), then modifiedAt desc
+ * - recent: modifiedAt desc only
+ * - manual: pinned first (pin order), then manualOrder, then modifiedAt for unknowns
+ */
+export function sortThreadsByMode<T extends { id: string; modifiedAt: string }>(
+  threads: T[],
+  mode: ThreadSortMode,
+  pinned: readonly string[],
+  manualOrder: readonly string[] = [],
+): T[] {
+  if (mode === "recent") {
+    return [...threads].sort((a, b) => b.modifiedAt.localeCompare(a.modifiedAt));
+  }
+
   const pinIndex = new Map(pinned.map((id, i) => [id, i]));
+  const manualIndex = new Map(manualOrder.map((id, i) => [id, i]));
+
   return [...threads].sort((a, b) => {
     const ap = pinIndex.has(a.id);
     const bp = pinIndex.has(b.id);
     if (ap && bp) return (pinIndex.get(a.id) ?? 0) - (pinIndex.get(b.id) ?? 0);
     if (ap) return -1;
     if (bp) return 1;
+
+    if (mode === "manual") {
+      const ao = manualIndex.has(a.id) ? (manualIndex.get(a.id) ?? 0) : Number.MAX_SAFE_INTEGER;
+      const bo = manualIndex.has(b.id) ? (manualIndex.get(b.id) ?? 0) : Number.MAX_SAFE_INTEGER;
+      if (ao !== bo) return ao - bo;
+    }
     return b.modifiedAt.localeCompare(a.modifiedAt);
   });
+}
+
+/**
+ * Merge current thread ids into a manual order: keep existing order, append new ids at end.
+ * Returns the next order (always includes every id in `threadIds` once).
+ */
+export function mergeManualThreadOrder(
+  previous: readonly string[],
+  threadIds: readonly string[],
+): string[] {
+  const alive = new Set(threadIds);
+  const next: string[] = [];
+  const seen = new Set<string>();
+  for (const id of previous) {
+    if (!alive.has(id) || seen.has(id)) continue;
+    seen.add(id);
+    next.push(id);
+  }
+  for (const id of threadIds) {
+    if (seen.has(id)) continue;
+    seen.add(id);
+    next.push(id);
+  }
+  return next;
 }

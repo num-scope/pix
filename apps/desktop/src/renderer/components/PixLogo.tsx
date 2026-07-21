@@ -1,6 +1,5 @@
 /**
- * Pix brand mark — sidebar / chrome.
- * Geometry mirrors `src/renderer/assets/logo.svg` and `build/icon.svg`.
+ * Pix brand mark — white plate + black three-bar π (matches build/icon.svg).
  */
 import { cn } from "../lib/utils.ts";
 
@@ -14,31 +13,22 @@ export function PixLogo(props: { className?: string; title?: string }) {
       role="img"
       aria-label={props.title ?? "Pix"}
     >
-      <defs>
-        <linearGradient id="pixLogoBg" x1="5" y1="2" x2="28" y2="30" gradientUnits="userSpaceOnUse">
-          <stop stopColor="#222228" />
-          <stop offset="1" stopColor="#121216" />
-        </linearGradient>
-        <linearGradient
-          id="pixLogoMark"
-          x1="9"
-          y1="7"
-          x2="23"
-          y2="25"
-          gradientUnits="userSpaceOnUse"
-        >
-          <stop stopColor="#9BB0FF" />
-          <stop offset="0.55" stopColor="#5B7CFF" />
-          <stop offset="1" stopColor="#3B82F6" />
-        </linearGradient>
-      </defs>
-      <rect width="32" height="32" rx="8" fill="url(#pixLogoBg)" />
-      <rect x="8.5" y="9" width="15" height="3.2" rx="1.6" fill="url(#pixLogoMark)" />
-      <rect x="10" y="10.5" width="3.2" height="13" rx="1.6" fill="url(#pixLogoMark)" />
-      <rect x="17" y="10.5" width="3.2" height="10.5" rx="1.6" fill="url(#pixLogoMark)" />
-      <rect x="21.5" y="7.5" width="3.6" height="3.6" rx="0.95" fill="#7DD3FC" />
-      <rect x="25" y="9.2" width="2.1" height="2.1" rx="0.55" fill="#38BDF8" />
-      <rect x="22.8" y="5.6" width="1.7" height="1.7" rx="0.45" fill="#E0F2FE" />
+      <rect width="32" height="32" rx="8" fill="#FFFFFF" />
+      <rect
+        x="0.5"
+        y="0.5"
+        width="31"
+        height="31"
+        rx="7.5"
+        fill="none"
+        stroke="#E4E4E7"
+        strokeWidth="1"
+      />
+      <g fill="#0A0A0A">
+        <rect x="7.75" y="9.15" width="16.5" height="3.3" rx="1.65" />
+        <rect x="9.5" y="10.7" width="3.15" height="12.1" rx="1.575" />
+        <rect x="17.1" y="10.7" width="3.15" height="9.6" rx="1.575" />
+      </g>
     </svg>
   );
 }

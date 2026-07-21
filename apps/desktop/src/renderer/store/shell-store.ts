@@ -32,6 +32,13 @@ export type { ThemePreference, ResolvedColorMode };
 export type SettingsSection =
   | "general"
   | "appearance"
+  | "environment"
+  | "worktree"
+  | "behavior"
+  | "git"
+  | "usage"
+  | "notifications"
+  | "shortcuts"
   | "providers"
   | "models"
   | "piSettings"
@@ -47,6 +54,8 @@ export interface ShellState {
   sentPrompts: string[];
   running: boolean;
   reviewOpen: boolean;
+  /** Session environment panel (right rail). */
+  envPanelOpen: boolean;
   /** Mobile overlay open (narrow layout). */
   sidebarOpen: boolean;
   /** Desktop collapse to icon rail. */
@@ -56,6 +65,8 @@ export interface ShellState {
   locale: Locale;
   settingsSection: SettingsSection;
   lastFailure: string | undefined;
+  /** App-level error modal (not agent timeline errors). */
+  appError: string | undefined;
   view: ShellView;
   packages: PackageSummary[];
   resources: ResourceSummary[];
@@ -77,6 +88,7 @@ export interface ShellState {
   setSentPrompts: (prompts: string[] | ((current: string[]) => string[])) => void;
   setRunning: (running: boolean) => void;
   setReviewOpen: (open: boolean | ((current: boolean) => boolean)) => void;
+  setEnvPanelOpen: (open: boolean | ((current: boolean) => boolean)) => void;
   setSidebarOpen: (open: boolean | ((current: boolean) => boolean)) => void;
   setSidebarCollapsed: (collapsed: boolean) => void;
   toggleSidebarCollapsed: () => void;
@@ -85,6 +97,8 @@ export interface ShellState {
   setLocale: (locale: Locale) => void;
   setSettingsSection: (section: SettingsSection) => void;
   setLastFailure: (failure: string | undefined) => void;
+  showAppError: (message: string) => void;
+  clearAppError: () => void;
   setView: (view: ShellView) => void;
   setPackages: (packages: PackageSummary[]) => void;
   setResources: (resources: ResourceSummary[]) => void;
@@ -182,6 +196,7 @@ export const useShellStore = create<ShellState>((set, get) => ({
   sentPrompts: [],
   running: false,
   reviewOpen: false,
+  envPanelOpen: false,
   sidebarOpen: false,
   sidebarCollapsed: loadSidebarCollapsed(),
   sidebarWidthPx: loadSidebarWidth(),
@@ -189,6 +204,7 @@ export const useShellStore = create<ShellState>((set, get) => ({
   locale: loadLocale(),
   settingsSection: "general",
   lastFailure: undefined,
+  appError: undefined,
   view: "thread",
   packages: [],
   resources: [],
@@ -215,6 +231,10 @@ export const useShellStore = create<ShellState>((set, get) => ({
   setReviewOpen: (open) =>
     set((state) => ({
       reviewOpen: typeof open === "function" ? open(state.reviewOpen) : open,
+    })),
+  setEnvPanelOpen: (open) =>
+    set((state) => ({
+      envPanelOpen: typeof open === "function" ? open(state.envPanelOpen) : open,
     })),
   setSidebarOpen: (open) =>
     set((state) => ({
@@ -244,6 +264,12 @@ export const useShellStore = create<ShellState>((set, get) => ({
   },
   setSettingsSection: (settingsSection) => set({ settingsSection }),
   setLastFailure: (lastFailure) => set({ lastFailure }),
+  showAppError: (message) => {
+    const text = message.trim();
+    if (!text) return;
+    set({ appError: text, status: text });
+  },
+  clearAppError: () => set({ appError: undefined }),
   setView: (view) => set({ view }),
   setPackages: (packages) => set({ packages }),
   setResources: (resources) => set({ resources }),
@@ -279,8 +305,16 @@ export const useShellStore = create<ShellState>((set, get) => ({
       snapshot: input.snapshot,
       runtimeId: input.snapshot.runtimeId,
       lastSequence: input.snapshot.sequence,
-      threads: input.threads,
+      // Prefer server threads when present; keep list stable if empty (avoid blink).
+      threads:
+        input.threads.length > 0
+          ? input.threads
+          : get().threads.map((t) => ({
+              ...t,
+              active: t.path === input.snapshot.sessionFile || t.id === input.snapshot.sessionId,
+            })),
       history: input.history,
+      // Drop in-flight stream only; do not thrash sidebar via extra list fetches.
       events: [],
       sentPrompts: [],
       lastFailure: undefined,

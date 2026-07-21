@@ -50,6 +50,7 @@ import type { AccessMode, AccessVisibility } from "../lib/settings-prefs.ts";
 import { visibleAccessModes } from "../lib/settings-prefs.ts";
 import { cn } from "../lib/utils.ts";
 import { workspaceLabel } from "../lib/workspace.ts";
+import { useShellStore } from "../store/shell-store.ts";
 
 export type { AccessMode, AccessVisibility };
 export type SpeedMode = "fast" | "balanced" | "quality";
@@ -96,6 +97,11 @@ export interface ComposerProps {
   attachments: string[];
   onAttachFiles: (files: FileList | null) => void;
   onRemoveAttachment: (name: string) => void;
+  /**
+   * Project / local / branch bar that protrudes above the input.
+   * Hidden once the session already has conversation content.
+   */
+  showProjectBar?: boolean;
 }
 
 type MenuKind = "project" | "local" | "branch" | "access" | "model" | "attach" | null;
@@ -110,11 +116,6 @@ function isValidBranchName(name: string): boolean {
   if (n.includes("..") || n.startsWith("-") || n.endsWith(".lock")) return false;
   if (/[\s~^:?*[\\]/.test(n)) return false;
   return true;
-}
-
-function basenameSafe(path: string): string {
-  const parts = path.replace(/\\/g, "/").replace(/\/+$/, "").split("/");
-  return parts.at(-1) ?? "";
 }
 
 function MenuRow(props: {
@@ -377,7 +378,7 @@ export function Composer(props: ComposerProps) {
   const [branches, setBranches] = useState<GitBranchInfo[]>([]);
   const [branchesLoading, setBranchesLoading] = useState(false);
   const [gitBusy, setGitBusy] = useState(false);
-  const [gitError, setGitError] = useState<string>();
+  const showAppError = useShellStore((s) => s.showAppError);
   /** Which model-submenu flyout is open: thinking | speed */
   const [modelFlyout, setModelFlyout] = useState<"thinking" | "speed" | null>(null);
   const modelFlyoutCloseTimer = useRef<number | null>(null);
@@ -421,7 +422,7 @@ export function Composer(props: ComposerProps) {
     if (menu !== "branch" || !props.workspacePath) return;
     let cancelled = false;
     setBranchesLoading(true);
-    setGitError(undefined);
+
     void window.pix.workspace
       .listGitBranches(props.workspacePath)
       .then((list) => {
@@ -430,7 +431,7 @@ export function Composer(props: ComposerProps) {
       .catch((error) => {
         if (!cancelled) {
           setBranches([]);
-          setGitError(error instanceof Error ? error.message : tr("composer.branch.failed"));
+          showAppError(error instanceof Error ? error.message : tr("composer.branch.failed"));
         }
       })
       .finally(() => {
@@ -508,7 +509,6 @@ export function Composer(props: ComposerProps) {
     setAnchor(null);
     setProjectQuery("");
     setBranchQuery("");
-    setGitError(undefined);
     setModelFlyout(null);
   }
 
@@ -519,7 +519,6 @@ export function Composer(props: ComposerProps) {
       closeMenu();
       return;
     }
-    setGitError(undefined);
     setMenu(kind);
     setAnchor(anchorFromEvent(event.currentTarget));
   }
@@ -539,13 +538,13 @@ export function Composer(props: ComposerProps) {
   async function handleCheckoutBranch(name: string) {
     if (!props.workspacePath || gitBusy) return;
     setGitBusy(true);
-    setGitError(undefined);
+
     try {
       const next = await window.pix.workspace.checkoutGitBranch(name, props.workspacePath);
       setGitContext(next);
       closeMenu();
     } catch (error) {
-      setGitError(error instanceof Error ? error.message : tr("composer.branch.failed"));
+      showAppError(error instanceof Error ? error.message : tr("composer.branch.failed"));
     } finally {
       setGitBusy(false);
     }
@@ -555,7 +554,7 @@ export function Composer(props: ComposerProps) {
     const name = branchQuery.trim();
     if (!props.workspacePath || !isValidBranchName(name) || gitBusy) return;
     setGitBusy(true);
-    setGitError(undefined);
+
     try {
       const next = await window.pix.workspace.createGitBranch(name, {
         checkout: true,
@@ -564,7 +563,7 @@ export function Composer(props: ComposerProps) {
       setGitContext(next);
       closeMenu();
     } catch (error) {
-      setGitError(error instanceof Error ? error.message : tr("composer.branch.failed"));
+      showAppError(error instanceof Error ? error.message : tr("composer.branch.failed"));
     } finally {
       setGitBusy(false);
     }
@@ -578,7 +577,7 @@ export function Composer(props: ComposerProps) {
       return;
     }
     if (!main) {
-      setGitError(tr("composer.local.failed"));
+      showAppError(tr("composer.local.failed"));
       return;
     }
     if (normalizeCwdKey(main) === normalizeCwdKey(props.workspacePath)) {
@@ -586,12 +585,12 @@ export function Composer(props: ComposerProps) {
       return;
     }
     setGitBusy(true);
-    setGitError(undefined);
+
     try {
       closeMenu();
       props.onOpenProject(main);
     } catch (error) {
-      setGitError(error instanceof Error ? error.message : tr("composer.local.failed"));
+      showAppError(error instanceof Error ? error.message : tr("composer.local.failed"));
     } finally {
       setGitBusy(false);
     }
@@ -600,24 +599,18 @@ export function Composer(props: ComposerProps) {
   async function handleNewWorktree() {
     if (!props.workspacePath || gitBusy) return;
     setGitBusy(true);
-    setGitError(undefined);
     try {
-      const folder = await window.pix.workspace.pickFolder();
-      if (!folder) {
-        setGitBusy(false);
-        return;
-      }
-      const newBranch = basenameSafe(folder);
+      // Path comes from worktree prefs root + date/branch name (no project- prefix).
+      const stamp = new Date().toISOString().slice(0, 10);
       const result = await window.pix.workspace.createGitWorktree({
-        path: folder,
         cwd: props.workspacePath,
-        ...(newBranch ? { newBranch } : {}),
+        newBranch: stamp,
       });
       closeMenu();
       props.onOpenProject(result.path);
       void refreshGitContext(result.path);
     } catch (error) {
-      setGitError(error instanceof Error ? error.message : tr("composer.local.failed"));
+      showAppError(error instanceof Error ? error.message : tr("composer.local.failed"));
     } finally {
       setGitBusy(false);
     }
@@ -632,79 +625,84 @@ export function Composer(props: ComposerProps) {
       ? gitContext.worktree
       : tr("composer.local.label");
 
+  const showProjectBar = props.showProjectBar !== false;
+
   return (
     <div
-      className="pointer-events-auto relative mx-auto w-[min(630px,100%)]"
+      // Default width is also the minimum — do not shrink below 630px.
+      className="pointer-events-auto relative mx-auto w-[630px] min-w-[630px] max-w-full"
       data-testid="composer-root"
     >
       {/*
-        Protrusion: span the flat top of the input (stop at the corner radius = 18px each side).
-        No border. Input keeps a complete independent border.
+        Protrusion: project / local / branch. Only for empty sessions —
+        hide once the thread has conversation content.
       */}
-      <div className="relative z-[2] flex w-full justify-center px-[18px]">
-        <div
-          className={cn(
-            "flex w-full min-w-0 items-center gap-5 px-3 py-1.5",
-            "rounded-t-[16px] bg-[var(--bg-composer)]",
-            "text-[12px] font-medium text-[var(--foreground)]",
-          )}
-          data-testid="composer-project-bar"
-        >
-          <button
-            type="button"
-            data-testid="composer-project-picker"
-            aria-expanded={projectMenuOpen}
+      {showProjectBar ? (
+        <div className="relative z-[2] flex w-full justify-center px-[18px]">
+          <div
             className={cn(
-              "inline-flex min-w-0 max-w-[42%] items-center gap-1.5 transition-colors",
-              "hover:opacity-80",
-              projectMenuOpen && "opacity-100",
+              "flex w-full min-w-0 items-center gap-5 px-3 py-1.5",
+              "rounded-t-[16px] bg-[var(--bg-composer)]",
+              "text-[12px] font-medium text-[var(--foreground)]",
             )}
-            onClick={(e) => openMenu("project", e)}
+            data-testid="composer-project-bar"
           >
-            <Folder className="size-3.5 shrink-0 opacity-80" strokeWidth={1.75} />
-            <span className="min-w-0 truncate" data-testid="workspace-name-chip">
-              {hasProject ? workspace.name : tr("composer.project.pick")}
-            </span>
-          </button>
+            <button
+              type="button"
+              data-testid="composer-project-picker"
+              aria-expanded={projectMenuOpen}
+              className={cn(
+                "inline-flex min-w-0 max-w-[42%] items-center gap-1.5 transition-colors",
+                "hover:opacity-80",
+                projectMenuOpen && "opacity-100",
+              )}
+              onClick={(e) => openMenu("project", e)}
+            >
+              <Folder className="size-3.5 shrink-0 opacity-80" strokeWidth={1.75} />
+              <span className="min-w-0 truncate" data-testid="workspace-name-chip">
+                {hasProject ? workspace.name : tr("composer.project.pick")}
+              </span>
+            </button>
 
-          {hasProject ? (
-            <>
-              <button
-                type="button"
-                className={cn(
-                  "inline-flex min-w-0 max-w-[26%] items-center gap-1.5 text-[var(--muted-foreground)] transition-colors hover:text-[var(--foreground)]",
-                  localMenuOpen && "text-[var(--foreground)]",
-                )}
-                title={localLabel}
-                data-testid="composer-local"
-                aria-expanded={localMenuOpen}
-                onClick={(e) => openMenu("local", e)}
-              >
-                <Monitor className="size-3.5 shrink-0 opacity-75" strokeWidth={1.75} />
-                <span className="min-w-0 truncate">{localLabel}</span>
-                <ChevronDown className="size-3 shrink-0 opacity-50" strokeWidth={2} />
-              </button>
-              <button
-                type="button"
-                className={cn(
-                  "inline-flex min-w-0 max-w-[26%] items-center gap-1.5 text-[var(--muted-foreground)] transition-colors hover:text-[var(--foreground)]",
-                  branchMenuOpen && "text-[var(--foreground)]",
-                )}
-                title={tr("composer.project.branch")}
-                data-testid="composer-git-branch"
-                aria-expanded={branchMenuOpen}
-                onClick={(e) => openMenu("branch", e)}
-              >
-                <GitBranch className="size-3.5 shrink-0 opacity-75" strokeWidth={1.75} />
-                <span className="min-w-0 truncate">
-                  {gitContext.branch || tr("composer.project.noBranch")}
-                </span>
-                <ChevronDown className="size-3 shrink-0 opacity-50" strokeWidth={2} />
-              </button>
-            </>
-          ) : null}
+            {hasProject ? (
+              <>
+                <button
+                  type="button"
+                  className={cn(
+                    "inline-flex min-w-0 max-w-[26%] items-center gap-1.5 text-[var(--muted-foreground)] transition-colors hover:text-[var(--foreground)]",
+                    localMenuOpen && "text-[var(--foreground)]",
+                  )}
+                  title={localLabel}
+                  data-testid="composer-local"
+                  aria-expanded={localMenuOpen}
+                  onClick={(e) => openMenu("local", e)}
+                >
+                  <Monitor className="size-3.5 shrink-0 opacity-75" strokeWidth={1.75} />
+                  <span className="min-w-0 truncate">{localLabel}</span>
+                  <ChevronDown className="size-3 shrink-0 opacity-50" strokeWidth={2} />
+                </button>
+                <button
+                  type="button"
+                  className={cn(
+                    "inline-flex min-w-0 max-w-[26%] items-center gap-1.5 text-[var(--muted-foreground)] transition-colors hover:text-[var(--foreground)]",
+                    branchMenuOpen && "text-[var(--foreground)]",
+                  )}
+                  title={tr("composer.project.branch")}
+                  data-testid="composer-git-branch"
+                  aria-expanded={branchMenuOpen}
+                  onClick={(e) => openMenu("branch", e)}
+                >
+                  <GitBranch className="size-3.5 shrink-0 opacity-75" strokeWidth={1.75} />
+                  <span className="min-w-0 truncate">
+                    {gitContext.branch || tr("composer.project.noBranch")}
+                  </span>
+                  <ChevronDown className="size-3 shrink-0 opacity-50" strokeWidth={2} />
+                </button>
+              </>
+            ) : null}
+          </div>
         </div>
-      </div>
+      ) : null}
 
       {/* Full independent border — not shared / clipped by the protrusion. */}
       <form
@@ -875,9 +873,9 @@ export function Composer(props: ComposerProps) {
                 data-testid="abort-prompt"
                 onClick={() => props.onAbort()}
                 aria-label={tr("composer.stop")}
-                className="h-8 w-8 rounded-full bg-red-500 text-white hover:bg-red-600"
+                className="h-7 w-7 rounded-full bg-red-500 text-white hover:bg-red-600"
               >
-                <Square className="h-3 w-3 fill-current" />
+                <Square className="h-2.5 w-2.5 fill-current" />
               </Button>
             ) : (
               <Button
@@ -886,9 +884,9 @@ export function Composer(props: ComposerProps) {
                 data-testid="send-prompt"
                 disabled={!props.prompt.trim()}
                 aria-label={tr("composer.start")}
-                className="h-8 w-8 rounded-full disabled:opacity-30"
+                className="h-7 w-7 rounded-full disabled:opacity-30"
               >
-                <ArrowUp className="h-4 w-4" strokeWidth={2.25} />
+                <ArrowUp className="h-3.5 w-3.5" strokeWidth={2.25} />
               </Button>
             )}
           </div>
@@ -1040,11 +1038,6 @@ export function Composer(props: ComposerProps) {
             </span>
           </button>
         </div>
-        {gitError && menu === "local" ? (
-          <p className="border-t border-[var(--border)] px-3 py-2 text-[11px] text-red-400">
-            {gitError}
-          </p>
-        ) : null}
       </FloatingMenu>
 
       {/* Branch menu — search + list + create & checkout */}
@@ -1127,11 +1120,6 @@ export function Composer(props: ComposerProps) {
               </span>
             </button>
           </div>
-        ) : null}
-        {gitError && menu === "branch" ? (
-          <p className="border-t border-[var(--border)] px-3 py-2 text-[11px] text-red-400">
-            {gitError}
-          </p>
         ) : null}
       </FloatingMenu>
 

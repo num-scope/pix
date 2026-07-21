@@ -8,7 +8,11 @@ import type { HostSnapshot, SessionThreadSummary } from "@pix/contracts";
 import {
   Archive,
   ArrowLeft,
+  Bell,
   Boxes,
+  FolderGit2,
+  GitBranch,
+  Keyboard,
   KeyRound,
   Package,
   Palette,
@@ -16,9 +20,11 @@ import {
   PanelLeftClose,
   Search,
   Settings as SettingsIcon,
+  Shield,
   SlidersHorizontal,
   Sparkles,
   SquarePen,
+  BarChart3,
 } from "lucide-react";
 import type { PointerEvent as ReactPointerEvent, ReactNode } from "react";
 import { useCallback, useRef, useState } from "react";
@@ -59,6 +65,7 @@ export interface AppSidebarProps {
   threadsByCwd: Record<string, SessionThreadSummary[]>;
   threadTitle: string;
   packageCount: number;
+  resourceCount: number;
   canFork: boolean;
   onOpenPalette: () => void;
   onToggleTheme: () => void;
@@ -292,6 +299,7 @@ function ProductRail(
           active={props.view === "resources"}
           icon={<Boxes className="size-4 shrink-0 opacity-70" strokeWidth={1.75} />}
           label={tr("nav.resources")}
+          badge={String(props.resourceCount)}
           onClick={props.onOpenResources}
         />
       </nav>
@@ -429,6 +437,48 @@ function SettingsRail(props: {
           labelKey: "section.appearance",
           icon: <Palette className="size-3.5 shrink-0 opacity-70" strokeWidth={1.75} />,
         },
+        {
+          section: "behavior",
+          testId: "settings-nav-behavior",
+          labelKey: "section.behavior",
+          icon: <Shield className="size-3.5 shrink-0 opacity-70" strokeWidth={1.75} />,
+        },
+        {
+          section: "notifications",
+          testId: "settings-nav-notifications",
+          labelKey: "section.notifications",
+          icon: <Bell className="size-3.5 shrink-0 opacity-70" strokeWidth={1.75} />,
+        },
+        {
+          section: "shortcuts",
+          testId: "settings-nav-shortcuts",
+          labelKey: "section.shortcuts",
+          icon: <Keyboard className="size-3.5 shrink-0 opacity-70" strokeWidth={1.75} />,
+        },
+      ],
+    },
+    {
+      id: "workspace",
+      labelKey: "settings.group.workspace",
+      items: [
+        {
+          section: "environment",
+          testId: "settings-nav-environment",
+          labelKey: "section.environment",
+          icon: <SlidersHorizontal className="size-3.5 shrink-0 opacity-70" strokeWidth={1.75} />,
+        },
+        {
+          section: "worktree",
+          testId: "settings-nav-worktree",
+          labelKey: "section.worktree",
+          icon: <FolderGit2 className="size-3.5 shrink-0 opacity-70" strokeWidth={1.75} />,
+        },
+        {
+          section: "git",
+          testId: "settings-nav-git",
+          labelKey: "section.git",
+          icon: <GitBranch className="size-3.5 shrink-0 opacity-70" strokeWidth={1.75} />,
+        },
       ],
     },
     {
@@ -440,6 +490,12 @@ function SettingsRail(props: {
           testId: "settings-nav-providers",
           labelKey: "section.auth",
           icon: <KeyRound className="size-3.5 shrink-0 opacity-70" strokeWidth={1.75} />,
+        },
+        {
+          section: "usage",
+          testId: "settings-nav-usage",
+          labelKey: "section.usage",
+          icon: <BarChart3 className="size-3.5 shrink-0 opacity-70" strokeWidth={1.75} />,
         },
         {
           section: "models",
@@ -594,7 +650,7 @@ function NavBtn(props: {
           ? "font-semibold text-[var(--sidebar-foreground)] hover:bg-[var(--sidebar-accent)]"
           : props.active
             ? "bg-[var(--sidebar-accent)] text-[var(--sidebar-accent-foreground)]"
-            : "text-[var(--muted-foreground)] hover:bg-[var(--sidebar-accent)] hover:text-[var(--sidebar-foreground)]",
+            : "text-[var(--sidebar-foreground)] hover:bg-[var(--sidebar-accent)]",
       )}
       onClick={props.onClick}
     >

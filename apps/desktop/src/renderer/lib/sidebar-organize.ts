@@ -5,6 +5,9 @@ export type SortMode = "priority" | "recent" | "manual";
 
 const GROUP_KEY = "pix.sidebar.groupMode";
 const SORT_KEY = "pix.sidebar.sortMode";
+/** Sort prefs for the 对话 (conversations) section — independent of projects. */
+const CONVERSATION_SORT_KEY = "pix.sidebar.conversationSortMode";
+const CONVERSATION_MANUAL_ORDER_KEY = "pix.sidebar.conversationManualOrder";
 const PROJECTS_OPEN_KEY = "pix.sidebar.projectsOpen";
 const THREADS_OPEN_KEY = "pix.sidebar.threadsOpen";
 
@@ -60,6 +63,35 @@ export function loadSortMode(): SortMode {
 
 export function saveSortMode(mode: SortMode): void {
   saveString(SORT_KEY, mode);
+}
+
+export function loadConversationSortMode(): SortMode {
+  const v = loadString(CONVERSATION_SORT_KEY, "priority");
+  if (v === "recent" || v === "manual") return v;
+  return "priority";
+}
+
+export function saveConversationSortMode(mode: SortMode): void {
+  saveString(CONVERSATION_SORT_KEY, mode);
+}
+
+export function loadConversationManualOrder(): string[] {
+  try {
+    const raw = localStorage.getItem(CONVERSATION_MANUAL_ORDER_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as unknown;
+    return Array.isArray(parsed) ? parsed.filter((id): id is string => typeof id === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+export function saveConversationManualOrder(ids: string[]): void {
+  try {
+    localStorage.setItem(CONVERSATION_MANUAL_ORDER_KEY, JSON.stringify(ids));
+  } catch {
+    // ignore
+  }
 }
 
 export function loadProjectsSectionOpen(): boolean {

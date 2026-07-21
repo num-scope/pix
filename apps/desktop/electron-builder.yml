@@ -9,19 +9,20 @@ directories:
   buildResources: build
 # CI packages unsigned platform dirs (`pnpm package` → electron-builder --dir).
 # Identity null keeps mac builds green without Developer ID secrets.
+# Icons live in directories.buildResources (./build). Paths are relative to that folder.
 mac:
   identity: null
-  icon: build/icon.icns
+  icon: icon.icns
   target:
     - dir
   category: public.app-category.developer-tools
 win:
-  icon: build/icon.png
+  icon: icon.png
   target:
     - dir
   artifactName: ${productName}-${version}-${os}-${arch}.${ext}
 linux:
-  icon: build/icon.png
+  icon: icon.png
   target:
     - dir
   category: Development

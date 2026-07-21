@@ -211,6 +211,57 @@ export interface GitWorktreeInfo {
   main?: boolean;
 }
 
+/** Working-tree change row (no file content / diff preview). */
+export interface GitChangeItem {
+  path: string;
+  /** Short git status code, e.g. M, A, D, ?? */
+  status: string;
+  staged: boolean;
+}
+
+export interface GitStatusSummary {
+  branch?: string;
+  upstream?: string;
+  ahead: number;
+  behind: number;
+  changes: GitChangeItem[];
+  clean: boolean;
+  /** Aggregate line stats from `git diff --numstat` (unstaged+staged). */
+  insertions?: number;
+  deletions?: number;
+}
+
+/** Detected local app for "Open in…". */
+export interface DetectedApp {
+  id: string;
+  name: string;
+  kind: "ide" | "terminal" | "finder";
+  /** Platform-specific launch target (app name / path). */
+  target: string;
+  /** OS file icon as data URL (data:image/png;base64,…) when available. */
+  iconDataUrl?: string;
+}
+
+/** Official gallery entry (npm packages tagged `pi-package`). */
+export interface CatalogPackage {
+  name: string;
+  description: string;
+  version: string;
+  /** Install source, e.g. npm:@scope/name */
+  source: string;
+  publisher?: string;
+  weeklyDownloads?: number;
+  updatedAt?: string;
+  keywords?: string[];
+}
+
+/** Paginated result from npm registry search for the Discover tab. */
+export interface CatalogSearchResult {
+  packages: CatalogPackage[];
+  /** Total hits reported by the registry (may exceed returned page). */
+  total: number;
+}
+
 /** Visual projection of pi global settings.json (safe fields only). */
 export interface PiSettingsView {
   agentDir: string;
@@ -387,6 +438,15 @@ export type HostCommand =
       response: ExtensionUiResponse;
     }
   | {
+      /** One-shot text completion (no session pollution). Used for AI commit messages etc. */
+      protocolVersion: typeof IPC_PROTOCOL_VERSION;
+      type: "util.complete-text";
+      requestId: string;
+      systemPrompt?: string;
+      prompt: string;
+      model?: { provider: string; id: string };
+    }
+  | {
       protocolVersion: typeof IPC_PROTOCOL_VERSION;
       type: "host.snapshot" | "host.shutdown" | "agent.abort" | "test.sequenceGap";
       requestId: string;
@@ -520,6 +580,12 @@ export type HostEvent =
       type: "settings.view";
       requestId?: string;
       settings: PiSettingsView;
+    }
+  | {
+      protocolVersion: typeof IPC_PROTOCOL_VERSION;
+      type: "util.text";
+      requestId?: string;
+      text: string;
     };
 
 export interface PixDesktopApi {
@@ -528,6 +594,7 @@ export interface PixDesktopApi {
       cwd?: string;
       sessionFile?: string;
       resumeRecent?: boolean;
+      force?: boolean;
     }): Promise<HostSnapshot>;
     stop(): Promise<void>;
     snapshot(): Promise<HostSnapshot>;
@@ -536,15 +603,28 @@ export interface PixDesktopApi {
   workspace: {
     getCwd(): Promise<string | undefined>;
     listRecent(): Promise<string[]>;
-    openPath(cwd: string, options?: { resumeRecent?: boolean }): Promise<HostSnapshot>;
+    openPath(
+      cwd: string,
+      options?: { resumeRecent?: boolean; sessionFile?: string },
+    ): Promise<HostSnapshot>;
     pickFolder(): Promise<string | undefined>;
+    /**
+     * Ensure a default project folder under Documents/Pix/YYYY-MM-DD
+     * (reuse today's folder if it already exists). Returns absolute path.
+     */
+    ensureDefault(): Promise<string>;
+    /**
+     * Ensure pure-conversation home under Documents/Pix/conversations.
+     * Never listed as a sidebar project. Used by global「新建会话」.
+     */
+    ensureConversation(): Promise<string>;
     /** Remove a path from desktop recent list (does not delete files). */
     removeRecent(cwd: string): Promise<string[]>;
     /** Reveal path in Finder / Explorer. */
     revealInFolder(cwd: string): Promise<void>;
     /**
      * Detach from the active project (stop host, clear cwd).
-     * Does not remove recent list. Next start requires an explicit openPath/cwd.
+     * Does not remove recent list. Next send may auto-create a default workspace.
      */
     clearActive(): Promise<void>;
     /** Lightweight git branch / worktree labels for the composer chrome. */
@@ -566,11 +646,75 @@ export interface PixDesktopApi {
      * - `branch`: check out an existing branch in the worktree
      */
     createGitWorktree(options: {
-      path: string;
+      /** Optional absolute path; when omitted, uses worktree root prefs + branch/date name. */
+      path?: string;
       branch?: string;
       newBranch?: string;
       cwd?: string;
     }): Promise<{ path: string; context: GitContextInfo }>;
+    getWorktreePrefs(cwd?: string): Promise<{
+      root: string;
+      rootConfigured: string;
+      autoDelete: boolean;
+      autoDeleteLimit: number;
+      defaultRoot: string;
+    }>;
+    setWorktreePrefs(patch: {
+      rootConfigured?: string;
+      autoDelete?: boolean;
+      autoDeleteLimit?: number;
+    }): Promise<{
+      root: string;
+      rootConfigured: string;
+      autoDelete: boolean;
+      autoDeleteLimit: number;
+      defaultRoot: string;
+    }>;
+    getGitPrefs(): Promise<{
+      branchPrefix: string;
+      pullMode: "merge" | "squash";
+      forcePush: boolean;
+      draftPr: boolean;
+      customCommitCommand: string;
+      customPrCommand: string;
+      /** Empty = use session / pi default model for AI-assisted git ops. */
+      modelProvider: string;
+      modelId: string;
+    }>;
+    setGitPrefs(patch: {
+      branchPrefix?: string;
+      pullMode?: "merge" | "squash";
+      forcePush?: boolean;
+      draftPr?: boolean;
+      customCommitCommand?: string;
+      customPrCommand?: string;
+      modelProvider?: string;
+      modelId?: string;
+    }): Promise<{
+      branchPrefix: string;
+      pullMode: "merge" | "squash";
+      forcePush: boolean;
+      draftPr: boolean;
+      customCommitCommand: string;
+      customPrCommand: string;
+      modelProvider: string;
+      modelId: string;
+    }>;
+    /** Working tree status (paths only — no diff preview). */
+    gitStatus(cwd?: string): Promise<GitStatusSummary>;
+    gitCommit(message: string, cwd?: string): Promise<GitStatusSummary>;
+    gitPull(cwd?: string): Promise<GitStatusSummary>;
+    gitPush(cwd?: string): Promise<GitStatusSummary>;
+    /** Stage all + commit + push. */
+    gitCommitAndPush(message: string, cwd?: string): Promise<GitStatusSummary>;
+    /** AI commit message from custom commit instruction + git status/diff. */
+    gitGenerateCommitMessage(cwd?: string): Promise<string>;
+    /** Open browser to create a PR (GitHub/GitLab heuristically). */
+    openCreatePullRequest(cwd?: string): Promise<void>;
+    /** Detect IDE / terminal / Finder-style apps for "Open in…". */
+    listOpenTargets(cwd?: string): Promise<DetectedApp[]>;
+    /** Launch a detected app against cwd. */
+    openInApp(appId: string, cwd?: string): Promise<void>;
   };
   trust: {
     get(): Promise<ProjectTrustSummary>;
@@ -623,6 +767,15 @@ export interface PixDesktopApi {
     install(source: string, scope: "global" | "project"): Promise<PackageSummary[]>;
     remove(source: string, scope: "global" | "project"): Promise<PackageSummary[]>;
     update(source?: string): Promise<PackageSummary[]>;
+    /**
+     * Search official pi packages from the npm registry (`keywords:pi-package`).
+     * Used by the Discover tab for one-click install. Supports pagination via `from`.
+     */
+    searchCatalog(
+      query?: string,
+      size?: number,
+      from?: number,
+    ): Promise<CatalogSearchResult>;
   };
   resources: {
     list(): Promise<ResourceSummary[]>;
@@ -632,6 +785,10 @@ export interface PixDesktopApi {
   };
   test: {
     crashHost(): Promise<void>;
+  };
+  notifications: {
+    /** Show an OS notification. Returns false if unsupported. */
+    show(payload: { title: string; body?: string; silent?: boolean }): Promise<boolean>;
   };
 }
 
@@ -817,6 +974,13 @@ export function isHostCommand(value: unknown): value is HostCommand {
     );
   }
   if (value.type === "agent.prompt") return typeof value.message === "string";
+  if (value.type === "util.complete-text") {
+    return (
+      typeof value.prompt === "string" &&
+      (value.systemPrompt === undefined || typeof value.systemPrompt === "string") &&
+      (value.model === undefined || isModelSelector(value.model))
+    );
+  }
   if (value.type === "session.list" || value.type === "session.new") return true;
   if (value.type === "session.switch") return typeof value.sessionPath === "string";
   if (value.type === "session.fork") {
@@ -1009,6 +1173,8 @@ export function isHostEvent(value: unknown): value is HostEvent {
       return Array.isArray(value.providers) && value.providers.every(isProviderAuthSummary);
     case "settings.view":
       return isPiSettingsView(value.settings);
+    case "util.text":
+      return typeof value.text === "string";
     default:
       return false;
   }

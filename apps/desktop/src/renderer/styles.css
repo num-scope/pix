@@ -258,12 +258,12 @@ body {
 
 .nav-item {
   @apply flex h-[34px] w-full items-center gap-2.5 rounded-lg px-2.5 text-left text-[13px] font-medium;
-  color: var(--muted-foreground);
+  color: var(--sidebar-foreground);
 }
 
 .nav-item:hover {
   background: var(--sidebar-accent);
-  color: var(--sidebar-accent-foreground);
+  color: var(--sidebar-foreground);
 }
 
 .nav-item[data-active="true"] {
@@ -279,6 +279,18 @@ body {
 .nav-badge {
   @apply ml-auto text-[11px];
   color: var(--text-subtle);
+}
+
+/* Sidebar titles: fade at the container edge (no ellipsis).
+   Container width shrinks on row hover (pr-14) so fade stops before action icons. */
+.sidebar-title-fade {
+  -webkit-mask-image: linear-gradient(
+    to right,
+    #000 0%,
+    #000 calc(100% - 1.25rem),
+    transparent 100%
+  );
+  mask-image: linear-gradient(to right, #000 0%, #000 calc(100% - 1.25rem), transparent 100%);
 }
 
 .btn-icon {
@@ -387,20 +399,27 @@ body {
 }
 
 .thread-header {
-  @apply flex min-h-11 items-center justify-between gap-3 px-4 py-2;
+  @apply flex h-[46px] shrink-0 items-center gap-1.5 px-4;
+}
+
+/* Collapsed rail: titlebar row shares the window edge with traffic lights + expand btn. */
+.thread-header-collapsed {
+  @apply pr-3;
+  /* padding-left set inline from chrome constants */
 }
 
 .thread-header h2 {
-  @apply m-0 text-[13px] font-semibold tracking-tight;
+  color: var(--foreground);
 }
 
-.thread-header .subtitle {
-  @apply text-[11px];
-  color: var(--text-subtle);
+/* Interactive / non-drag children inside a drag region (Electron -webkit-app-region). */
+.no-drag {
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
 }
 
-.header-controls {
-  @apply flex flex-wrap items-center justify-end gap-1;
+.env-action-btn {
+  @apply inline-flex h-7 shrink-0 items-center justify-center rounded-md border border-[var(--border)] px-2 text-[11px] font-medium text-[var(--foreground)] transition-colors hover:bg-[var(--accent)] disabled:opacity-40;
 }
 
 /*
@@ -454,6 +473,82 @@ body {
 
 .timeline.empty {
   @apply flex min-h-full flex-col p-0;
+}
+
+/* Assistant Markdown (react-markdown + remark-gfm) */
+.pix-md {
+  @apply min-w-0;
+}
+.pix-md > :first-child {
+  @apply mt-0;
+}
+.pix-md > :last-child {
+  @apply mb-0;
+}
+.pix-md p {
+  @apply my-2 leading-relaxed wrap-break-word;
+}
+.pix-md h1,
+.pix-md h2,
+.pix-md h3,
+.pix-md h4 {
+  @apply mt-3 mb-1.5 font-semibold tracking-tight text-[var(--foreground)];
+}
+.pix-md h1 {
+  @apply text-[1.25em];
+}
+.pix-md h2 {
+  @apply text-[1.125em];
+}
+.pix-md h3 {
+  @apply text-[1.05em];
+}
+.pix-md ul,
+.pix-md ol {
+  @apply my-2 pl-5;
+}
+.pix-md ul {
+  @apply list-disc;
+}
+.pix-md ol {
+  @apply list-decimal;
+}
+.pix-md li {
+  @apply my-0.5;
+}
+.pix-md li > p {
+  @apply my-0.5;
+}
+.pix-md a {
+  @apply text-[#0a84ff] underline-offset-2 hover:underline;
+}
+.pix-md code {
+  @apply rounded bg-[var(--muted)] px-1 py-0.5 font-mono text-[0.9em];
+}
+.pix-md pre {
+  @apply my-2 overflow-x-auto rounded-lg border border-[var(--border)] bg-[var(--muted)] p-3;
+}
+.pix-md pre code {
+  @apply bg-transparent p-0 text-[12.5px] leading-relaxed;
+}
+.pix-md blockquote {
+  @apply my-2 border-l-2 border-[var(--border)] pl-3 text-[var(--muted-foreground)];
+}
+.pix-md table {
+  @apply my-2 w-full border-collapse text-[13px];
+}
+.pix-md th,
+.pix-md td {
+  @apply border border-[var(--border)] px-2 py-1 text-left;
+}
+.pix-md th {
+  @apply bg-[var(--muted)] font-medium;
+}
+.pix-md hr {
+  @apply my-3 border-0 border-t border-[var(--border)];
+}
+.pix-md strong {
+  @apply font-semibold;
 }
 
 .recent-workspaces {
@@ -574,15 +669,19 @@ body {
   border-color: var(--border);
 }
 .page-tab {
-  @apply inline-flex h-8 items-center justify-center rounded-t-md px-3 text-xs leading-none font-medium;
+  @apply inline-flex h-8 cursor-pointer items-center justify-center rounded-t-md border-0 bg-transparent px-3 text-xs leading-none font-medium transition-colors;
   color: var(--muted-foreground);
+}
+.page-tab:hover {
+  color: var(--foreground);
 }
 .page-tab[data-active="true"] {
   border-bottom: 2px solid var(--foreground);
   color: var(--foreground);
 }
 .page-tab[data-active="false"] {
-  @apply cursor-default opacity-55;
+  border-bottom: 2px solid transparent;
+  opacity: 0.75;
 }
 .chip {
   @apply inline-flex h-6 items-center justify-center rounded-full border px-2 text-[11px] leading-none font-medium whitespace-nowrap;
@@ -702,6 +801,87 @@ a.btn-secondary:focus-visible {
 .palette-item kbd {
   @apply font-mono text-[11px];
   color: var(--text-subtle);
+}
+
+/* Settings · keyboard shortcut bind control */
+.shortcut-bind {
+  display: inline-flex;
+  min-height: 1.75rem;
+  min-width: 5.5rem;
+  align-items: center;
+  justify-content: center;
+  gap: 0.25rem;
+  border-radius: 0.5rem;
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--muted) 55%, transparent);
+  padding: 0.2rem 0.45rem;
+  transition:
+    border-color 0.12s ease,
+    background 0.12s ease,
+    box-shadow 0.12s ease;
+}
+.shortcut-bind:hover {
+  background: var(--accent);
+  border-color: color-mix(in srgb, var(--border) 80%, var(--foreground));
+}
+.shortcut-bind-empty {
+  border-style: dashed;
+  color: var(--text-subtle);
+}
+.shortcut-bind-recording {
+  border-color: var(--ring, #0a84ff);
+  background: color-mix(in srgb, var(--ring, #0a84ff) 12%, var(--background));
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ring, #0a84ff) 22%, transparent);
+}
+.shortcut-bind-hint {
+  font-size: 11px;
+  line-height: 1.2;
+  color: var(--muted-foreground);
+  white-space: nowrap;
+}
+.shortcut-bind-recording .shortcut-bind-hint {
+  color: var(--foreground);
+}
+.shortcut-bind-dot {
+  width: 0.4rem;
+  height: 0.4rem;
+  border-radius: 999px;
+  background: var(--ring, #0a84ff);
+  animation: shortcut-bind-pulse 1s ease-in-out infinite;
+}
+@keyframes shortcut-bind-pulse {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.35;
+    transform: scale(0.85);
+  }
+}
+.shortcut-key {
+  display: inline-flex;
+  min-width: 1.35rem;
+  height: 1.35rem;
+  align-items: center;
+  justify-content: center;
+  border-radius: 0.3rem;
+  border: 1px solid color-mix(in srgb, var(--border) 85%, var(--foreground));
+  background: var(--background);
+  padding: 0 0.35rem;
+  font-family:
+    ui-sans-serif,
+    system-ui,
+    -apple-system,
+    "Segoe UI",
+    sans-serif;
+  font-size: 11px;
+  font-weight: 550;
+  line-height: 1;
+  letter-spacing: 0.01em;
+  color: var(--foreground);
+  box-shadow: 0 1px 0 color-mix(in srgb, var(--foreground) 8%, transparent);
 }
 .palette-empty {
   @apply p-2.5 text-xs;
@@ -838,6 +1018,62 @@ a.btn-secondary:focus-visible {
 }
 .settings-row-control-multiline {
   @apply pt-0.5;
+}
+/* Code / shell fields in settings (branch prefix, custom commands) */
+.settings-code-field-wrap {
+  @apply flex flex-col gap-1.5;
+}
+.settings-code-field {
+  @apply w-full rounded-[10px] border border-[var(--border)] px-3 py-2 font-mono text-[12.5px] leading-snug outline-none transition-[border-color,box-shadow,background];
+  color: var(--foreground);
+  background: color-mix(in srgb, var(--muted) 45%, transparent);
+}
+.settings-code-field::placeholder {
+  color: var(--text-subtle);
+}
+.settings-code-field:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--border) 70%, var(--foreground));
+}
+.settings-code-field:focus {
+  border-color: var(--ring, #0a84ff);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--ring, #0a84ff) 18%, transparent);
+  background: var(--background);
+}
+.settings-code-field:disabled {
+  opacity: 0.5;
+}
+.settings-code-field-sm {
+  @apply h-9 max-w-md py-0;
+}
+.settings-code-field-lg {
+  @apply min-h-[4.5rem] resize-y;
+}
+/* AI prompt textareas (commit / PR instructions) — prose, not shell code */
+.settings-prompt-field {
+  @apply w-full resize-y rounded-[10px] border border-[var(--border)] px-3 py-2.5 text-[13px] leading-relaxed outline-none transition-[border-color,box-shadow,background];
+  min-height: 5.5rem;
+  color: var(--foreground);
+  background: color-mix(in srgb, var(--muted) 35%, transparent);
+  font-family:
+    ui-sans-serif,
+    system-ui,
+    -apple-system,
+    "Segoe UI",
+    sans-serif;
+}
+.settings-prompt-field::placeholder {
+  color: var(--text-subtle);
+}
+.settings-prompt-field:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--border) 70%, var(--foreground));
+}
+.settings-prompt-field:focus {
+  border-color: var(--ring, #0a84ff);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--ring, #0a84ff) 18%, transparent);
+  background: var(--background);
+}
+.settings-prompt-field:disabled {
+  opacity: 0.5;
 }
 .settings-toggle {
   @apply relative h-[22px] w-[40px] shrink-0 rounded-full transition-colors;
@@ -979,7 +1215,7 @@ a.btn-secondary:focus-visible {
 }
 .settings-rail-item {
   @apply flex h-[32px] w-full min-w-0 items-center gap-2.5 rounded-[10px] px-2.5 text-left text-[13px] font-normal transition-colors;
-  color: var(--muted-foreground);
+  color: var(--sidebar-foreground);
 }
 .settings-rail-item:hover {
   background: color-mix(in srgb, var(--sidebar-accent) 70%, transparent);

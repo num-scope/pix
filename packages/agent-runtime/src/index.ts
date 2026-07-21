@@ -150,6 +150,11 @@ export interface PixRuntimeHandle {
   clearProviderAuth(provider: string): Promise<ProviderAuthSummary[]>;
   getPiSettings(): PiSettingsView;
   patchPiSettings(patch: PiSettingsPatch): PiSettingsView;
+  /** One-shot completion that does not write into the session transcript. */
+  completeText(
+    prompt: string,
+    options?: { systemPrompt?: string; model?: { provider: string; id: string } },
+  ): Promise<string>;
   dispose(): Promise<void>;
 }
 
@@ -632,19 +637,24 @@ export async function createPixRuntime(
     // Keep only the latest service-layer config diagnostics for this session instance.
     configDiagnostics.length = 0;
     configDiagnostics.push(...collectConfigDiagnostics(services));
-    const model = options.model
-      ? services.modelRuntime.getModel(options.model.provider, options.model.id)
-      : services.modelRuntime.getModels()[0];
-    if (!model) {
-      const requested = options.model ? `${options.model.provider}/${options.model.id}` : "default";
-      throw new Error(`pi did not provide the requested model: ${requested}`);
-    }
 
     const sessionOptions: CreateAgentSessionFromServicesOptions = {
       services,
       sessionManager,
-      model,
     };
+    // Explicit model (e.g. PIX_MODEL_* / host start override) wins.
+    // Otherwise leave model unset so createAgentSession → findInitialModel uses
+    // settingsManager defaultProvider/defaultModel (same as CLI). Never force
+    // getModels()[0] — that ignored "set as default" for every new session.
+    if (options.model) {
+      const model = services.modelRuntime.getModel(options.model.provider, options.model.id);
+      if (!model) {
+        throw new Error(
+          `pi did not provide the requested model: ${options.model.provider}/${options.model.id}`,
+        );
+      }
+      sessionOptions.model = model;
+    }
     // Product = visual pi: omit tools/noTools so SDK uses CLI defaults
     // (read/bash/edit/write + settings exclusions). Only pass restrictions when asked.
     if (options.tools) sessionOptions.tools = options.tools;
@@ -889,6 +899,32 @@ export async function createPixRuntime(
     patchPiSettings(patch) {
       applyPiSettingsPatch(runtime.services.settingsManager, patch);
       return projectPiSettings(runtime.services, runtime.session);
+    },
+    async completeText(prompt, options) {
+      const modelRuntime = runtime.services.modelRuntime;
+      let model = runtime.session.model;
+      if (options?.model?.provider && options.model.id) {
+        model =
+          modelRuntime.getModel(options.model.provider, options.model.id) ?? model;
+      }
+      if (!model) {
+        const models = modelRuntime.getModels();
+        model = models[0];
+      }
+      if (!model) throw new Error("没有可用模型，请先在设置中配置模型");
+      const result = await modelRuntime.completeSimple(model, {
+        systemPrompt:
+          options?.systemPrompt ??
+          "You are a helpful assistant. Reply with only the requested text.",
+        messages: [{ role: "user", content: prompt, timestamp: Date.now() }],
+      });
+      const text = (result.content ?? [])
+        .filter((part): part is { type: "text"; text: string } => part.type === "text")
+        .map((part) => part.text)
+        .join("")
+        .trim();
+      if (!text) throw new Error("模型未返回文本");
+      return text;
     },
     async dispose() {
       extensionUi.dispose();

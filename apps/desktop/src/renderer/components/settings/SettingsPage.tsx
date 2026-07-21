@@ -20,6 +20,36 @@ import {
   type ArchivedThreadMeta,
 } from "../../lib/project-prefs.ts";
 import {
+  loadEnvPanelVisibility,
+  setEnvPanelSectionVisible,
+  type EnvPanelSectionId,
+} from "../../lib/env-panel-prefs.ts";
+import {
+  loadNotificationPrefs,
+  patchNotificationPrefs,
+  type NotificationPrefs,
+} from "../../lib/notification-prefs.ts";
+import {
+  comboToDisplayParts,
+  eventToCombo,
+  formatComboDisplay,
+  getEffectiveCombo,
+  loadShortcutOverrides,
+  resetAllShortcuts,
+  setShortcutOverride,
+  SHORTCUT_DEFINITIONS,
+  type ShortcutId,
+  type ShortcutOverrides,
+} from "../../lib/shortcuts.ts";
+import {
+  loadConfirmArchive,
+  loadConfirmDelete,
+  saveConfirmArchive,
+  saveConfirmDelete,
+} from "../../lib/behavior-prefs.ts";
+import { periodMessageKey, resolveProviderUsageLimit } from "../../lib/auth-usage-limits.ts";
+// loadConfirmDelete also used by archived list bulk actions
+import {
   loadPreventSleep,
   loadSuggestions,
   savePreventSleep,
@@ -30,7 +60,7 @@ import {
 import type { ThemePreference } from "../../lib/theme.ts";
 import { cn } from "../../lib/utils.ts";
 import { workspaceLabel } from "../../lib/workspace.ts";
-import type { SettingsSection } from "../../store/shell-store.ts";
+import { useShellStore, type SettingsSection } from "../../store/shell-store.ts";
 import {
   SettingsPageShell,
   SettingsPillButton,
@@ -77,6 +107,20 @@ export function SettingsPage(props: SettingsPageProps) {
           <GeneralSection {...props} tr={tr} />
         ) : props.section === "appearance" ? (
           <AppearanceSection {...props} tr={tr} />
+        ) : props.section === "behavior" ? (
+          <BehaviorSection {...props} tr={tr} />
+        ) : props.section === "environment" ? (
+          <EnvironmentSection {...props} tr={tr} />
+        ) : props.section === "worktree" ? (
+          <WorktreeSection {...props} tr={tr} />
+        ) : props.section === "git" ? (
+          <GitSection {...props} tr={tr} />
+        ) : props.section === "usage" ? (
+          <UsageLimitsSection {...props} tr={tr} />
+        ) : props.section === "notifications" ? (
+          <NotificationsSection {...props} tr={tr} />
+        ) : props.section === "shortcuts" ? (
+          <ShortcutsSection {...props} tr={tr} />
         ) : props.section === "providers" ? (
           <ProvidersSection {...props} tr={tr} />
         ) : props.section === "models" ? (
@@ -215,6 +259,11 @@ function ArchivedSection(props: {
   }
 
   function deleteSession(id: string) {
+    const name = rows.find((r) => r.id === id)?.title ?? id.slice(0, 8);
+    if (loadConfirmDelete()) {
+      const ok = window.confirm(tr("confirm.deleteMessage", { name }));
+      if (!ok) return;
+    }
     deleteThreadLocal(id);
     unarchiveThread(id);
     const m = { ...loadArchivedThreadMeta() };
@@ -224,6 +273,11 @@ function ArchivedSection(props: {
   }
 
   function deleteAllInProject(cwdKey: string) {
+    const name = rows.find((r) => r.cwd === cwdKey)?.projectName ?? cwdKey;
+    if (loadConfirmDelete()) {
+      const ok = window.confirm(tr("confirm.deleteMessage", { name }));
+      if (!ok) return;
+    }
     const ids = rows.filter((r) => r.cwd === cwdKey).map((r) => r.id);
     for (const id of ids) {
       deleteThreadLocal(id);
@@ -237,6 +291,12 @@ function ArchivedSection(props: {
   }
 
   function deleteAll() {
+    if (loadConfirmDelete()) {
+      const ok = window.confirm(
+        tr("confirm.deleteMessage", { name: tr("settings.archived.deleteAll") }),
+      );
+      if (!ok) return;
+    }
     for (const id of sessionIds) {
       deleteThreadLocal(id);
       unarchiveThread(id);
@@ -382,6 +442,859 @@ function ArchivedSection(props: {
             </div>
           </section>
         ))
+      )}
+    </SettingsPageShell>
+  );
+}
+
+function ShortcutsSection(
+  props: SettingsPageProps & { tr: (key: MessageKey, vars?: Record<string, string>) => string },
+) {
+  const { tr } = props;
+  const [query, setQuery] = useState("");
+  const [overrides, setOverrides] = useState<ShortcutOverrides>(loadShortcutOverrides);
+  const [recordingId, setRecordingId] = useState<ShortcutId | null>(null);
+  const [conflict, setConflict] = useState<string>();
+
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return SHORTCUT_DEFINITIONS;
+    return SHORTCUT_DEFINITIONS.filter((def) => {
+      const label = tr(def.labelKey as MessageKey).toLowerCase();
+      const combo = formatComboDisplay(getEffectiveCombo(def.id, overrides)).toLowerCase();
+      return label.includes(q) || def.id.includes(q) || combo.includes(q);
+    });
+  }, [query, overrides, tr]);
+
+  useEffect(() => {
+    if (!recordingId) return;
+    const onKey = (event: KeyboardEvent) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (event.key === "Escape") {
+        setRecordingId(null);
+        setConflict(undefined);
+        return;
+      }
+      const combo = eventToCombo(event);
+      if (!combo) return;
+      // Conflict check
+      for (const def of SHORTCUT_DEFINITIONS) {
+        if (def.id === recordingId) continue;
+        if (getEffectiveCombo(def.id, overrides) === combo) {
+          setConflict(tr("shortcuts.conflict", { name: tr(def.labelKey as MessageKey) }));
+          return;
+        }
+      }
+      setOverrides(setShortcutOverride(recordingId, combo));
+      setRecordingId(null);
+      setConflict(undefined);
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [recordingId, overrides, tr]);
+
+  return (
+    <SettingsPageShell
+      title={tr("section.shortcuts")}
+      testId="settings-shortcuts"
+      titleAction={
+        <SettingsPillButton
+          label={tr("shortcuts.resetAll")}
+          testId="shortcuts-reset-all"
+          onClick={() => {
+            setOverrides(resetAllShortcuts());
+            setRecordingId(null);
+            setConflict(undefined);
+          }}
+        />
+      }
+    >
+      <div className="mb-3 flex items-center gap-2">
+        <label className="settings-rail-search min-w-0 flex-1 !rounded-[12px]">
+          <Search className="size-3.5 shrink-0 opacity-60" strokeWidth={1.75} />
+          <input
+            data-testid="shortcuts-search"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder={tr("shortcuts.search")}
+            className="min-w-0 flex-1 border-0 bg-transparent text-[13px] text-[var(--foreground)] outline-none placeholder:text-[var(--text-subtle)]"
+          />
+        </label>
+      </div>
+      {conflict ? (
+        <p className="mb-2 text-[12px] text-red-400" data-testid="shortcuts-conflict">
+          {conflict}
+        </p>
+      ) : null}
+      <SettingsSectionBlock label={tr("section.shortcuts")} testId="settings-shortcuts-list">
+        {filtered.length === 0 ? (
+          <div className="settings-row settings-row-last">
+            <div className="settings-row-desc">{tr("shortcuts.searchEmpty")}</div>
+          </div>
+        ) : (
+          filtered.map((def, index) => {
+            const effective = getEffectiveCombo(def.id, overrides);
+            const isCustom = Boolean(overrides[def.id]);
+            const recording = recordingId === def.id;
+            const keyParts = comboToDisplayParts(effective);
+            return (
+              <div
+                key={def.id}
+                className={cn(
+                  "settings-row items-center",
+                  index === filtered.length - 1 && "settings-row-last",
+                )}
+                data-testid={`shortcut-row-${def.id}`}
+              >
+                <div className="settings-row-copy min-w-0 flex-1">
+                  <div className="settings-row-title">{tr(def.labelKey as MessageKey)}</div>
+                </div>
+                <div className="flex shrink-0 items-center gap-2">
+                  {isCustom ? (
+                    <button
+                      type="button"
+                      className="text-[11px] text-[var(--muted-foreground)] hover:text-[var(--foreground)]"
+                      data-testid={`shortcut-reset-${def.id}`}
+                      onClick={() => {
+                        setOverrides(setShortcutOverride(def.id, null));
+                        setConflict(undefined);
+                      }}
+                    >
+                      {tr("shortcuts.reset")}
+                    </button>
+                  ) : null}
+                  <button
+                    type="button"
+                    data-testid={`shortcut-bind-${def.id}`}
+                    className={cn(
+                      "shortcut-bind",
+                      recording && "shortcut-bind-recording",
+                      !recording && !keyParts.length && "shortcut-bind-empty",
+                    )}
+                    aria-label={
+                      recording
+                        ? tr("shortcuts.pressKeys")
+                        : formatComboDisplay(effective) || tr("shortcuts.clickToBind")
+                    }
+                    onClick={() => {
+                      setConflict(undefined);
+                      setRecordingId(recording ? null : def.id);
+                    }}
+                  >
+                    {recording ? (
+                      <>
+                        <span className="shortcut-bind-dot" aria-hidden />
+                        <span className="shortcut-bind-hint">{tr("shortcuts.pressKeys")}</span>
+                      </>
+                    ) : keyParts.length > 0 ? (
+                      keyParts.map((part, i) => (
+                        <kbd key={`${def.id}-${part}-${i}`} className="shortcut-key">
+                          {part}
+                        </kbd>
+                      ))
+                    ) : (
+                      <span className="shortcut-bind-hint">{tr("shortcuts.clickToBind")}</span>
+                    )}
+                  </button>
+                </div>
+              </div>
+            );
+          })
+        )}
+      </SettingsSectionBlock>
+    </SettingsPageShell>
+  );
+}
+
+function NotificationsSection(
+  props: SettingsPageProps & { tr: (key: MessageKey, vars?: Record<string, string>) => string },
+) {
+  const { tr } = props;
+  const showAppError = useShellStore((s) => s.showAppError);
+  const [prefs, setPrefs] = useState<NotificationPrefs>(loadNotificationPrefs);
+  const [testing, setTesting] = useState(false);
+  const [testNote, setTestNote] = useState<string>();
+
+  function update(patch: Partial<NotificationPrefs>) {
+    setPrefs(patchNotificationPrefs(patch));
+  }
+
+  async function sendTest() {
+    setTesting(true);
+    setTestNote(undefined);
+    try {
+      // Test always fires even when the window is focused (ignores onlyWhenUnfocused).
+      const ok = await window.pix.notifications.show({
+        title: tr("notify.testTitle"),
+        body: tr("notify.testBody"),
+        silent: !prefs.sound,
+      });
+      if (!ok) {
+        showAppError(tr("notify.testFailed"));
+        setTestNote(tr("notify.testFailedHint"));
+        return;
+      }
+      setTestNote(tr("notify.testSent"));
+    } catch (error) {
+      showAppError(error instanceof Error ? error.message : tr("notify.testFailed"));
+      setTestNote(tr("notify.testFailedHint"));
+    } finally {
+      setTesting(false);
+    }
+  }
+
+  return (
+    <SettingsPageShell title={tr("section.notifications")} testId="settings-notifications">
+      <SettingsSectionBlock label={tr("section.notifications")} testId="settings-notify-options">
+        <SettingsRow
+          title={tr("notify.master")}
+          description={tr("notify.masterHint")}
+          control={
+            <SettingsToggle
+              checked={prefs.enabled}
+              onChange={(on) => update({ enabled: on })}
+              testId="settings-notify-enabled"
+              aria-label={tr("notify.master")}
+            />
+          }
+        />
+        <SettingsRow
+          title={tr("notify.onComplete")}
+          description={tr("notify.onCompleteHint")}
+          control={
+            <SettingsToggle
+              checked={prefs.onComplete}
+              onChange={(on) => update({ onComplete: on })}
+              testId="settings-notify-complete"
+              disabled={!prefs.enabled}
+              aria-label={tr("notify.onComplete")}
+            />
+          }
+        />
+        <SettingsRow
+          title={tr("notify.onError")}
+          description={tr("notify.onErrorHint")}
+          control={
+            <SettingsToggle
+              checked={prefs.onError}
+              onChange={(on) => update({ onError: on })}
+              testId="settings-notify-error"
+              disabled={!prefs.enabled}
+              aria-label={tr("notify.onError")}
+            />
+          }
+        />
+        <SettingsRow
+          title={tr("notify.onHostCrash")}
+          description={tr("notify.onHostCrashHint")}
+          control={
+            <SettingsToggle
+              checked={prefs.onHostCrash}
+              onChange={(on) => update({ onHostCrash: on })}
+              testId="settings-notify-crash"
+              disabled={!prefs.enabled}
+              aria-label={tr("notify.onHostCrash")}
+            />
+          }
+        />
+        <SettingsRow
+          title={tr("notify.onlyWhenUnfocused")}
+          description={tr("notify.onlyWhenUnfocusedHint")}
+          control={
+            <SettingsToggle
+              checked={prefs.onlyWhenUnfocused}
+              onChange={(on) => update({ onlyWhenUnfocused: on })}
+              testId="settings-notify-unfocused"
+              disabled={!prefs.enabled}
+              aria-label={tr("notify.onlyWhenUnfocused")}
+            />
+          }
+        />
+        <SettingsRow
+          title={tr("notify.sound")}
+          description={tr("notify.soundHint")}
+          control={
+            <SettingsToggle
+              checked={prefs.sound}
+              onChange={(on) => update({ sound: on })}
+              testId="settings-notify-sound"
+              disabled={!prefs.enabled}
+              aria-label={tr("notify.sound")}
+            />
+          }
+          last
+        />
+      </SettingsSectionBlock>
+      <div className="mt-4 flex flex-col items-start gap-2">
+        <SettingsPillButton
+          label={testing ? "…" : tr("notify.test")}
+          testId="settings-notify-test"
+          disabled={!prefs.enabled || testing}
+          onClick={() => void sendTest()}
+        />
+        {testNote ? (
+          <p className="m-0 text-[12px] text-[var(--muted-foreground)]" data-testid="settings-notify-test-note">
+            {testNote}
+          </p>
+        ) : null}
+      </div>
+    </SettingsPageShell>
+  );
+}
+
+function EnvironmentSection(
+  props: SettingsPageProps & { tr: (key: MessageKey, vars?: Record<string, string>) => string },
+) {
+  const { tr } = props;
+  const [visibility, setVisibility] = useState(loadEnvPanelVisibility);
+
+  function toggle(id: EnvPanelSectionId, on: boolean) {
+    const next = setEnvPanelSectionVisible(id, on);
+    setVisibility(next);
+    window.dispatchEvent(new Event("pix-env-panel-prefs"));
+  }
+
+  const rows: Array<{ id: EnvPanelSectionId; titleKey: MessageKey; descKey: MessageKey }> = [
+    { id: "changes", titleKey: "env.section.changes", descKey: "env.section.changesDesc" },
+    { id: "cwd", titleKey: "env.section.cwd", descKey: "env.section.cwdDesc" },
+    { id: "branch", titleKey: "env.section.branch", descKey: "env.section.branchDesc" },
+    {
+      id: "gitActions",
+      titleKey: "env.section.gitActions",
+      descKey: "env.section.gitActionsDesc",
+    },
+    { id: "openIn", titleKey: "env.section.openIn", descKey: "env.section.openInDesc" },
+    {
+      id: "localServices",
+      titleKey: "env.section.localServices",
+      descKey: "env.section.localServicesDesc",
+    },
+  ];
+
+  return (
+    <SettingsPageShell title={tr("section.environment")} testId="settings-environment">
+      <SettingsSectionBlock label={tr("env.title")} testId="settings-env-visibility">
+        {rows.map((row, index) => (
+          <SettingsRow
+            key={row.id}
+            title={tr(row.titleKey)}
+            description={tr(row.descKey)}
+            control={
+              <SettingsToggle
+                checked={visibility[row.id]}
+                onChange={(on) => toggle(row.id, on)}
+                testId={`settings-env-${row.id}`}
+                aria-label={tr(row.titleKey)}
+              />
+            }
+            last={index === rows.length - 1}
+          />
+        ))}
+      </SettingsSectionBlock>
+    </SettingsPageShell>
+  );
+}
+
+function WorktreeSection(
+  props: SettingsPageProps & { tr: (key: MessageKey, vars?: Record<string, string>) => string },
+) {
+  const { tr } = props;
+  const [wtRoot, setWtRoot] = useState("");
+  /** Last persisted configured value — avoid blur/save when unchanged. */
+  const [wtRootSaved, setWtRootSaved] = useState("");
+  const [wtDefaultRoot, setWtDefaultRoot] = useState("");
+  const [wtAutoDelete, setWtAutoDelete] = useState(true);
+  const [wtLimit, setWtLimit] = useState(10);
+  const [wtLoading, setWtLoading] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    void window.pix.workspace
+      .getWorktreePrefs(props.snapshot?.cwd)
+      .then((p) => {
+        if (cancelled) return;
+        setWtRoot(p.rootConfigured);
+        setWtRootSaved(p.rootConfigured);
+        setWtDefaultRoot(p.defaultRoot);
+        setWtAutoDelete(p.autoDelete);
+        setWtLimit(p.autoDeleteLimit);
+      })
+      .catch(() => {
+        /* host may be stopped */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [props.snapshot?.cwd]);
+
+  async function persistWorktree(patch: {
+    rootConfigured?: string;
+    autoDelete?: boolean;
+    autoDeleteLimit?: number;
+  }) {
+    setWtLoading(true);
+    try {
+      const p = await window.pix.workspace.setWorktreePrefs(patch);
+      // Only rewrite root field when this save touched it — empty field must stay empty
+      // and not flip when auto-delete / limit saves recompute defaultRoot for another cwd.
+      if (patch.rootConfigured !== undefined) {
+        setWtRoot(p.rootConfigured);
+        setWtRootSaved(p.rootConfigured);
+      }
+      setWtAutoDelete(p.autoDelete);
+      setWtLimit(p.autoDeleteLimit);
+      if (p.defaultRoot) setWtDefaultRoot(p.defaultRoot);
+    } catch (error) {
+      useShellStore
+        .getState()
+        .showAppError(error instanceof Error ? error.message : "Failed to save worktree prefs");
+    } finally {
+      setWtLoading(false);
+    }
+  }
+
+  return (
+    <SettingsPageShell title={tr("section.worktree")} testId="settings-worktree">
+      <SettingsSectionBlock label={tr("worktree.settings")} testId="settings-worktree-options">
+        <div className="settings-row settings-row-last !flex-col !items-stretch gap-3">
+          <div>
+            <div className="settings-row-title">{tr("worktree.root")}</div>
+            <div className="mt-2 flex flex-wrap items-center gap-1.5">
+              <input
+                data-testid="worktree-root-input"
+                className="h-8 min-w-0 flex-1 rounded-lg border border-[var(--border)] bg-transparent px-2.5 font-mono text-[12px] text-[var(--foreground)] outline-none focus:border-[var(--ring,#0a84ff)]"
+                value={wtRoot}
+                placeholder={wtDefaultRoot || tr("worktree.rootPlaceholder")}
+                disabled={wtLoading}
+                onChange={(e) => setWtRoot(e.target.value)}
+                onBlur={() => {
+                  if (wtRoot.trim() === wtRootSaved.trim()) return;
+                  void persistWorktree({ rootConfigured: wtRoot });
+                }}
+              />
+              <SettingsPillButton
+                label={tr("worktree.pickRoot")}
+                testId="worktree-root-pick"
+                disabled={wtLoading}
+                onClick={() => {
+                  void window.pix.workspace.pickFolder().then((folder) => {
+                    if (!folder) return;
+                    setWtRoot(folder);
+                    void persistWorktree({ rootConfigured: folder });
+                  });
+                }}
+              />
+              <SettingsPillButton
+                label={tr("worktree.clearRoot")}
+                testId="worktree-root-clear"
+                disabled={wtLoading || !wtRoot.trim()}
+                onClick={() => {
+                  setWtRoot("");
+                  void persistWorktree({ rootConfigured: "" });
+                }}
+              />
+            </div>
+          </div>
+          <div className="flex items-center justify-between gap-4 border-t border-[var(--border)] pt-3">
+            <div className="min-w-0">
+              <div className="settings-row-title">{tr("worktree.autoDelete")}</div>
+              <div className="settings-row-desc">{tr("worktree.autoDeleteHint")}</div>
+            </div>
+            <SettingsToggle
+              checked={wtAutoDelete}
+              onChange={(on) => {
+                setWtAutoDelete(on);
+                void persistWorktree({ autoDelete: on });
+              }}
+              testId="worktree-auto-delete"
+              disabled={wtLoading}
+              aria-label={tr("worktree.autoDelete")}
+            />
+          </div>
+          <div className="flex items-center justify-between gap-4 border-t border-[var(--border)] pt-3">
+            <div className="min-w-0">
+              <div className="settings-row-title">{tr("worktree.autoDeleteLimit")}</div>
+              <div className="settings-row-desc">{tr("worktree.autoDeleteLimitHint")}</div>
+            </div>
+            <input
+              type="number"
+              min={1}
+              max={100}
+              data-testid="worktree-auto-delete-limit"
+              className="h-8 w-20 rounded-lg border border-[var(--border)] bg-transparent px-2 text-right text-[13px] text-[var(--foreground)] outline-none disabled:opacity-40"
+              value={wtLimit}
+              disabled={wtLoading || !wtAutoDelete}
+              onChange={(e) => setWtLimit(Number(e.target.value) || 1)}
+              onBlur={() => void persistWorktree({ autoDeleteLimit: wtLimit })}
+            />
+          </div>
+        </div>
+      </SettingsSectionBlock>
+    </SettingsPageShell>
+  );
+}
+
+function GitSection(
+  props: SettingsPageProps & { tr: (key: MessageKey, vars?: Record<string, string>) => string },
+) {
+  const { tr } = props;
+  const [branchPrefix, setBranchPrefix] = useState("pix/");
+  const [pullMode, setPullMode] = useState<"merge" | "squash">("merge");
+  const [forcePush, setForcePush] = useState(false);
+  const [draftPr, setDraftPr] = useState(false);
+  const [customCommit, setCustomCommit] = useState("");
+  const [customPr, setCustomPr] = useState("");
+  const [modelKey, setModelKey] = useState("");
+  const [models, setModels] = useState<ModelSummary[]>([]);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    void window.pix.workspace
+      .getGitPrefs()
+      .then((p) => {
+        if (cancelled) return;
+        setBranchPrefix(p.branchPrefix);
+        setPullMode(p.pullMode);
+        setForcePush(p.forcePush);
+        setDraftPr(p.draftPr);
+        setCustomCommit(p.customCommitCommand);
+        setCustomPr(p.customPrCommand);
+        setModelKey(p.modelProvider && p.modelId ? `${p.modelProvider}/${p.modelId}` : "");
+      })
+      .catch(() => {
+        /* host may be stopped */
+      });
+    void (async () => {
+      try {
+        await props.onEnsureHost();
+        const list = await window.pix.models.list();
+        if (!cancelled) setModels(list);
+      } catch {
+        if (!cancelled) setModels([]);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [props.onEnsureHost]);
+
+  async function persist(patch: Parameters<typeof window.pix.workspace.setGitPrefs>[0]) {
+    setLoading(true);
+    try {
+      const p = await window.pix.workspace.setGitPrefs(patch);
+      setBranchPrefix(p.branchPrefix);
+      setPullMode(p.pullMode);
+      setForcePush(p.forcePush);
+      setDraftPr(p.draftPr);
+      setCustomCommit(p.customCommitCommand);
+      setCustomPr(p.customPrCommand);
+      setModelKey(p.modelProvider && p.modelId ? `${p.modelProvider}/${p.modelId}` : "");
+    } catch (error) {
+      useShellStore
+        .getState()
+        .showAppError(error instanceof Error ? error.message : "Failed to save git prefs");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  const modelOptions = useMemo(() => {
+    const opts = [
+      { value: "", label: tr("git.modelDefault") },
+      ...models.map((m) => ({
+        value: `${m.provider}/${m.id}`,
+        label: `${m.name || m.id} (${m.provider})`,
+      })),
+    ];
+    // Keep current selection visible even if host list is empty temporarily.
+    if (modelKey && !opts.some((o) => o.value === modelKey)) {
+      opts.push({ value: modelKey, label: modelKey });
+    }
+    return opts;
+  }, [models, modelKey, tr]);
+
+  return (
+    <SettingsPageShell title={tr("section.git")} testId="settings-git">
+      <SettingsSectionBlock label={tr("git.settings")} testId="settings-git-options">
+        <div className="settings-row items-center justify-between gap-4">
+          <div className="min-w-0">
+            <div className="settings-row-title">{tr("git.model")}</div>
+            <div className="settings-row-desc">{tr("git.modelHint")}</div>
+          </div>
+          <SettingsSelect
+            testId="git-model"
+            value={modelKey}
+            onChange={(v) => {
+              setModelKey(v);
+              if (!v) {
+                void persist({ modelProvider: "", modelId: "" });
+                return;
+              }
+              const slash = v.indexOf("/");
+              const provider = slash >= 0 ? v.slice(0, slash) : v;
+              const id = slash >= 0 ? v.slice(slash + 1) : "";
+              void persist({ modelProvider: provider, modelId: id });
+            }}
+            options={modelOptions}
+            disabled={loading}
+          />
+        </div>
+        <div className="settings-row !flex-col !items-stretch gap-2.5">
+          <div>
+            <div className="settings-row-title">{tr("git.branchPrefix")}</div>
+            <div className="settings-row-desc">{tr("git.branchPrefixHint")}</div>
+          </div>
+          <div className="settings-code-field-wrap">
+            <input
+              data-testid="git-branch-prefix"
+              className="settings-code-field settings-code-field-sm"
+              value={branchPrefix}
+              placeholder={tr("git.branchPrefixPlaceholder")}
+              disabled={loading}
+              spellCheck={false}
+              autoCorrect="off"
+              autoCapitalize="off"
+              onChange={(e) => setBranchPrefix(e.target.value)}
+              onBlur={() => void persist({ branchPrefix })}
+            />
+          </div>
+        </div>
+        <div className="settings-row items-center justify-between gap-4">
+          <div className="min-w-0">
+            <div className="settings-row-title">{tr("git.pullMode")}</div>
+            <div className="settings-row-desc">{tr("git.pullModeHint")}</div>
+          </div>
+          <SettingsSelect
+            testId="git-pull-mode"
+            value={pullMode}
+            onChange={(v) => {
+              const mode = v === "squash" ? "squash" : "merge";
+              setPullMode(mode);
+              void persist({ pullMode: mode });
+            }}
+            options={[
+              { value: "merge", label: tr("git.pullMerge") },
+              { value: "squash", label: tr("git.pullSquash") },
+            ]}
+            disabled={loading}
+          />
+        </div>
+        <SettingsRow
+          title={tr("git.forcePush")}
+          description={tr("git.forcePushHint")}
+          control={
+            <SettingsToggle
+              checked={forcePush}
+              onChange={(on) => {
+                setForcePush(on);
+                void persist({ forcePush: on });
+              }}
+              testId="git-force-push"
+              disabled={loading}
+              aria-label={tr("git.forcePush")}
+            />
+          }
+        />
+        <SettingsRow
+          title={tr("git.draftPr")}
+          description={tr("git.draftPrHint")}
+          control={
+            <SettingsToggle
+              checked={draftPr}
+              onChange={(on) => {
+                setDraftPr(on);
+                void persist({ draftPr: on });
+              }}
+              testId="git-draft-pr"
+              disabled={loading}
+              aria-label={tr("git.draftPr")}
+            />
+          }
+        />
+        <div className="settings-row !flex-col !items-stretch gap-2.5">
+          <div>
+            <div className="settings-row-title">{tr("git.customCommit")}</div>
+            <div className="settings-row-desc">{tr("git.customCommitHint")}</div>
+          </div>
+          <textarea
+            data-testid="git-custom-commit"
+            className="settings-prompt-field"
+            value={customCommit}
+            placeholder={tr("git.customCommitPlaceholder")}
+            disabled={loading}
+            rows={4}
+            onChange={(e) => setCustomCommit(e.target.value)}
+            onBlur={() => void persist({ customCommitCommand: customCommit })}
+          />
+        </div>
+        <div className="settings-row settings-row-last !flex-col !items-stretch gap-2.5">
+          <div>
+            <div className="settings-row-title">{tr("git.customPr")}</div>
+            <div className="settings-row-desc">{tr("git.customPrHint")}</div>
+          </div>
+          <textarea
+            data-testid="git-custom-pr"
+            className="settings-prompt-field"
+            value={customPr}
+            placeholder={tr("git.customPrPlaceholder")}
+            disabled={loading}
+            rows={4}
+            onChange={(e) => setCustomPr(e.target.value)}
+            onBlur={() => void persist({ customPrCommand: customPr })}
+          />
+        </div>
+      </SettingsSectionBlock>
+    </SettingsPageShell>
+  );
+}
+
+function BehaviorSection(
+  props: SettingsPageProps & { tr: (key: MessageKey, vars?: Record<string, string>) => string },
+) {
+  const { tr } = props;
+  const [confirmDelete, setConfirmDelete] = useState(loadConfirmDelete);
+  const [confirmArchive, setConfirmArchive] = useState(loadConfirmArchive);
+  return (
+    <SettingsPageShell title={tr("section.behavior")} testId="settings-behavior">
+      <SettingsSectionBlock label={tr("settings.behavior")} testId="settings-behavior-options">
+        <SettingsRow
+          title={tr("settings.confirmDelete")}
+          description={tr("settings.confirmDeleteHint")}
+          control={
+            <SettingsToggle
+              checked={confirmDelete}
+              onChange={(next) => {
+                setConfirmDelete(next);
+                saveConfirmDelete(next);
+              }}
+              testId="settings-confirm-delete"
+              aria-label={tr("settings.confirmDelete")}
+            />
+          }
+        />
+        <SettingsRow
+          title={tr("settings.confirmArchive")}
+          description={tr("settings.confirmArchiveHint")}
+          control={
+            <SettingsToggle
+              checked={confirmArchive}
+              onChange={(next) => {
+                setConfirmArchive(next);
+                saveConfirmArchive(next);
+              }}
+              testId="settings-confirm-archive"
+              aria-label={tr("settings.confirmArchive")}
+            />
+          }
+          last
+        />
+      </SettingsSectionBlock>
+    </SettingsPageShell>
+  );
+}
+
+function UsageLimitsSection(
+  props: SettingsPageProps & { tr: (key: MessageKey, vars?: Record<string, string>) => string },
+) {
+  const { tr } = props;
+  const [providers, setProviders] = useState<
+    Array<{ provider: string; displayName: string; configured: boolean; oauthActive: boolean }>
+  >([]);
+  const [loading, setLoading] = useState(false);
+
+  async function refresh() {
+    setLoading(true);
+    try {
+      await props.onEnsureHost();
+      const list = await window.pix.providers.list();
+      setProviders(
+        list
+          .filter((p) => p.configured || p.oauthAvailable)
+          .map((p) => ({
+            provider: p.provider,
+            displayName: p.displayName,
+            configured: p.configured,
+            oauthActive: p.oauthAvailable,
+          })),
+      );
+    } catch {
+      setProviders([]);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    void refresh();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  return (
+    <SettingsPageShell
+      title={tr("section.usage")}
+      testId="settings-usage"
+      titleAction={
+        <SettingsPillButton
+          label={loading ? "…" : tr("usage.refresh")}
+          testId="usage-refresh"
+          disabled={loading}
+          onClick={() => void refresh()}
+        />
+      }
+    >
+      <p className="mb-3 px-0.5 text-[12px] text-[var(--muted-foreground)]">
+        {tr("usage.pageHint")}
+      </p>
+      {providers.length === 0 ? (
+        <p className="m-0 text-[13px] text-[var(--text-subtle)]" data-testid="usage-empty">
+          {tr("usage.emptyAuth")}
+        </p>
+      ) : (
+        <SettingsSectionBlock label={tr("section.usage")} testId="usage-limits-list">
+          {providers.map((p, index) => {
+            const info = resolveProviderUsageLimit(p.provider);
+            return (
+              <div
+                key={p.provider}
+                className={cn(
+                  "settings-row !flex-col !items-stretch gap-1.5",
+                  index === providers.length - 1 && "settings-row-last",
+                )}
+                data-testid={`usage-row-${p.provider}`}
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <div className="settings-row-title">{p.displayName}</div>
+                  <span className="settings-status-chip">
+                    {p.oauthActive ? tr("auth.oauthActive") : tr("auth.configured")}
+                  </span>
+                </div>
+                <div className="settings-row-desc font-mono text-[11px]">{p.provider}</div>
+                <div className="mt-1 grid grid-cols-2 gap-2 text-[12px]">
+                  <div className="rounded-lg bg-[var(--accent)]/50 px-2.5 py-2">
+                    <div className="text-[var(--text-subtle)]">{tr("usage.period")}</div>
+                    <div className="mt-0.5 font-medium text-[var(--foreground)]">
+                      {tr(periodMessageKey(info.period) as MessageKey)}
+                    </div>
+                  </div>
+                  <div className="rounded-lg bg-[var(--accent)]/50 px-2.5 py-2">
+                    <div className="text-[var(--text-subtle)]">{tr("usage.status")}</div>
+                    <div className="mt-0.5 font-medium text-[var(--foreground)]">
+                      {p.oauthActive || p.configured ? tr("auth.configured") : tr("auth.missing")}
+                    </div>
+                  </div>
+                </div>
+                {info.noteFallback ? (
+                  <p className="m-0 text-[12px] leading-snug text-[var(--muted-foreground)]">
+                    <span className="text-[var(--text-subtle)]">{tr("usage.note")}: </span>
+                    {info.noteFallback}
+                  </p>
+                ) : null}
+              </div>
+            );
+          })}
+        </SettingsSectionBlock>
       )}
     </SettingsPageShell>
   );
@@ -614,12 +1527,11 @@ function ProvidersSection(
   const [loading, setLoading] = useState(false);
   const [keyProvider, setKeyProvider] = useState("");
   const [apiKey, setApiKey] = useState("");
-  const [formError, setFormError] = useState<string>();
   const [formNote, setFormNote] = useState<string>();
+  const showAppError = useShellStore((s) => s.showAppError);
 
   async function refreshProviders() {
     setLoading(true);
-    setFormError(undefined);
     try {
       await props.onEnsureHost();
       const list = await window.pix.providers.list();
@@ -631,7 +1543,7 @@ function ProvidersSection(
         }
       }
     } catch (error) {
-      setFormError(error instanceof Error ? error.message : "Failed to list providers");
+      showAppError(error instanceof Error ? error.message : "Failed to list providers");
     } finally {
       setLoading(false);
     }
@@ -654,10 +1566,9 @@ function ProvidersSection(
 
   async function saveApiKey(event: FormEvent) {
     event.preventDefault();
-    setFormError(undefined);
     setFormNote(undefined);
     if (!keyProvider.trim() || !apiKey.trim()) {
-      setFormError("Provider and API key are required.");
+      showAppError(tr("auth.apiKeyRequired"));
       return;
     }
     setLoading(true);
@@ -667,7 +1578,7 @@ function ProvidersSection(
       setApiKey("");
       setFormNote(`Saved key for ${keyProvider}`);
     } catch (error) {
-      setFormError(error instanceof Error ? error.message : "Failed to save API key");
+      showAppError(error instanceof Error ? error.message : "Failed to save API key");
     } finally {
       setLoading(false);
     }
@@ -675,12 +1586,11 @@ function ProvidersSection(
 
   async function clearAuth(provider: string) {
     setLoading(true);
-    setFormError(undefined);
     try {
       setProviders(await window.pix.providers.clearAuth(provider));
       setFormNote(`Cleared ${provider}`);
     } catch (error) {
-      setFormError(error instanceof Error ? error.message : "Failed to clear auth");
+      showAppError(error instanceof Error ? error.message : "Failed to clear auth");
     } finally {
       setLoading(false);
     }
@@ -754,11 +1664,7 @@ function ProvidersSection(
             </div>
           </label>
         </form>
-        {formError ? (
-          <p className="settings-form-error px-4 pb-3" data-testid="provider-form-error">
-            {formError}
-          </p>
-        ) : null}
+
         {formNote ? (
           <p className="settings-form-note px-4 pb-3" data-testid="provider-form-note">
             {formNote}
@@ -782,6 +1688,7 @@ function ProvidersSection(
                 <div className="settings-row-desc">
                   {provider.provider} · {provider.modelCount}
                   {provider.source ? ` · ${provider.source}` : ""}
+                  {provider.oauthAvailable ? ` · ${tr("auth.oauthActive")}` : ""}
                 </div>
               </div>
               <div className="flex shrink-0 items-center gap-2">
@@ -789,7 +1696,9 @@ function ProvidersSection(
                   className="settings-status-chip"
                   data-testid={`provider-configured-${provider.provider}`}
                 >
-                  {provider.configured ? tr("auth.configured") : tr("auth.missing")}
+                  {provider.configured || provider.oauthAvailable
+                    ? tr("auth.configured")
+                    : tr("auth.missing")}
                 </span>
                 <SettingsPillButton
                   label={tr("auth.clear")}
@@ -831,11 +1740,13 @@ function ModelsSection(
       ? `${props.snapshot.model.provider}/${props.snapshot.model.id}`
       : "";
 
+  const showAppError = useShellStore((s) => s.showAppError);
+
   function showError(err: unknown, fallback: string) {
     const raw = err instanceof Error ? err.message : fallback;
     const message =
       raw.replace(/^Error invoking remote method '[^']+':\s*(Error:\s*)?/i, "").trim() || fallback;
-    window.alert(message);
+    showAppError(message);
   }
 
   async function refresh() {
@@ -1027,16 +1938,15 @@ function PiSettingsSection(
   const { tr } = props;
   const [view, setView] = useState<PiSettingsView | undefined>();
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string>();
+  const showAppError = useShellStore((s) => s.showAppError);
 
   async function refresh() {
     setLoading(true);
-    setError(undefined);
     try {
       await props.onEnsureHost();
       setView(await window.pix.settings.get());
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load pi settings");
+      showAppError(err instanceof Error ? err.message : "Failed to load settings");
     } finally {
       setLoading(false);
     }
@@ -1049,11 +1959,10 @@ function PiSettingsSection(
 
   async function apply(patch: PiSettingsPatch) {
     setLoading(true);
-    setError(undefined);
     try {
       setView(await window.pix.settings.patch(patch));
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to save settings");
+      showAppError(err instanceof Error ? err.message : "Failed to save settings");
     } finally {
       setLoading(false);
     }
@@ -1065,12 +1974,6 @@ function PiSettingsSection(
 
   return (
     <SettingsPageShell title={tr("section.piSettings")} testId="settings-pi">
-      {error ? (
-        <p className="settings-form-error mb-2 px-0.5" data-testid="pi-settings-error">
-          {error}
-        </p>
-      ) : null}
-
       <SettingsSectionBlock label={tr("piSettings.sessionDefaults")}>
         <SettingsRow
           title={tr("piSettings.defaultThinking")}
