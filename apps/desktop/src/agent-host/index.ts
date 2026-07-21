@@ -494,10 +494,10 @@ async function handleCommand(command: HostCommand): Promise<void> {
         handle.respondExtensionUi(command.response);
         break;
       }
-      case "m0.p07Probe": {
+      case "test.photonProbe": {
         if (!handle) throw new Error("Agent Host is not ready");
-        if (process.env.PIX_M0_ENABLE_TEST_COMMANDS !== "1") {
-          throw new Error("M0 P07 command is disabled");
+        if (process.env.PIX_ENABLE_TEST_COMMANDS !== "1") {
+          throw new Error("Photon probe command is disabled");
         }
         const photon = await import("@silvia-odwyer/photon-node");
         const inputImage = photon.PhotonImage.new_from_byteslice(await readFile(command.imagePath));
@@ -506,7 +506,7 @@ async function handleCommand(command: HostCommand): Promise<void> {
           outputImage = photon.resize(inputImage, 1, 1, photon.SamplingFilter.Lanczos3);
           post({
             protocolVersion: IPC_PROTOCOL_VERSION,
-            type: "m0.p07Result",
+            type: "test.photonResult",
             requestId: command.requestId,
             result: {
               extensions: handle.runtime.services.resourceLoader.getExtensions().extensions.length,
@@ -525,10 +525,10 @@ async function handleCommand(command: HostCommand): Promise<void> {
         }
         break;
       }
-      case "m0.sequenceGap": {
+      case "test.sequenceGap": {
         if (!handle) throw new Error("Agent Host is not ready");
-        if (process.env.PIX_M0_ENABLE_TEST_COMMANDS !== "1") {
-          throw new Error("M0 sequence gap command is disabled");
+        if (process.env.PIX_ENABLE_TEST_COMMANDS !== "1") {
+          throw new Error("Sequence gap command is disabled");
         }
         sequence += 1;
         post({

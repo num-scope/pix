@@ -17,7 +17,7 @@ afterEach(async () => {
 });
 
 async function fixture() {
-  const root = await mkdtemp(join(tmpdir(), "pix-m2-"));
+  const root = await mkdtemp(join(tmpdir(), "pix-trust-"));
   temporaryDirectories.push(root);
   const home = join(root, "home");
   const agentDir = join(home, ".pi", "agent");
@@ -38,14 +38,14 @@ async function fixture() {
     join(agentDir, "models.json"),
     JSON.stringify({
       providers: {
-        "pix-m0": {
+        "pix-fake": {
           baseUrl: server.baseUrl,
           apiKey: "test-key",
           api: "openai-completions",
           models: [
             {
-              id: "pix-m0",
-              name: "Pix M0",
+              id: "pix-fake",
+              name: "Pix",
               reasoning: true,
               input: ["text"],
               cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
@@ -54,8 +54,8 @@ async function fixture() {
               compat: { supportsUsageInStreaming: true },
             },
             {
-              id: "pix-m0-b",
-              name: "Pix M0 B",
+              id: "pix-fake-b",
+              name: "Pix B",
               reasoning: false,
               input: ["text"],
               cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
@@ -71,7 +71,7 @@ async function fixture() {
   return { root, home, agentDir, project, toolPath };
 }
 
-describe("M2 workspace model trust resume", () => {
+describe("Workspace model trust resume", () => {
   it("exposes models, thinking, trust, and resumeRecent on createPixRuntime", async () => {
     const { root, agentDir, project } = await fixture();
     const trust = resolvePixProjectTrust(project, agentDir);
@@ -80,7 +80,7 @@ describe("M2 workspace model trust resume", () => {
     const handle = await createPixRuntime({
       cwd: project,
       agentDir,
-      model: { provider: "pix-m0", id: "pix-m0" },
+      model: { provider: "pix-fake", id: "pix-fake" },
       persistSession: true,
       projectTrusted: false,
     });
@@ -94,12 +94,12 @@ describe("M2 workspace model trust resume", () => {
       expect(Array.isArray(snap.availableThinkingLevels)).toBe(true);
 
       const models = handle.listModels();
-      expect(models.some((m) => m.id === "pix-m0")).toBe(true);
-      expect(models.some((m) => m.id === "pix-m0-b")).toBe(true);
+      expect(models.some((m) => m.id === "pix-fake")).toBe(true);
+      expect(models.some((m) => m.id === "pix-fake-b")).toBe(true);
 
-      // setModel may require auth; pix-m0 has key in models.json
-      const afterModel = await handle.setModel("pix-m0", "pix-m0-b");
-      expect(afterModel.model).toEqual({ provider: "pix-m0", id: "pix-m0-b" });
+      // setModel may require auth; pix-fake has key in models.json
+      const afterModel = await handle.setModel("pix-fake", "pix-fake-b");
+      expect(afterModel.model).toEqual({ provider: "pix-fake", id: "pix-fake-b" });
 
       if ((afterModel.availableThinkingLevels?.length ?? 0) > 0) {
         const level = afterModel.availableThinkingLevels![0]!;
@@ -121,7 +121,7 @@ describe("M2 workspace model trust resume", () => {
     const resumed = await createPixRuntime({
       cwd: project,
       agentDir,
-      model: { provider: "pix-m0", id: "pix-m0" },
+      model: { provider: "pix-fake", id: "pix-fake" },
       persistSession: true,
       resumeRecent: true,
       projectTrusted: true,
@@ -144,7 +144,7 @@ describe("M2 workspace model trust resume", () => {
     const switched = await createPixRuntime({
       cwd: other,
       agentDir,
-      model: { provider: "pix-m0", id: "pix-m0" },
+      model: { provider: "pix-fake", id: "pix-fake" },
       persistSession: true,
       projectTrusted: true,
     });
@@ -164,23 +164,23 @@ describe("provider auth projection", () => {
     const handle = await createPixRuntime({
       cwd: project,
       agentDir,
-      model: { provider: "pix-m0", id: "pix-m0" },
+      model: { provider: "pix-fake", id: "pix-fake" },
       projectTrusted: true,
     });
     try {
       const before = handle.listProviders();
-      expect(before.some((p) => p.provider === "pix-m0")).toBe(true);
-      const pix = before.find((p) => p.provider === "pix-m0");
+      expect(before.some((p) => p.provider === "pix-fake")).toBe(true);
+      const pix = before.find((p) => p.provider === "pix-fake");
       expect(pix?.configured).toBe(true);
       // models.json key counts as configured source
       expect(JSON.stringify(before)).not.toMatch(/test-key|sk-/i);
 
-      const afterSet = await handle.setProviderApiKey("pix-m0", "sk-test-provider-key-not-real");
-      const updated = afterSet.find((p) => p.provider === "pix-m0");
+      const afterSet = await handle.setProviderApiKey("pix-fake", "sk-test-provider-key-not-real");
+      const updated = afterSet.find((p) => p.provider === "pix-fake");
       expect(updated?.configured).toBe(true);
       expect(JSON.stringify(afterSet)).not.toContain("sk-test-provider-key-not-real");
 
-      const cleared = await handle.clearProviderAuth("pix-m0");
+      const cleared = await handle.clearProviderAuth("pix-fake");
       // may still be configured via models.json key
       expect(JSON.stringify(cleared)).not.toContain("sk-test-provider-key-not-real");
     } finally {

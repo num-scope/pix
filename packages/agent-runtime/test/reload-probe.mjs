@@ -1,7 +1,7 @@
 import { createPixRuntime } from "../src/index.ts";
 
 const [project, agentDir] = process.argv.slice(2);
-if (!project || !agentDir) throw new Error("u03-reload-probe requires project and agentDir");
+if (!project || !agentDir) throw new Error("reload-probe requires project and agentDir");
 
 const requests = [];
 const handle = await createPixRuntime({

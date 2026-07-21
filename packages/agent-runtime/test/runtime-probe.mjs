@@ -5,7 +5,7 @@ import { FakeOpenAiServer } from "../../test-utils/src/index.ts";
 
 const [project, agentDir, toolPath] = process.argv.slice(2);
 if (!project || !agentDir || !toolPath)
-  throw new Error("r01-probe requires project, agentDir, and toolPath");
+  throw new Error("runtime-probe requires project, agentDir, and toolPath");
 
 const server = new FakeOpenAiServer({ toolPath });
 await server.start();
@@ -14,14 +14,14 @@ await writeFile(
   join(agentDir, "models.json"),
   JSON.stringify({
     providers: {
-      "pix-m0": {
+      "pix-fake": {
         baseUrl: server.baseUrl,
         apiKey: "test-key-not-secret",
         api: "openai-completions",
         models: [
           {
-            id: "pix-m0",
-            name: "Pix M0 Fake Model",
+            id: "pix-fake",
+            name: "Pix Fake Model",
             reasoning: false,
             input: ["text"],
             cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
@@ -38,7 +38,7 @@ await writeFile(
 const handle = await createPixRuntime({
   cwd: project,
   agentDir,
-  model: { provider: "pix-m0", id: "pix-m0" },
+  model: { provider: "pix-fake", id: "pix-fake" },
   tools: ["read"],
 });
 

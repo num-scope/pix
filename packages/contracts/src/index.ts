@@ -114,7 +114,7 @@ export type RuntimeEvent =
       data?: unknown;
     };
 
-export interface P07ProbeResult {
+export interface PhotonProbeResult {
   extensions: number;
   extensionDiagnostics: number;
   input: { width: number; height: number };
@@ -375,7 +375,7 @@ export type HostCommand =
     }
   | {
       protocolVersion: typeof IPC_PROTOCOL_VERSION;
-      type: "m0.p07Probe";
+      type: "test.photonProbe";
       requestId: string;
       imagePath: string;
     }
@@ -388,7 +388,7 @@ export type HostCommand =
     }
   | {
       protocolVersion: typeof IPC_PROTOCOL_VERSION;
-      type: "host.snapshot" | "host.shutdown" | "agent.abort" | "m0.sequenceGap";
+      type: "host.snapshot" | "host.shutdown" | "agent.abort" | "test.sequenceGap";
       requestId: string;
     };
 
@@ -422,9 +422,9 @@ export type HostEvent =
     }
   | {
       protocolVersion: typeof IPC_PROTOCOL_VERSION;
-      type: "m0.p07Result";
+      type: "test.photonResult";
       requestId: string;
-      result: P07ProbeResult;
+      result: PhotonProbeResult;
     }
   | {
       protocolVersion: typeof IPC_PROTOCOL_VERSION;
@@ -630,7 +630,7 @@ export interface PixDesktopApi {
   extensionUi: {
     respond(response: ExtensionUiResponse): Promise<void>;
   };
-  m0: {
+  test: {
     crashHost(): Promise<void>;
   };
 }
@@ -846,7 +846,7 @@ export function isHostCommand(value: unknown): value is HostCommand {
   if (value.type === "packages.update") {
     return value.source === undefined || typeof value.source === "string";
   }
-  if (value.type === "m0.p07Probe") return typeof value.imagePath === "string";
+  if (value.type === "test.photonProbe") return typeof value.imagePath === "string";
   if (value.type === "extensionUi.respond") {
     return (
       typeof value.runtimeId === "string" &&
@@ -862,7 +862,7 @@ export function isHostCommand(value: unknown): value is HostCommand {
     value.type === "host.snapshot" ||
     value.type === "host.shutdown" ||
     value.type === "agent.abort" ||
-    value.type === "m0.sequenceGap"
+    value.type === "test.sequenceGap"
   );
 }
 
@@ -935,7 +935,7 @@ export function isHostEvent(value: unknown): value is HostEvent {
         value.args !== undefined &&
         (value.timeoutMs === undefined || typeof value.timeoutMs === "number")
       );
-    case "m0.p07Result":
+    case "test.photonResult":
       return (
         typeof value.requestId === "string" &&
         isRecord(value.result) &&

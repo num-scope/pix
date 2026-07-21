@@ -37,8 +37,8 @@ async function createGitPackage(
     mkdir(join(remoteRoot, "pix"), { recursive: true }),
   ]);
   await git(work, "init", "-b", "main");
-  await git(work, "config", "user.email", "pix-m0@example.invalid");
-  await git(work, "config", "user.name", "Pix M0");
+  await git(work, "config", "user.email", "pix-fake@example.invalid");
+  await git(work, "config", "user.name", "Pix");
   await writeFile(join(work, "prompts", "fixture.md"), `${name} v1\n`);
   if (withManifest) {
     await writeFile(
@@ -121,7 +121,7 @@ afterEach(async () => {
 
 describe("P03 git package transport", () => {
   it("clones both scopes, keeps pinned refs fixed, updates a branch, and reconciles a new ref", async () => {
-    const root = await mkdtemp(join(tmpdir(), "pix-p03-"));
+    const root = await mkdtemp(join(tmpdir(), "pix-pkg-"));
     temporaryDirectories.push(root);
     const agentDir = join(root, "home", ".pi", "agent");
     const cwd = join(root, "project");
@@ -190,7 +190,7 @@ describe("P03 git package transport", () => {
   }, 60_000);
 
   it("recovers a retained clone after an injected dependency-install failure", async () => {
-    const root = await mkdtemp(join(tmpdir(), "pix-p06-git-dependency-"));
+    const root = await mkdtemp(join(tmpdir(), "pix-pkg-git-dependency-"));
     temporaryDirectories.push(root);
     const agentDir = join(root, "home", ".pi", "agent");
     const cwd = join(root, "project");

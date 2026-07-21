@@ -33,10 +33,10 @@ function sendChunk(response: ServerResponse, value: unknown): void {
 
 function chunk(delta: Record<string, unknown>, finishReason: string | null = null) {
   return {
-    id: "chatcmpl-pix-m0",
+    id: "chatcmpl-pix-fake",
     object: "chat.completion.chunk",
     created: 1,
-    model: "pix-m0",
+    model: "pix-fake",
     choices: [{ index: 0, delta, finish_reason: finishReason }],
   };
 }

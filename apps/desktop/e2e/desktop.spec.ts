@@ -1,7 +1,9 @@
 import { test, expect, startHost } from "./fixtures.ts";
 
-test.describe("M1 shell Playwright E2E (macOS Electron)", () => {
-  test("R01: new thread, stream a tool turn, and abort a hanging response", async ({ page }) => {
+test.describe("Desktop shell Playwright E2E (macOS Electron)", () => {
+  test("Runtime: new thread, stream a tool turn, and abort a hanging response", async ({
+    page,
+  }) => {
     await startHost(page);
     await expect(page.getByTestId("sidebar")).toBeVisible();
     await expect(page.getByTestId("composer-dock")).toBeVisible();
@@ -18,7 +20,7 @@ test.describe("M1 shell Playwright E2E (macOS Electron)", () => {
       .poll(async () => page.getByTestId("timeline").innerText(), { timeout: 30_000 })
       .toMatch(/read|Tool/i);
     await expect(page.getByTestId("event-log")).toContainText("tool.");
-    await expect(page.getByTestId("runtime-snapshot")).toContainText('"id": "pix-m0"');
+    await expect(page.getByTestId("runtime-snapshot")).toContainText('"id": "pix-fake"');
     await expect(page.getByTestId("event-log")).toContainText("message.delta");
 
     // Mid-stream abort: fake model hangs after the first abort delta.
@@ -143,9 +145,9 @@ test.describe("M1 shell Playwright E2E (macOS Electron)", () => {
     await page.getByTestId("nav-settings").click();
     await page.getByTestId("settings-nav-appearance").click();
     await page.getByTestId("appearance-theme").selectOption("light");
-    await expect(page.getByTestId("pix-m0-app")).toHaveAttribute("data-theme", "light");
+    await expect(page.getByTestId("pix-app")).toHaveAttribute("data-theme", "light");
     await page.getByTestId("appearance-theme").selectOption("dark");
-    await expect(page.getByTestId("pix-m0-app")).toHaveAttribute("data-theme", "dark");
+    await expect(page.getByTestId("pix-app")).toHaveAttribute("data-theme", "dark");
     await page.getByTestId("settings-back").click();
 
     await page.getByTestId("open-palette").click();
@@ -197,7 +199,7 @@ test.describe("M1 shell Playwright E2E (macOS Electron)", () => {
       .getByTestId("composer-dock")
       .getByTestId("model-select")
       .inputValue();
-    expect(modelValue).toContain("pix-m0");
+    expect(modelValue).toContain("pix-fake");
 
     // Thinking select has at least one option from snapshot.
     const thinkingOptions = await page
@@ -306,8 +308,8 @@ test.describe("M1 shell Playwright E2E (macOS Electron)", () => {
     await expect(page.getByTestId("settings-rail")).toBeVisible();
     await page.getByTestId("settings-nav-providers").click();
     await expect(page.getByTestId("providers-list")).toBeVisible({ timeout: 15_000 });
-    await expect(page.getByTestId("provider-row-pix-m0")).toBeVisible();
-    await expect(page.getByTestId("provider-configured-pix-m0")).toContainText(
+    await expect(page.getByTestId("provider-row-pix-fake")).toBeVisible();
+    await expect(page.getByTestId("provider-configured-pix-fake")).toContainText(
       /configured|missing/,
     );
     const body = await page.getByTestId("providers-list").innerText();
@@ -327,7 +329,7 @@ test.describe("M1 shell Playwright E2E (macOS Electron)", () => {
     async function assertComposerAlignedToMain(opts?: { collapsed?: boolean }) {
       const main = await page.getByTestId("shell-main").boundingBox();
       const dock = await page.getByTestId("composer-dock").boundingBox();
-      const app = await page.getByTestId("pix-m0-app").boundingBox();
+      const app = await page.getByTestId("pix-app").boundingBox();
       expect(main).toBeTruthy();
       expect(dock).toBeTruthy();
       expect(app).toBeTruthy();
@@ -398,7 +400,7 @@ test.describe("M1 shell Playwright E2E (macOS Electron)", () => {
     await expect(page.getByTestId("thread-list")).toBeVisible();
   });
 
-  test("R04: crash probe keeps the window alive and New thread recovers the host", async ({
+  test("Crash recovery: crash probe keeps the window alive and New thread recovers the host", async ({
     page,
   }) => {
     await startHost(page);
@@ -415,7 +417,7 @@ test.describe("M1 shell Playwright E2E (macOS Electron)", () => {
       timeout: 15_000,
     });
     // Window must still be interactive.
-    await expect(page.getByTestId("pix-m0-app")).toBeVisible();
+    await expect(page.getByTestId("pix-app")).toBeVisible();
     await expect(page.getByTestId("start-host")).toBeEnabled();
 
     await page.getByTestId("start-host").click();

@@ -8,7 +8,7 @@ import {
   type HostEvent,
   type HostSnapshot,
   type ModelSummary,
-  type P07ProbeResult,
+  type PhotonProbeResult,
   type PackageSummary,
   type PiSettingsPatch,
   type PiSettingsView,
@@ -249,8 +249,8 @@ function isEphemeralWorkspacePath(path: string): boolean {
     normalized.includes("/tmp/") ||
     normalized.includes("/var/folders/") ||
     normalized.includes("/pix-e2e-") ||
-    normalized.includes("/pix-m0-") ||
-    normalized.includes("/pix-m2-") ||
+    normalized.includes("/pix-fake-") ||
+    normalized.includes("/pix-test-") ||
     normalized.includes("/pix-p0") ||
     normalized.includes("/fork-probe") ||
     normalized.includes("/recent-ws-") ||
@@ -393,7 +393,7 @@ class HostSupervisor {
     // Env fixture wins for smoke/e2e. Otherwise restore last durable workspace
     // (loadDesktopPrefs already falls back to first recent real project).
     this.#workspaceCwd =
-      process.env.PIX_M0_WORKSPACE ?? durableWorkspacePath(prefs.lastWorkspace) ?? undefined;
+      process.env.PIX_WORKSPACE ?? durableWorkspacePath(prefs.lastWorkspace) ?? undefined;
   }
 
   getWorkspaceCwd(): string | undefined {
@@ -480,7 +480,7 @@ class HostSupervisor {
   /**
    * Global "新建会话": detach from the live project session.
    * - Product: clear cwd so the next start requires an explicit project pick.
-   * - Isolated/e2e (`PIX_M0_WORKSPACE`): keep the fixture cwd for subsequent session.create.
+   * - Isolated/e2e (`PIX_WORKSPACE`): keep the fixture cwd for subsequent session.create.
    * Keeps the project on the recent list so it stays visible in the sidebar groups.
    */
   async clearActiveWorkspace(): Promise<void> {
@@ -490,7 +490,7 @@ class HostSupervisor {
     this.#snapshot = undefined;
     this.#host = undefined;
     this.#resumeRecent = false;
-    const fixture = process.env.PIX_M0_WORKSPACE;
+    const fixture = process.env.PIX_WORKSPACE;
     if (fixture) {
       this.#workspaceCwd = fixture;
       this.#requireExplicitWorkspace = false;
@@ -522,7 +522,7 @@ class HostSupervisor {
     ]);
 
     const cwd =
-      process.env.PIX_M0_WORKSPACE ??
+      process.env.PIX_WORKSPACE ??
       this.#workspaceCwd ??
       (this.#requireExplicitWorkspace
         ? undefined
@@ -541,15 +541,15 @@ class HostSupervisor {
     // Share CLI config: only override agentDir/model/tools when explicitly set
     // (isolated smoke/e2e). Product omits them → pi getAgentDir() + default tools/models.
     if (process.env.PI_CODING_AGENT_DIR) command.agentDir = process.env.PI_CODING_AGENT_DIR;
-    const modelProvider = process.env.PIX_M0_MODEL_PROVIDER;
-    const modelId = process.env.PIX_M0_MODEL_ID;
+    const modelProvider = process.env.PIX_MODEL_PROVIDER;
+    const modelId = process.env.PIX_MODEL_ID;
     if (modelProvider && modelId) command.model = { provider: modelProvider, id: modelId };
-    if (process.env.PIX_M0_TOOLS) {
-      command.tools = process.env.PIX_M0_TOOLS.split(",").map((tool) => tool.trim());
+    if (process.env.PIX_TOOLS) {
+      command.tools = process.env.PIX_TOOLS.split(",").map((tool) => tool.trim());
     }
     if (this.#sessionFile) command.sessionFile = this.#sessionFile;
     // Persist sessions like the CLI unless explicitly disabled.
-    else if (process.env.PIX_M0_PERSIST_SESSION !== "0") command.persistSession = true;
+    else if (process.env.PIX_PERSIST_SESSION !== "0") command.persistSession = true;
     if (this.#resumeRecent && !this.#sessionFile) command.resumeRecent = true;
 
     const event = await this.#request(command);
@@ -884,8 +884,8 @@ class HostSupervisor {
   }
 
   armCrashOnEvent(eventType: string): void {
-    if (process.env.PIX_M0_ENABLE_TEST_COMMANDS !== "1") {
-      throw new Error("M0 crash commands are disabled");
+    if (process.env.PIX_ENABLE_TEST_COMMANDS !== "1") {
+      throw new Error("Test crash commands are disabled");
     }
     this.#crashOnEvent = eventType;
   }
@@ -904,29 +904,29 @@ class HostSupervisor {
     } satisfies HostCommand);
   }
 
-  async p07Probe(imagePath: string): Promise<P07ProbeResult> {
-    if (process.env.PIX_M0_ENABLE_TEST_COMMANDS !== "1") {
-      throw new Error("M0 P07 command is disabled");
+  async photonProbe(imagePath: string): Promise<PhotonProbeResult> {
+    if (process.env.PIX_ENABLE_TEST_COMMANDS !== "1") {
+      throw new Error("Photon probe command is disabled");
     }
     const event = await this.#request({
       protocolVersion: IPC_PROTOCOL_VERSION,
-      type: "m0.p07Probe",
+      type: "test.photonProbe",
       requestId: randomUUID(),
       imagePath,
     });
-    if (event.type !== "m0.p07Result") {
-      throw new Error("Agent Host returned an unexpected P07 response");
+    if (event.type !== "test.photonResult") {
+      throw new Error("Agent Host returned an unexpected photon probe response");
     }
     return event.result;
   }
 
   async probeSequenceGap(): Promise<HostSnapshot> {
-    if (process.env.PIX_M0_ENABLE_TEST_COMMANDS !== "1") {
-      throw new Error("M0 sequence gap command is disabled");
+    if (process.env.PIX_ENABLE_TEST_COMMANDS !== "1") {
+      throw new Error("Sequence gap command is disabled");
     }
     const event = await this.#request({
       protocolVersion: IPC_PROTOCOL_VERSION,
-      type: "m0.sequenceGap",
+      type: "test.sequenceGap",
       requestId: randomUUID(),
     });
     if (event.type !== "runtime.snapshot") {
@@ -937,8 +937,8 @@ class HostSupervisor {
   }
 
   async crashHost(): Promise<void> {
-    if (process.env.PIX_M0_ENABLE_TEST_COMMANDS !== "1") {
-      throw new Error("M0 crash commands are disabled");
+    if (process.env.PIX_ENABLE_TEST_COMMANDS !== "1") {
+      throw new Error("Test crash commands are disabled");
     }
     const host = this.#host;
     if (!host) throw new Error("Agent Host is not running");
@@ -1001,7 +1001,7 @@ class HostSupervisor {
       }
       if (message.type === "extensionUi.request") {
         this.#count("extensionUi.request");
-        if (process.env.PIX_M0_AUTO_EXTENSION_UI === "1") {
+        if (process.env.PIX_AUTO_EXTENSION_UI === "1") {
           const args =
             typeof message.args === "object" && message.args !== null
               ? (message.args as Record<string, unknown>)
@@ -1012,7 +1012,7 @@ class HostSupervisor {
               : message.method === "select" && Array.isArray(args.options)
                 ? args.options[0]
                 : message.method === "input" || message.method === "editor"
-                  ? "pix-m0-input"
+                  ? "pix-test-input"
                   : undefined;
           host.child.postMessage({
             protocolVersion: IPC_PROTOCOL_VERSION,
@@ -1154,7 +1154,10 @@ async function expectRejected(operation: Promise<unknown>): Promise<boolean> {
   }
 }
 
-async function runR04(hostSupervisor: HostSupervisor, initial: HostSnapshot): Promise<void> {
+async function runCrashRecoveryProbe(
+  hostSupervisor: HostSupervisor,
+  initial: HostSnapshot,
+): Promise<void> {
   const snapshots = [initial];
 
   await hostSupervisor.crashHost();
@@ -1177,7 +1180,7 @@ async function runR04(hostSupervisor: HostSupervisor, initial: HostSnapshot): Pr
   const runtimeIds = snapshots.map((snapshot) => snapshot.runtimeId);
   const sessionFiles = snapshots.map((snapshot) => snapshot.sessionFile);
   const report = {
-    type: "pix.m0.r04",
+    type: "pix.smoke.recovery",
     runtimeIds,
     runtimeIdsUnique: new Set(runtimeIds).size === runtimeIds.length,
     sessionIdsStable: new Set(snapshots.map((snapshot) => snapshot.sessionId)).size === 1,
@@ -1204,7 +1207,7 @@ async function runR04(hostSupervisor: HostSupervisor, initial: HostSnapshot): Pr
     report.eventCounts["host.crashed"] !== 3 ||
     report.eventCounts["host.restarted"] !== 3
   ) {
-    throw new Error("R04 crash recovery invariants failed");
+    throw new Error("Crash recovery invariants failed");
   }
   console.log(JSON.stringify(report));
 }
@@ -1381,22 +1384,22 @@ void app
     ipcMain.handle("pix:extension-ui:respond", (_event, response: ExtensionUiResponse) =>
       supervisor?.extensionUiRespond(response),
     );
-    if (process.env.PIX_M0_ENABLE_TEST_COMMANDS === "1") {
-      ipcMain.handle("pix:m0:crash-host", () => supervisor?.crashHost());
+    if (process.env.PIX_ENABLE_TEST_COMMANDS === "1") {
+      ipcMain.handle("pix:test:crash-host", () => supervisor?.crashHost());
     }
 
-    if (process.env.PIX_M0_AUTO_START === "1") {
+    if (process.env.PIX_AUTO_START === "1") {
       const snapshot = await supervisor?.start();
       console.log(
         JSON.stringify({
-          type: "pix.m0.ready",
+          type: "pix.smoke.ready",
           runtimeId: snapshot?.runtimeId,
           resourceCounts: snapshot?.resources,
         }),
       );
 
-      if (process.env.PIX_M0_P07_IMAGE && supervisor) {
-        const result = await supervisor.p07Probe(process.env.PIX_M0_P07_IMAGE);
+      if (process.env.PIX_PHOTON_PROBE_IMAGE && supervisor) {
+        const result = await supervisor.photonProbe(process.env.PIX_PHOTON_PROBE_IMAGE);
         if (
           result.extensions !== 1 ||
           result.extensionDiagnostics !== 0 ||
@@ -1406,15 +1409,15 @@ void app
           result.output.height !== 1 ||
           result.output.bytes <= 0
         ) {
-          throw new Error("P07 extension/photon invariants failed");
+          throw new Error("Photon probe invariants failed");
         }
-        console.log(JSON.stringify({ type: "pix.m0.p07", ...result }));
+        console.log(JSON.stringify({ type: "pix.smoke.photon", ...result }));
       }
 
-      if (process.env.PIX_M0_AUTO_PROMPT && supervisor) {
-        let completed = await supervisor.prompt(process.env.PIX_M0_AUTO_PROMPT);
+      if (process.env.PIX_AUTO_PROMPT && supervisor) {
+        let completed = await supervisor.prompt(process.env.PIX_AUTO_PROMPT);
 
-        if (process.env.PIX_M0_AUTO_ABORT === "1") {
+        if (process.env.PIX_AUTO_ABORT === "1") {
           const nextDelta = (supervisor.eventCounts()["message.delta"] ?? 0) + 1;
           const abortPrompt = supervisor.prompt("ABORT this response after its first delta.");
           await waitForEventCount(supervisor, "message.delta", nextDelta);
@@ -1424,15 +1427,16 @@ void app
 
         console.log(
           JSON.stringify({
-            type: "pix.m0.r01",
+            type: "pix.smoke.runtime",
             sequence: completed.sequence,
             eventCounts: supervisor.eventCounts(),
           }),
         );
 
-        if (process.env.PIX_M0_AUTO_R04 === "1") await runR04(supervisor, completed);
+        if (process.env.PIX_AUTO_CRASH_PROBE === "1")
+          await runCrashRecoveryProbe(supervisor, completed);
       }
-    } else if (process.env.PIX_M0_NO_AUTO_RESUME !== "1" && supervisor) {
+    } else if (process.env.PIX_NO_AUTO_RESUME !== "1" && supervisor) {
       // Product cold start: restore last durable workspace and continue recent pi session.
       // Skip ephemeral fixture paths and missing directories.
       const cwd = durableWorkspacePath(supervisor.getWorkspaceCwd());
@@ -1457,7 +1461,7 @@ void app
       }
     }
 
-    const autoCloseMs = Number.parseInt(process.env.PIX_M0_AUTO_CLOSE_MS ?? "", 10);
+    const autoCloseMs = Number.parseInt(process.env.PIX_AUTO_CLOSE_MS ?? "", 10);
     if (Number.isFinite(autoCloseMs) && autoCloseMs > 0) setTimeout(() => app.quit(), autoCloseMs);
   })
   .catch((error: unknown) => {

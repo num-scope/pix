@@ -51,7 +51,7 @@ async function runRuntime(cwd: string, agentDir: string, home: string): Promise<
   }
   const { stdout } = await execFileAsync(
     process.execPath,
-    [join(import.meta.dirname, "c03-probe.mjs"), cwd],
+    [join(import.meta.dirname, "settings-probe.mjs"), cwd],
     {
       cwd,
       env: {
@@ -68,7 +68,7 @@ async function runRuntime(cwd: string, agentDir: string, home: string): Promise<
 }
 
 async function fixture() {
-  const root = await mkdtemp(join(tmpdir(), "pix-c02-c03-"));
+  const root = await mkdtemp(join(tmpdir(), "pix-settings-"));
   temporaryDirectories.push(root);
   const home = join(root, "home");
   const agentDir = join(home, ".pi", "agent");

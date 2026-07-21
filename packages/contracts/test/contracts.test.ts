@@ -55,23 +55,23 @@ describe("host contract validation", () => {
     expect(
       isHostCommand({
         protocolVersion: IPC_PROTOCOL_VERSION,
-        type: "m0.p07Probe",
-        requestId: "request-p07",
+        type: "test.photonProbe",
+        requestId: "request-photon",
         imagePath: "/tmp/input.png",
       }),
     ).toBe(true);
     expect(
       isHostCommand({
         protocolVersion: IPC_PROTOCOL_VERSION,
-        type: "m0.sequenceGap",
+        type: "test.sequenceGap",
         requestId: "request-gap",
       }),
     ).toBe(true);
     expect(
       isHostEvent({
         protocolVersion: IPC_PROTOCOL_VERSION,
-        type: "m0.p07Result",
-        requestId: "request-p07",
+        type: "test.photonResult",
+        requestId: "request-photon",
         result: {
           extensions: 1,
           extensionDiagnostics: 0,
@@ -138,8 +138,8 @@ describe("host contract validation", () => {
         type: "providers.list",
         providers: [
           {
-            provider: "pix-m0",
-            displayName: "Pix M0",
+            provider: "pix-fake",
+            displayName: "Pix",
             configured: true,
             source: "models_json_key",
             modelCount: 1,

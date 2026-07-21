@@ -38,9 +38,9 @@ afterEach(async () => {
   );
 });
 
-describe("R01 runtime streaming", () => {
+describe("Runtime streaming", () => {
   it("streams text, executes a core tool, aborts, and settles without real credentials", async () => {
-    const root = await mkdtemp(join(tmpdir(), "pix-r01-"));
+    const root = await mkdtemp(join(tmpdir(), "pix-runtime-"));
     temporaryDirectories.push(root);
     const home = join(root, "home");
     const agentDir = join(home, ".pi", "agent");
@@ -51,9 +51,9 @@ describe("R01 runtime streaming", () => {
       mkdir(join(home, ".agents"), { recursive: true }),
       mkdir(project, { recursive: true }),
     ]);
-    await writeFile(toolPath, "R01 tool fixture\n");
+    await writeFile(toolPath, "Runtime tool fixture\n");
 
-    const probe = join(import.meta.dirname, "r01-probe.mjs");
+    const probe = join(import.meta.dirname, "runtime-probe.mjs");
     const { stdout, stderr } = await execFileAsync(
       process.execPath,
       [probe, project, agentDir, toolPath],
@@ -72,7 +72,7 @@ describe("R01 runtime streaming", () => {
     expect(result.eventTypes).toContain("tool_execution_start");
     expect(result.eventTypes).toContain("tool_execution_end");
     expect(result.eventTypes).toContain("agent_settled");
-    expect(result.snapshot.model).toEqual({ provider: "pix-m0", id: "pix-m0" });
+    expect(result.snapshot.model).toEqual({ provider: "pix-fake", id: "pix-fake" });
     expect(result.snapshot.activeTools).toEqual(["read"]);
     expect(result.snapshot.sessionFile).toBeUndefined();
   }, 30_000);

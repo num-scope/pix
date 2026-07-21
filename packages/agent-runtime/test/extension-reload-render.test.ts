@@ -87,7 +87,7 @@ describe("U03 Extension UI reload cleanup", () => {
   });
 
   it("clears pending UI through session.reload without killing the runtime", async () => {
-    const root = await mkdtemp(join(tmpdir(), "pix-u03-reload-"));
+    const root = await mkdtemp(join(tmpdir(), "pix-ext-reload-"));
     temporaryDirectories.push(root);
     const home = join(root, "home");
     const agentDir = join(home, ".pi", "agent");
@@ -98,7 +98,7 @@ describe("U03 Extension UI reload cleanup", () => {
       mkdir(project, { recursive: true }),
     ]);
     await writeFile(
-      join(agentDir, "extensions", "u03-pending.ts"),
+      join(agentDir, "extensions", "reload-pending.ts"),
       `export default function (pi: any) {
   pi.on("session_start", async (_event: unknown, ctx: any) => {
     if (_event?.reason === "reload") {
@@ -114,7 +114,7 @@ describe("U03 Extension UI reload cleanup", () => {
 `,
     );
 
-    const probe = join(import.meta.dirname, "u03-reload-probe.mjs");
+    const probe = join(import.meta.dirname, "reload-probe.mjs");
     const { stdout, stderr } = await execFileAsync(process.execPath, [probe, project, agentDir], {
       cwd: project,
       env: isolatedEnvironment(home, agentDir),
@@ -218,7 +218,7 @@ describe("U05 generic custom renderers", () => {
   });
 
   it("projects custom messages from a live extension without executing renderers", async () => {
-    const root = await mkdtemp(join(tmpdir(), "pix-u05-render-"));
+    const root = await mkdtemp(join(tmpdir(), "pix-ext-render-"));
     temporaryDirectories.push(root);
     const home = join(root, "home");
     const agentDir = join(home, ".pi", "agent");
@@ -229,7 +229,7 @@ describe("U05 generic custom renderers", () => {
       mkdir(project, { recursive: true }),
     ]);
     await writeFile(
-      join(agentDir, "extensions", "u05-renderers.ts"),
+      join(agentDir, "extensions", "probe-renderers.ts"),
       `export default function (pi: any) {
   let messageRendererCalls = 0;
   let entryRendererCalls = 0;
@@ -237,14 +237,14 @@ describe("U05 generic custom renderers", () => {
     messageRendererCalls += 1;
     throw new Error("message renderer must not run");
   });
-  pi.registerEntryRenderer("pix-u05-entry", () => {
+  pi.registerEntryRenderer("pix-ext-entry", () => {
     entryRendererCalls += 1;
     throw new Error("entry renderer must not run");
   });
-  pi.registerCommand("u05-emit", {
+  pi.registerCommand("probe-emit", {
     description: "Emit custom message/entry for generic fallback",
     handler: async () => {
-      pi.appendEntry("pix-u05-entry", { note: "entry-data" });
+      pi.appendEntry("pix-ext-entry", { note: "entry-data" });
       pi.sendMessage({
         customType: "pix-u05",
         content: "visible custom message",
@@ -252,7 +252,7 @@ describe("U05 generic custom renderers", () => {
         details: { level: "info" },
       });
       pi.sendMessage({
-        customType: "pix-u05-hidden",
+        customType: "pix-ext-hidden",
         content: "hidden",
         display: false,
       });
@@ -263,7 +263,7 @@ describe("U05 generic custom renderers", () => {
 `,
     );
 
-    const probe = join(import.meta.dirname, "u05-render-probe.mjs");
+    const probe = join(import.meta.dirname, "render-probe.mjs");
     const { stdout, stderr } = await execFileAsync(process.execPath, [probe, project, agentDir], {
       cwd: project,
       env: isolatedEnvironment(home, agentDir),
@@ -287,7 +287,7 @@ describe("U05 generic custom renderers", () => {
     expect(result.hidden).toBeNull();
     expect(result.entry).toMatchObject({
       kind: "custom.entry",
-      customType: "pix-u05-entry",
+      customType: "pix-ext-entry",
       data: { note: "entry-data" },
     });
     expect(result.rendererCounts.messageRendererCalls).toBe(0);
@@ -298,7 +298,7 @@ describe("U05 generic custom renderers", () => {
 
 describe("U06 Extension runtime errors", () => {
   it("records event/tool/command/UI callback errors without terminating the runtime", async () => {
-    const root = await mkdtemp(join(tmpdir(), "pix-u06-errors-"));
+    const root = await mkdtemp(join(tmpdir(), "pix-ext-errors-"));
     temporaryDirectories.push(root);
     const home = join(root, "home");
     const agentDir = join(home, ".pi", "agent");
@@ -311,18 +311,18 @@ describe("U06 Extension runtime errors", () => {
     ]);
     await writeFile(toolPath, "U06 fixture\n");
     await writeFile(
-      join(agentDir, "extensions", "u06-errors.ts"),
+      join(agentDir, "extensions", "probe-errors.ts"),
       `import { Type } from "typebox";
 export default function (pi: any) {
   pi.on("session_start", async (event: any) => {
     if (event?.reason === "startup") {
-      throw new Error("pix-u06-event-handler-error");
+      throw new Error("pix-ext-event-handler-error");
     }
   });
-  pi.registerCommand("u06-boom", {
+  pi.registerCommand("probe-boom", {
     description: "Throw from command handler",
     handler: async () => {
-      throw new Error("pix-u06-command-error");
+      throw new Error("pix-ext-command-error");
     },
   });
   pi.registerTool({
@@ -331,18 +331,18 @@ export default function (pi: any) {
     description: "Throw from tool execute",
     parameters: Type.Object({}),
     async execute() {
-      throw new Error("pix-u06-tool-error");
+      throw new Error("pix-ext-tool-error");
     },
   });
   pi.on("agent_start", async (_event: unknown, ctx: any) => {
     // Force a UI request so Host can observe UI callback failure path if configured.
-    await ctx.ui.notify("u06-notify", "info");
+    await ctx.ui.notify("probe-notify", "info");
   });
 }
 `,
     );
 
-    const probe = join(import.meta.dirname, "u06-error-probe.mjs");
+    const probe = join(import.meta.dirname, "error-probe.mjs");
     const { stdout, stderr } = await execFileAsync(
       process.execPath,
       [probe, project, agentDir, toolPath],
@@ -365,10 +365,10 @@ export default function (pi: any) {
     expect(result.alive).toBe(true);
     expect(result.snapshot.runtimeId).toBeTruthy();
     const messages = result.diagnostics.map((item) => item.message).join("\n");
-    expect(messages).toContain("pix-u06-event-handler-error");
-    expect(messages).toContain("pix-u06-command-error");
+    expect(messages).toContain("pix-ext-event-handler-error");
+    expect(messages).toContain("pix-ext-command-error");
     expect(result.toolIsError).toBe(true);
-    expect(result.toolOutput.toLowerCase()).toContain("pix-u06-tool-error");
+    expect(result.toolOutput.toLowerCase()).toContain("pix-ext-tool-error");
     expect(result.uiCallbackError).toBe(true);
     expect(JSON.stringify(result.diagnostics)).not.toContain(home);
   }, 50_000);

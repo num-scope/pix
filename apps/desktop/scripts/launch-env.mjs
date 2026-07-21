@@ -1,6 +1,6 @@
 /**
  * Shared launch environment for interactive / isolated desktop runs.
- * Used by launch-m0.mjs and dev.mjs.
+ * Used by launch.mjs and dev.mjs.
  */
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -20,20 +20,20 @@ export async function prepareLaunchEnv(options = {}) {
     const environment = {
       ...process.env,
       // CLI-compatible durable sessions unless the user disables.
-      PIX_M0_PERSIST_SESSION: process.env.PIX_M0_PERSIST_SESSION ?? "1",
+      PIX_PERSIST_SESSION: process.env.PIX_PERSIST_SESSION ?? "1",
     };
     delete environment.ELECTRON_RUN_AS_NODE;
     // Never inherit probe fixtures into product mode.
-    delete environment.PIX_M0_WORKSPACE;
-    delete environment.PIX_M0_AUTO_START;
-    delete environment.PIX_M0_AUTO_PROMPT;
-    delete environment.PIX_M0_AUTO_ABORT;
-    delete environment.PIX_M0_AUTO_R04;
-    delete environment.PIX_M0_AUTO_CLOSE_MS;
-    delete environment.PIX_M0_TOOLS;
-    if (!process.env.PIX_M0_MODEL_PROVIDER) {
-      delete environment.PIX_M0_MODEL_PROVIDER;
-      delete environment.PIX_M0_MODEL_ID;
+    delete environment.PIX_WORKSPACE;
+    delete environment.PIX_AUTO_START;
+    delete environment.PIX_AUTO_PROMPT;
+    delete environment.PIX_AUTO_ABORT;
+    delete environment.PIX_AUTO_CRASH_PROBE;
+    delete environment.PIX_AUTO_CLOSE_MS;
+    delete environment.PIX_TOOLS;
+    if (!process.env.PIX_MODEL_PROVIDER) {
+      delete environment.PIX_MODEL_PROVIDER;
+      delete environment.PIX_MODEL_ID;
     }
     // Use the same agent dir as the `pi` CLI unless the user overrode it.
     if (!process.env.PI_CODING_AGENT_DIR) {
@@ -46,7 +46,7 @@ export async function prepareLaunchEnv(options = {}) {
     };
   }
 
-  const root = await mkdtemp(join(tmpdir(), "pix-m0-"));
+  const root = await mkdtemp(join(tmpdir(), "pix-fake-"));
   const home = join(root, "home");
   const agentDir = join(home, ".pi", "agent");
   const workspace = join(root, "workspace");
@@ -57,7 +57,7 @@ export async function prepareLaunchEnv(options = {}) {
     mkdir(workspace, { recursive: true }),
   ]);
   const toolPath = join(workspace, "fixture.txt");
-  await writeFile(toolPath, "Pix Electron R01 fixture\n");
+  await writeFile(toolPath, "Pix Electron smoke fixture\n");
 
   const fakeModel = new FakeOpenAiServer({ toolPath });
   await fakeModel.start();
@@ -65,14 +65,14 @@ export async function prepareLaunchEnv(options = {}) {
     join(agentDir, "models.json"),
     JSON.stringify({
       providers: {
-        "pix-m0": {
+        "pix-fake": {
           baseUrl: fakeModel.baseUrl,
           apiKey: "test-key-not-secret",
           api: "openai-completions",
           models: [
             {
-              id: "pix-m0",
-              name: "Pix M0 Fake Model",
+              id: "pix-fake",
+              name: "Pix Fake Model",
               reasoning: false,
               input: ["text"],
               cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
@@ -92,19 +92,19 @@ export async function prepareLaunchEnv(options = {}) {
     USERPROFILE: home,
     XDG_CONFIG_HOME: join(home, ".config"),
     PI_CODING_AGENT_DIR: agentDir,
-    PIX_M0_WORKSPACE: workspace,
-    PIX_M0_MODEL_PROVIDER: "pix-m0",
-    PIX_M0_MODEL_ID: "pix-m0",
-    PIX_M0_TOOLS: "read",
-    PIX_M0_PERSIST_SESSION: "1",
-    PIX_M0_ENABLE_TEST_COMMANDS: "1",
+    PIX_WORKSPACE: workspace,
+    PIX_MODEL_PROVIDER: "pix-fake",
+    PIX_MODEL_ID: "pix-fake",
+    PIX_TOOLS: "read",
+    PIX_PERSIST_SESSION: "1",
+    PIX_ENABLE_TEST_COMMANDS: "1",
     ...(smoke
       ? {
-          PIX_M0_AUTO_START: "1",
-          PIX_M0_AUTO_PROMPT: "Use the read tool for the fixture file.",
-          PIX_M0_AUTO_ABORT: "1",
-          PIX_M0_AUTO_R04: "1",
-          PIX_M0_AUTO_CLOSE_MS: "2500",
+          PIX_AUTO_START: "1",
+          PIX_AUTO_PROMPT: "Use the read tool for the fixture file.",
+          PIX_AUTO_ABORT: "1",
+          PIX_AUTO_CRASH_PROBE: "1",
+          PIX_AUTO_CLOSE_MS: "2500",
         }
       : {}),
   };
@@ -112,10 +112,10 @@ export async function prepareLaunchEnv(options = {}) {
 
   return {
     environment,
-    label: `Pix M0 isolated home: ${root}`,
+    label: `Pix isolated home: ${root}`,
     cleanup: async () => {
       await fakeModel.stop();
-      if (process.env.PIX_M0_KEEP_HOME === "1") console.log(`Kept Pix M0 home: ${root}`);
+      if (process.env.PIX_KEEP_HOME === "1") console.log(`Kept Pix home: ${root}`);
       else await rm(root, { recursive: true, force: true });
     },
   };

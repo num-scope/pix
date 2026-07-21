@@ -26,7 +26,7 @@ describe("workspace helpers", () => {
       "/var/folders/xx/T/pix-e2e-abc/workspace",
       "/Users/me/code/other",
       "/Users/me/code/pix",
-      "/tmp/pix-m0-xyz/workspace",
+      "/tmp/pix-fake-xyz/workspace",
     ];
     expect(filterRecentWorkspaces(paths, { current: "/Users/me/code/pix", max: 5 })).toEqual([
       "/Users/me/code/other",

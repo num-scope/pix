@@ -413,7 +413,7 @@ function App() {
 
   async function crash() {
     try {
-      await window.pix.m0.crashHost();
+      await window.pix.test.crashHost();
     } catch (error) {
       setStatus(error instanceof Error ? error.message : "Crash command failed");
     }
@@ -844,7 +844,7 @@ function App() {
           ["--sidebar-current-width" as string]: `${railWidth}px`,
         } as React.CSSProperties
       }
-      data-testid="pix-m0-app"
+      data-testid="pix-app"
       data-theme={colorMode}
       data-sidebar-translucent={sidebarTranslucent ? "true" : "false"}
     >

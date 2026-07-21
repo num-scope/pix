@@ -5,11 +5,11 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { FakeOpenAiServer } from "../../../packages/test-utils/src/index.ts";
 
-if (process.platform !== "darwin") throw new Error("The current packaged M0 smoke targets macOS");
+if (process.platform !== "darwin") throw new Error("The current packaged smoke targets macOS");
 
 const appDirectory = join(dirname(fileURLToPath(import.meta.url)), "..");
-const executable = join(appDirectory, "release/m0/mac-arm64/Pix M0.app/Contents/MacOS/Pix M0");
-const root = await mkdtemp(join(tmpdir(), "pix-packaged-r01-"));
+const executable = join(appDirectory, "release/app/mac-arm64/Pix.app/Contents/MacOS/Pix");
+const root = await mkdtemp(join(tmpdir(), "pix-packaged-smoke-"));
 const home = join(root, "home");
 const agentDir = join(home, ".pi", "agent");
 const workspace = join(root, "workspace");
@@ -20,7 +20,7 @@ await Promise.all([
   mkdir(join(home, ".agents"), { recursive: true }),
   mkdir(workspace, { recursive: true }),
 ]);
-await writeFile(toolPath, "Pix packaged R01 fixture\n");
+await writeFile(toolPath, "Pix packaged smoke fixture\n");
 
 const fakeModel = new FakeOpenAiServer({ toolPath });
 await fakeModel.start();
@@ -28,14 +28,14 @@ await writeFile(
   join(agentDir, "models.json"),
   JSON.stringify({
     providers: {
-      "pix-m0": {
+      "pix-fake": {
         baseUrl: fakeModel.baseUrl,
         apiKey: "test-key-not-secret",
         api: "openai-completions",
         models: [
           {
-            id: "pix-m0",
-            name: "Pix M0 Fake Model",
+            id: "pix-fake",
+            name: "Pix Fake Model",
             reasoning: false,
             input: ["text"],
             cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
@@ -55,17 +55,17 @@ const environment = {
   USERPROFILE: home,
   XDG_CONFIG_HOME: join(home, ".config"),
   PI_CODING_AGENT_DIR: agentDir,
-  PIX_M0_WORKSPACE: workspace,
-  PIX_M0_MODEL_PROVIDER: "pix-m0",
-  PIX_M0_MODEL_ID: "pix-m0",
-  PIX_M0_TOOLS: "read",
-  PIX_M0_AUTO_START: "1",
-  PIX_M0_AUTO_PROMPT: "Use the read tool for the fixture file.",
-  PIX_M0_AUTO_ABORT: "1",
-  PIX_M0_AUTO_R04: "1",
-  PIX_M0_ENABLE_TEST_COMMANDS: "1",
-  PIX_M0_PERSIST_SESSION: "1",
-  PIX_M0_AUTO_CLOSE_MS: "1000",
+  PIX_WORKSPACE: workspace,
+  PIX_MODEL_PROVIDER: "pix-fake",
+  PIX_MODEL_ID: "pix-fake",
+  PIX_TOOLS: "read",
+  PIX_AUTO_START: "1",
+  PIX_AUTO_PROMPT: "Use the read tool for the fixture file.",
+  PIX_AUTO_ABORT: "1",
+  PIX_AUTO_CRASH_PROBE: "1",
+  PIX_ENABLE_TEST_COMMANDS: "1",
+  PIX_PERSIST_SESSION: "1",
+  PIX_AUTO_CLOSE_MS: "1000",
 };
 delete environment.ELECTRON_RUN_AS_NODE;
 
@@ -85,9 +85,12 @@ try {
 
   if (exitCode !== 0) throw new Error(`Packaged Electron exited with ${exitCode}: ${stderr}`);
 
-  const r01Line = stdout.split("\n").find((line) => line.includes('"type":"pix.m0.r01"'));
-  if (!r01Line) throw new Error(`Packaged R01 report was not emitted:\n${stdout}\n${stderr}`);
-  const r01 = JSON.parse(r01Line);
+  const runtimeLine = stdout
+    .split("\n")
+    .find((line) => line.includes('"type":"pix.smoke.runtime"'));
+  if (!runtimeLine)
+    throw new Error(`Packaged runtime smoke report was not emitted:\n${stdout}\n${stderr}`);
+  const runtimeReport = JSON.parse(runtimeLine);
   for (const event of [
     "agent.started",
     "message.delta",
@@ -96,12 +99,16 @@ try {
     "agent.settled",
     "message.failed",
   ]) {
-    if (!r01.eventCounts?.[event]) throw new Error(`Packaged R01 did not emit ${event}`);
+    if (!runtimeReport.eventCounts?.[event])
+      throw new Error(`Packaged runtime smoke did not emit ${event}`);
   }
 
-  const r04Line = stdout.split("\n").find((line) => line.includes('"type":"pix.m0.r04"'));
-  if (!r04Line) throw new Error(`Packaged R04 report was not emitted:\n${stdout}\n${stderr}`);
-  const r04 = JSON.parse(r04Line);
+  const recoveryLine = stdout
+    .split("\n")
+    .find((line) => line.includes('"type":"pix.smoke.recovery"'));
+  if (!recoveryLine)
+    throw new Error(`Packaged recovery smoke report was not emitted:\n${stdout}\n${stderr}`);
+  const recoveryReport = JSON.parse(recoveryLine);
   for (const key of [
     "runtimeIdsUnique",
     "sessionIdsStable",
@@ -111,21 +118,22 @@ try {
     "gapRecovered",
     "windowAlive",
   ]) {
-    if (r04[key] !== true) throw new Error(`Packaged R04 failed ${key}`);
+    if (recoveryReport[key] !== true) throw new Error(`Packaged recovery smoke failed ${key}`);
   }
   if (
-    r04.eventCounts?.["host.crashed"] !== 3 ||
-    r04.eventCounts?.["host.restarted"] !== 3 ||
-    r04.eventCounts?.["runtime.gap"] !== 1
+    recoveryReport.eventCounts?.["host.crashed"] !== 3 ||
+    recoveryReport.eventCounts?.["host.restarted"] !== 3 ||
+    recoveryReport.eventCounts?.["runtime.gap"] !== 1
   ) {
-    throw new Error("Packaged R04 did not complete three crash/restart cycles");
+    throw new Error("Packaged recovery smoke did not complete three crash/restart cycles");
   }
-  const sessionLines = (await readFile(r04.sessionFile, "utf8")).trim().split("\n");
-  if (sessionLines.length < 2) throw new Error("Packaged R04 session did not flush JSONL entries");
+  const sessionLines = (await readFile(recoveryReport.sessionFile, "utf8")).trim().split("\n");
+  if (sessionLines.length < 2)
+    throw new Error("Packaged recovery smoke session did not flush JSONL entries");
   for (const line of sessionLines) JSON.parse(line);
 
-  console.log(r01Line);
-  console.log(r04Line);
+  console.log(runtimeLine);
+  console.log(recoveryLine);
 } finally {
   await fakeModel.stop();
   await rm(root, { recursive: true, force: true });

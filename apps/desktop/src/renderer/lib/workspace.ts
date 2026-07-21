@@ -25,8 +25,8 @@ export function isEphemeralWorkspacePath(path: string): boolean {
     normalized.includes("/tmp/") ||
     normalized.includes("/var/folders/") ||
     normalized.includes("/pix-e2e-") ||
-    normalized.includes("/pix-m0-") ||
-    normalized.includes("/pix-m2-") ||
+    normalized.includes("/pix-fake-") ||
+    normalized.includes("/pix-test-") ||
     normalized.includes("/pix-p0") ||
     normalized.includes("/fork-probe") ||
     normalized.includes("/recent-ws-") ||

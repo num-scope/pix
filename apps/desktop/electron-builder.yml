@@ -1,11 +1,11 @@
-appId: dev.pix.m0
-productName: Pix M0
+appId: dev.pix.app
+productName: Pix
 asar: true
 files:
   - dist/**
   - package.json
 directories:
-  output: release/m0
+  output: release/app
   buildResources: build
 # CI packages unsigned platform dirs (`pnpm package` → electron-builder --dir).
 # Identity null keeps mac builds green without Developer ID secrets.

@@ -5,7 +5,7 @@ import { FakeOpenAiServer } from "../../test-utils/src/index.ts";
 
 const [project, agentDir, toolPath] = process.argv.slice(2);
 if (!project || !agentDir || !toolPath) {
-  throw new Error("u06-error-probe requires project, agentDir, and toolPath");
+  throw new Error("error-probe requires project, agentDir, and toolPath");
 }
 
 const server = new FakeOpenAiServer({
@@ -18,14 +18,14 @@ await writeFile(
   join(agentDir, "models.json"),
   JSON.stringify({
     providers: {
-      "pix-m0": {
+      "pix-fake": {
         baseUrl: server.baseUrl,
         apiKey: "test-key-not-secret",
         api: "openai-completions",
         models: [
           {
-            id: "pix-m0",
-            name: "Pix M0 Fake Model",
+            id: "pix-fake",
+            name: "Pix Fake Model",
             reasoning: false,
             input: ["text"],
             cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
@@ -43,19 +43,19 @@ let uiThrew = false;
 const handle = await createPixRuntime({
   cwd: project,
   agentDir,
-  model: { provider: "pix-m0", id: "pix-m0" },
+  model: { provider: "pix-fake", id: "pix-fake" },
   tools: ["u06_boom_tool"],
   onExtensionUiRequest: (request) => {
     if (request.method === "notify") {
       uiThrew = true;
-      throw new Error("pix-u06-ui-callback-error");
+      throw new Error("pix-ext-ui-callback-error");
     }
   },
 });
 
 try {
   // Command handler error (recorded by pi ExtensionRunner.onError).
-  await handle.runtime.session.prompt("/u06-boom");
+  await handle.runtime.session.prompt("/probe-boom");
 
   // Tool execute error via fake model tool call.
   const events = [];
@@ -88,10 +88,10 @@ try {
       alive: true,
       diagnostics: snapshot.diagnostics,
       toolIsError,
-      toolOutput: toolOutput.includes("pix-u06-tool-error")
+      toolOutput: toolOutput.includes("pix-ext-tool-error")
         ? toolOutput
         : `${toolOutput}\n${diagnosticsText}`,
-      uiCallbackError: uiThrew || diagnosticsText.includes("pix-u06-ui-callback-error"),
+      uiCallbackError: uiThrew || diagnosticsText.includes("pix-ext-ui-callback-error"),
       snapshot,
     })}\n`,
   );

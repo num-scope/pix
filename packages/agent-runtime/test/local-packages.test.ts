@@ -77,7 +77,7 @@ afterEach(async () => {
 
 describe("P04 local package transport", () => {
   it("persists absolute global and relative project sources without copying them", async () => {
-    const root = await mkdtemp(join(tmpdir(), "pix-p04-"));
+    const root = await mkdtemp(join(tmpdir(), "pix-pkg-"));
     temporaryDirectories.push(root);
     const agentDir = join(root, "home", ".pi", "agent");
     const cwd = join(root, "project");

@@ -1,7 +1,7 @@
 import { defineConfig } from "@playwright/test";
 
 /**
- * Electron E2E for the M0 probe UI.
+ * Electron E2E for the Pix desktop UI.
  * Workers must stay at 1 — each test launches a full Electron + utility Host.
  */
 export default defineConfig({

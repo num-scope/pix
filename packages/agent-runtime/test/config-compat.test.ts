@@ -40,7 +40,7 @@ afterEach(async () => {
 
 describe("C04 invalid settings/models/auth", () => {
   it("keeps host alive, preserves broken file bytes, and recovers after repair", async () => {
-    const paths = await fixture("pix-c04-");
+    const paths = await fixture("pix-test-");
     const settingsPath = join(paths.agentDir, "settings.json");
     const modelsPath = join(paths.agentDir, "models.json");
     const authPath = join(paths.agentDir, "auth.json");
@@ -86,14 +86,14 @@ describe("C04 invalid settings/models/auth", () => {
         modelsPath,
         `${JSON.stringify({
           providers: {
-            "pix-m0": {
+            "pix-fake": {
               baseUrl: "http://127.0.0.1:9/v1",
               apiKey: "test",
               api: "openai-completions",
               models: [
                 {
-                  id: "pix-m0",
-                  name: "Pix M0",
+                  id: "pix-fake",
+                  name: "Pix",
                   reasoning: false,
                   input: ["text"],
                   cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
@@ -111,14 +111,14 @@ describe("C04 invalid settings/models/auth", () => {
     const recovered = await createPixRuntime({
       cwd: paths.cwd,
       agentDir: paths.agentDir,
-      model: { provider: "pix-m0", id: "pix-m0" },
+      model: { provider: "pix-fake", id: "pix-fake" },
     });
     try {
       const snapshot = recovered.snapshot();
       const messages = snapshot.diagnostics.map((item) => item.message).join("\n");
       expect(messages.toLowerCase()).not.toMatch(/settings .*failed/);
       expect(messages.toLowerCase()).not.toMatch(/models failed/);
-      expect(snapshot.model).toEqual({ provider: "pix-m0", id: "pix-m0" });
+      expect(snapshot.model).toEqual({ provider: "pix-fake", id: "pix-fake" });
       expect(SettingsManager.create(paths.cwd, paths.agentDir).getTheme()).toBe("dark");
     } finally {
       await recovered.dispose();
@@ -128,7 +128,7 @@ describe("C04 invalid settings/models/auth", () => {
 
 describe("C05 external settings changes", () => {
   it("reloads atomic rename and in-place writes without rewriting the file", async () => {
-    const paths = await fixture("pix-c05-");
+    const paths = await fixture("pix-test-");
     const settingsPath = join(paths.agentDir, "settings.json");
     await writeFile(settingsPath, `${JSON.stringify({ theme: "light", keep: true }, null, 2)}\n`);
 
@@ -171,7 +171,7 @@ describe("C05 external settings changes", () => {
 
 describe("C06 desktop state deletion isolation", () => {
   it("does not store agent config in userData and survives userData deletion", async () => {
-    const paths = await fixture("pix-c06-");
+    const paths = await fixture("pix-test-");
     const settingsPath = join(paths.agentDir, "settings.json");
     await writeFile(
       settingsPath,
@@ -201,7 +201,7 @@ describe("C06 desktop state deletion isolation", () => {
 
 describe("C07 session dir precedence", () => {
   it("resolves explicit > env > settings > default and persists under the winner", async () => {
-    const paths = await fixture("pix-c07-");
+    const paths = await fixture("pix-test-");
     const settingsDir = join(paths.root, "from-settings");
     const envDir = join(paths.root, "from-env");
     const explicitDir = join(paths.root, "from-explicit");

@@ -325,7 +325,7 @@ function ProductRail(
           label={tr("nav.settings")}
           onClick={props.onOpenSettings}
         />
-        {/* M0/M1 probes — not product chrome; stay collapsed under Developer. */}
+        {/* Dev probes — not product chrome; stay collapsed under Developer. */}
         <details
           className="group rounded-lg border border-transparent open:border-[var(--sidebar-border)] open:bg-[var(--sidebar-accent)]/40"
           data-testid="developer-details"

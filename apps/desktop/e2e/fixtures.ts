@@ -59,14 +59,14 @@ async function launchPixApp(): Promise<LaunchedPix> {
     join(agentDir, "models.json"),
     JSON.stringify({
       providers: {
-        "pix-m0": {
+        "pix-fake": {
           baseUrl: fakeModel.baseUrl,
           apiKey: "test-key-not-secret",
           api: "openai-completions",
           models: [
             {
-              id: "pix-m0",
-              name: "Pix M0 Fake Model",
+              id: "pix-fake",
+              name: "Pix Fake Model",
               reasoning: false,
               input: ["text"],
               cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
@@ -89,23 +89,23 @@ async function launchPixApp(): Promise<LaunchedPix> {
     USERPROFILE: home,
     XDG_CONFIG_HOME: join(home, ".config"),
     PI_CODING_AGENT_DIR: agentDir,
-    PIX_M0_WORKSPACE: workspace,
-    PIX_M0_MODEL_PROVIDER: "pix-m0",
-    PIX_M0_MODEL_ID: "pix-m0",
-    PIX_M0_TOOLS: "read",
-    PIX_M0_ENABLE_TEST_COMMANDS: "1",
-    PIX_M0_PERSIST_SESSION: "1",
+    PIX_WORKSPACE: workspace,
+    PIX_MODEL_PROVIDER: "pix-fake",
+    PIX_MODEL_ID: "pix-fake",
+    PIX_TOOLS: "read",
+    PIX_ENABLE_TEST_COMMANDS: "1",
+    PIX_PERSIST_SESSION: "1",
     // Product cold-start auto-resume is off so each test drives Host start via UI.
-    PIX_M0_NO_AUTO_RESUME: "1",
+    PIX_NO_AUTO_RESUME: "1",
   });
   // Interactive E2E: do not auto-drive Main; the test clicks the UI.
   for (const key of [
     "ELECTRON_RUN_AS_NODE",
-    "PIX_M0_AUTO_START",
-    "PIX_M0_AUTO_PROMPT",
-    "PIX_M0_AUTO_ABORT",
-    "PIX_M0_AUTO_R04",
-    "PIX_M0_AUTO_CLOSE_MS",
+    "PIX_AUTO_START",
+    "PIX_AUTO_PROMPT",
+    "PIX_AUTO_ABORT",
+    "PIX_AUTO_CRASH_PROBE",
+    "PIX_AUTO_CLOSE_MS",
   ]) {
     delete env[key];
   }
@@ -123,7 +123,7 @@ async function launchPixApp(): Promise<LaunchedPix> {
   });
 
   const page = await app.firstWindow({ timeout: 60_000 });
-  await page.waitForSelector('[data-testid="pix-m0-app"]', { timeout: 30_000 });
+  await page.waitForSelector('[data-testid="pix-app"]', { timeout: 30_000 });
 
   return { app, page, root, fakeModel };
 }

@@ -74,8 +74,8 @@ const api: PixDesktopApi = {
   extensionUi: {
     respond: (response) => ipcRenderer.invoke("pix:extension-ui:respond", response),
   },
-  m0: {
-    crashHost: () => ipcRenderer.invoke("pix:m0:crash-host"),
+  test: {
+    crashHost: () => ipcRenderer.invoke("pix:test:crash-host"),
   },
 };
 

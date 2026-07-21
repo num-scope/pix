@@ -1,9 +1,5 @@
 # Pix
 
-<p align="left">
-  <img src="apps/desktop/build/icon.png" width="96" height="96" alt="Pix logo" />
-</p>
-
 Pix is a desktop shell for the [pi](https://pi.dev) coding agent: a Codex-style UI that keeps configuration, packages, sessions, and tools on the native pi side (`~/.pi/agent`).
 
 ## Requirements
@@ -44,7 +40,7 @@ Isolated smoke (temp home + fixture workspace + fake model):
 ```bash
 pnpm smoke
 # or
-PIX_M0_ISOLATED=1 pnpm start
+PIX_ISOLATED=1 pnpm start
 ```
 
 Packaged smoke (unsigned app directory):
@@ -60,19 +56,23 @@ pnpm smoke:packaged
 pnpm package
 ```
 
-Produces an unsigned platform app directory under `apps/desktop/release/m0/` via `electron-builder --dir`.
+Produces an unsigned platform app directory under `apps/desktop/release/app/` via `electron-builder --dir`.
 
-## CI
+## CI & Release
 
-GitHub Actions (`.github/workflows/ci.yml`) runs on every push and pull request across **Linux, Windows, and macOS**:
+| Workflow | File | When | What |
+| -------- | ---- | ---- | ---- |
+| **CI** | `.github/workflows/ci.yml` | PR + push to `main` | install → lint/types → unit tests → `pnpm build` on Linux, Windows, macOS |
+| **Release** | `.github/workflows/release.yml` | push `v*` tag (or manual) | multi-platform `pnpm package` → zip → **GitHub Release** with assets |
 
-1. `pnpm install --frozen-lockfile`
-2. `vp check`
-3. `pnpm test`
-4. `pnpm build`
-5. `pnpm package`
+### Cut a release
 
-Package outputs are uploaded as workflow artifacts (14-day retention). mac builds disable code-signing discovery so CI does not need Developer ID secrets.
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+That triggers packaging on Linux / Windows / macOS and publishes a GitHub Release named `v0.1.0` with one zip per platform. Manual **workflow_dispatch** only builds and uploads Actions artifacts (no Release). Format check runs only on Linux CI; lint and typecheck run on all three OSes. mac packaging sets `CSC_IDENTITY_AUTO_DISCOVERY=false` (unsigned).
 
 ## Architecture
 

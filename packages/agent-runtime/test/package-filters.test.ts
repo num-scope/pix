@@ -20,7 +20,7 @@ async function createFilteredPackage(root: string): Promise<void> {
     writeFile(
       join(root, "package.json"),
       JSON.stringify({
-        name: "pix-p05-filter-fixture",
+        name: "pix-pkg-filter-fixture",
         version: "1.0.0",
         pi: {
           extensions: ["extensions/*.ts"],
@@ -55,7 +55,7 @@ afterEach(async () => {
 
 describe("P05 package filters and scope deduplication", () => {
   it("applies project filters and autoload=false deltas over one canonical local identity", async () => {
-    const root = await mkdtemp(join(tmpdir(), "pix-p05-"));
+    const root = await mkdtemp(join(tmpdir(), "pix-pkg-"));
     temporaryDirectories.push(root);
     const agentDir = join(root, "home", ".pi", "agent");
     const cwd = join(root, "project");

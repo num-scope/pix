@@ -1,38 +1,29 @@
-# Multi-platform CI: install → check → test → build → package (unsigned dir)
+# Lightweight validation: install → lint/types → unit tests → compile.
+# Runs on every PR/push. Does not package Electron installers.
 name: CI
 
 on:
   push:
     branches:
       - main
-      - master
   pull_request:
-  workflow_dispatch:
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
-env:
-  # Avoid interactive electron download prompts in CI.
-  ELECTRON_BUILDER_CACHE: ${{ github.workspace }}/.cache/electron-builder
-  ELECTRON_CACHE: ${{ github.workspace }}/.cache/electron
-
 jobs:
-  build:
-    name: ${{ matrix.os }}
+  check:
+    name: check (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: ubuntu-latest
-            platform: linux
-          - os: windows-latest
-            platform: win
-          - os: macos-latest
-            platform: mac
+        os:
+          - ubuntu-latest
+          - windows-latest
+          - macos-latest
 
     steps:
       - name: Checkout
@@ -52,41 +43,18 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      # Format is OS-sensitive (CRLF vs LF). Gate style only on Linux; always
+      # run lint + typecheck so logic stays covered on every platform.
       - name: Lint / typecheck
+        if: runner.os != 'Linux'
+        run: pnpm exec vp check --no-fmt
+
+      - name: Lint / typecheck / format
+        if: runner.os == 'Linux'
         run: pnpm exec vp check
 
       - name: Unit tests
         run: pnpm test
 
-      - name: Build all packages
+      - name: Build packages
         run: pnpm build
-
-      - name: Install Electron binary
-        run: pnpm electron:install
-
-      - name: Package desktop (unsigned dir)
-        run: pnpm package
-        env:
-          # electron-builder may try to publish when CI=true on some versions.
-          CSC_IDENTITY_AUTO_DISCOVERY: "false"
-
-      - name: List package output
-        shell: bash
-        run: |
-          set -euo pipefail
-          out="apps/desktop/release/m0"
-          if [[ -d "$out" ]]; then
-            echo "Package output under $out:"
-            find "$out" -maxdepth 3 -type f -o -type d | head -n 80
-          else
-            echo "Missing package output: $out" >&2
-            exit 1
-          fi
-
-      - name: Upload package artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: pix-m0-${{ matrix.platform }}-${{ runner.os }}-${{ runner.arch }}
-          path: apps/desktop/release/m0/**
-          if-no-files-found: error
-          retention-days: 14

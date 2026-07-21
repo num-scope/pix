@@ -48,7 +48,7 @@ afterEach(async () => {
 
 describe("C01 fresh pi home", () => {
   it("creates an in-memory core runtime without injecting Pix configuration or resources", async () => {
-    const root = await mkdtemp(join(tmpdir(), "pix-c01-"));
+    const root = await mkdtemp(join(tmpdir(), "pix-zero-injection-"));
     temporaryDirectories.push(root);
 
     const home = join(root, "home");
@@ -63,7 +63,7 @@ describe("C01 fresh pi home", () => {
     ]);
 
     const before = await listFiles(root);
-    const probe = join(import.meta.dirname, "c01-probe.mjs");
+    const probe = join(import.meta.dirname, "zero-injection-probe.mjs");
     const { stdout, stderr } = await execFileAsync(process.execPath, [probe, project], {
       cwd: project,
       env: isolatedEnvironment(home, agentDir),
