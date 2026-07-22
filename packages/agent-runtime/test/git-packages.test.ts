@@ -39,6 +39,9 @@ async function createGitPackage(
   await git(work, "init", "-b", "main");
   await git(work, "config", "user.email", "pix-fake@example.invalid");
   await git(work, "config", "user.name", "Pix");
+  await git(work, "config", "core.autocrlf", "false");
+  await git(work, "config", "core.eol", "lf");
+  await writeFile(join(work, ".gitattributes"), "* text=auto eol=lf\n");
   await writeFile(join(work, "prompts", "fixture.md"), `${name} v1\n`);
   if (withManifest) {
     await writeFile(
@@ -169,7 +172,9 @@ describe("P03 git package transport", () => {
     expect(await git(globalPath, "rev-parse", "HEAD")).toBe(globalFixture.v1Commit);
     await manager.update(projectMain);
     expect(await git(projectPath, "rev-parse", "HEAD")).toBe(projectV2Commit);
-    expect(await readFile(join(projectPath, "prompts", "fixture.md"), "utf8")).toBe("project v2\n");
+    expect(
+      (await readFile(join(projectPath, "prompts", "fixture.md"), "utf8")).replace(/\r\n/g, "\n"),
+    ).toBe("project v2\n");
 
     await manager.installAndPersist(globalV2);
     await settings.flush();

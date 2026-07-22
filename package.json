@@ -4,7 +4,10 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "ready": "vp check && vp run -r test && vp run -r build",
+    "check": "vp check",
+    "check:types": "vp check --no-fmt",
+    "fmt": "vp check --fix",
+    "ready": "pnpm check && pnpm test && pnpm build",
     "build": "vp run -r build",
     "test": "vp run --no-cache -r test",
     "dev": "vp run --no-cache @pix/desktop#dev",

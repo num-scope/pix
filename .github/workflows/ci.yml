@@ -47,11 +47,11 @@ jobs:
       # run lint + typecheck so logic stays covered on every platform.
       - name: Lint / typecheck
         if: runner.os != 'Linux'
-        run: pnpm exec vp check --no-fmt
+        run: pnpm check:types
 
       - name: Lint / typecheck / format
         if: runner.os == 'Linux'
-        run: pnpm exec vp check
+        run: pnpm check
 
       - name: Unit tests
         run: pnpm test

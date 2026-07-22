@@ -392,8 +392,7 @@ const messages = {
     "auth.oauthSuccessHint": "认证状态与 auth.json 已自动刷新",
     "auth.oauthCancelled": "登录已取消",
     "auth.oauthClose": "关闭",
-    "auth.oauthNetworkHint":
-      "无法连接提供商授权服务器，请检查网络 / VPN / 代理（HTTPS_PROXY）。",
+    "auth.oauthNetworkHint": "无法连接提供商授权服务器，请检查网络 / VPN / 代理（HTTPS_PROXY）。",
     "auth.oauthNetworkHintXai": "xAI 也可改用 API 密钥（XAI_API_KEY）。",
     "composer.model.none": "未选择模型",
     "composer.model.thinking": "思考强度",

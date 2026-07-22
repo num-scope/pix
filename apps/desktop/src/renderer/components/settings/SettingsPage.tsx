@@ -2135,7 +2135,10 @@ function ProvidersSection(
                       /fetch failed|ENOTFOUND|ECONNRESET|ECONNREFUSED|ETIMEDOUT|network|proxy/i.test(
                         oauthDialog.message,
                       ) ? (
-                        <p className="m-0 mt-2 opacity-90" data-testid="provider-oauth-network-hint">
+                        <p
+                          className="m-0 mt-2 opacity-90"
+                          data-testid="provider-oauth-network-hint"
+                        >
                           {tr("auth.oauthNetworkHint")}
                           {oauthDialog.provider === "xai"
                             ? ` ${tr("auth.oauthNetworkHintXai")}`

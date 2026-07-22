@@ -158,21 +158,35 @@ async function createNpmCommand(root: string, registry: string): Promise<string[
   await writeFile(
     wrapper,
     `import { spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
+import { dirname, join } from "node:path";
 const args = process.argv.slice(2);
-const npm = process.platform === "win32"
-  ? { command: process.env.ComSpec ?? "cmd.exe", args: ["/d", "/s", "/c", "npm.cmd", ...args] }
-  : { command: "npm", args };
-const result = spawnSync(npm.command, npm.args, {
-  stdio: "inherit",
-  env: {
-    ...process.env,
-    npm_config_registry: ${JSON.stringify(registry)},
-    npm_config_cache: ${JSON.stringify(join(root, "npm-cache"))},
-    npm_config_audit: "false",
-    npm_config_fund: "false",
-    npm_config_update_notifier: "false",
-  },
-});
+const env = {
+  ...process.env,
+  npm_config_registry: ${JSON.stringify(registry)},
+  npm_config_cache: ${JSON.stringify(join(root, "npm-cache"))},
+  npm_config_audit: "false",
+  npm_config_fund: "false",
+  npm_config_update_notifier: "false",
+};
+const npmCli = join(dirname(process.execPath), "node_modules", "npm", "bin", "npm-cli.js");
+const result = existsSync(npmCli)
+  ? spawnSync(process.execPath, [npmCli, ...args], { encoding: "utf8", env })
+  : process.platform === "win32"
+    ? spawnSync(
+        process.env.ComSpec ?? "cmd.exe",
+        [
+          "/d",
+          "/s",
+          "/c",
+          "npm.cmd",
+          ...args.map((arg) => String(arg).replace(/\\^/g, "^^")),
+        ],
+        { encoding: "utf8", env, windowsHide: true },
+      )
+    : spawnSync("npm", args, { encoding: "utf8", env });
+if (result.stdout) process.stdout.write(result.stdout);
+if (result.stderr) process.stderr.write(result.stderr);
 process.exit(result.status ?? 1);
 `,
   );

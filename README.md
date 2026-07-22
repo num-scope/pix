@@ -29,10 +29,13 @@ Product launch uses your real `HOME` and the same agent dir as the CLI (`~/.pi/a
 ## Validate
 
 ```bash
-vp check
+pnpm check        # lint + types + format (same as Linux CI)
+pnpm check:types  # lint + types only (same as Windows/macOS CI)
+pnpm fmt          # auto-fix formatting
 pnpm test
 pnpm build
 pnpm smoke
+pnpm ready        # check + test + build
 ```
 
 Isolated smoke (temp home + fixture workspace + fake model):
