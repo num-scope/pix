@@ -1,5 +1,5 @@
-# Tag-driven multi-platform package + GitHub Release.
-# Push a tag like v0.1.0 → build on Linux/Windows/macOS → attach zips to the release.
+# Tag-driven multi-platform installers + GitHub Release.
+# Push a tag like v0.1.0 → build NSIS / DMG / AppImage+deb → attach to the release.
 name: Release
 
 on:
@@ -15,15 +15,14 @@ concurrency:
 permissions:
   contents: read
 
-env:
-  ELECTRON_BUILDER_CACHE: ${{ github.workspace }}/.cache/electron-builder
-  ELECTRON_CACHE: ${{ github.workspace }}/.cache/electron
-
 jobs:
   package:
     name: package (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
+    env:
+      ELECTRON_BUILDER_CACHE: ${{ github.workspace }}/../.cache/electron-builder
+      ELECTRON_CACHE: ${{ github.workspace }}/../.cache/electron
     strategy:
       fail-fast: false
       matrix:
@@ -33,6 +32,8 @@ jobs:
           - os: windows-latest
             platform: win
           - os: macos-latest
+            platform: mac
+          - os: macos-15-intel
             platform: mac
 
     steps:
@@ -59,12 +60,12 @@ jobs:
       - name: Install Electron binary
         run: pnpm electron:install
 
-      - name: Package desktop (unsigned dir)
+      - name: Package desktop installers
         run: pnpm package
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
 
-      - name: Archive package
+      - name: Collect installers
         shell: bash
         run: |
           set -euo pipefail
@@ -74,26 +75,26 @@ jobs:
             exit 1
           fi
           mkdir -p artifacts
-          if [[ "${{ github.ref_type }}" == "tag" ]]; then
-            stamp="${{ github.ref_name }}"
-          else
-            stamp="run-${{ github.run_number }}"
+          shopt -s nullglob
+          matched=("$out"/*.exe "$out"/*.dmg "$out"/*.AppImage "$out"/*.deb)
+          if [[ ${#matched[@]} -eq 0 ]]; then
+            echo "No installer artifacts under $out" >&2
+            ls -la "$out" >&2 || true
+            exit 1
           fi
-          archive="artifacts/Pix-${stamp}-${{ matrix.platform }}-${{ runner.arch }}.zip"
-          # Portable zip on all GHA images (tar -a writes zip when suffix is .zip).
-          (cd "$out" && tar -a -cf "$GITHUB_WORKSPACE/$archive" .)
-          ls -lh "$archive"
-          echo "ARCHIVE_PATH=$archive" >> "$GITHUB_ENV"
+          for file in "${matched[@]}"; do
+            cp -f "$file" artifacts/
+            ls -lh "artifacts/$(basename "$file")"
+          done
 
       - name: Upload package artifact
         uses: actions/upload-artifact@v4
         with:
           name: pix-${{ matrix.platform }}-${{ runner.arch }}
-          path: artifacts/*.zip
+          path: artifacts/*
           if-no-files-found: error
           retention-days: 14
 
-  # Only when a version tag is pushed: publish GitHub Release with the zips.
   publish:
     name: publish release
     needs: package

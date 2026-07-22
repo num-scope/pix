@@ -49,24 +49,25 @@ PIX_ISOLATED=1 pnpm start
 Packaged smoke (unsigned app directory):
 
 ```bash
-pnpm package
+pnpm package:dir
 pnpm smoke:packaged
 ```
 
 ## Package
 
 ```bash
-pnpm package
+pnpm package       # platform installers (NSIS / DMG / AppImage+deb)
+pnpm package:dir   # unpacked app directory only (for local smoke)
 ```
 
-Produces an unsigned platform app directory under `apps/desktop/release/app/` via `electron-builder --dir`.
+Installers land under `apps/desktop/release/app/` (unsigned in CI — no code-signing certs yet).
 
 ## CI & Release
 
-| Workflow    | File                            | When                      | What                                                                      |
-| ----------- | ------------------------------- | ------------------------- | ------------------------------------------------------------------------- |
-| **CI**      | `.github/workflows/ci.yml`      | PR + push to `main`       | install → lint/types → unit tests → `pnpm build` on Linux, Windows, macOS |
-| **Release** | `.github/workflows/release.yml` | push `v*` tag (or manual) | multi-platform `pnpm package` → zip → **GitHub Release** with assets      |
+| Workflow    | File                            | When                      | What                                                                                               |
+| ----------- | ------------------------------- | ------------------------- | -------------------------------------------------------------------------------------------------- |
+| **CI**      | `.github/workflows/ci.yml`      | PR + push to `main`       | install → lint/types → unit tests → `pnpm build` on Linux, Windows, macOS                          |
+| **Release** | `.github/workflows/release.yml` | push `v*` tag (or manual) | multi-platform installers → **GitHub Release** (Win NSIS, mac DMG arm64+Intel, Linux AppImage+deb) |
 
 ### Versioning
 
@@ -87,7 +88,7 @@ git tag v0.1.0
 git push origin main --tags
 ```
 
-Tag must match desktop version (`v` + semver). That triggers packaging on Linux / Windows / macOS and publishes a GitHub Release with one zip per platform. Manual **workflow_dispatch** only builds and uploads Actions artifacts (no Release). Format check runs only on Linux CI; lint and typecheck run on all three OSes. mac packaging sets `CSC_IDENTITY_AUTO_DISCOVERY=false` (unsigned).
+Tag must match desktop version (`v` + semver). That builds unsigned installers (Windows NSIS `.exe`, macOS `.dmg` for arm64 + Intel, Linux `.AppImage` + `.deb`) and publishes them on the GitHub Release. Manual **workflow_dispatch** only uploads Actions artifacts (no Release). Format check runs only on Linux CI; lint and typecheck run on all three OSes. Packaging sets `CSC_IDENTITY_AUTO_DISCOVERY=false` (unsigned).
 
 ## Architecture
 

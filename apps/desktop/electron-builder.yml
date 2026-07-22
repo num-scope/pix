@@ -1,5 +1,7 @@
 appId: dev.pix.app
 productName: Pix
+# package.json name is @pix/desktop — override so AppImage/deb paths stay valid.
+executableName: Pix
 asar: true
 files:
   - dist/**
@@ -7,25 +9,38 @@ files:
 directories:
   output: release/app
   buildResources: build
-# CI packages unsigned platform dirs (`pnpm package` → electron-builder --dir).
-# Identity null keeps mac builds green without Developer ID secrets.
-# Icons live in directories.buildResources (./build). Paths are relative to that folder.
+artifactName: ${productName}-${version}-${os}-${arch}.${ext}
+publish: null
 mac:
   identity: null
   icon: icon.icns
   target:
-    - dir
+    - dmg
   category: public.app-category.developer-tools
+  hardenedRuntime: false
+  gatekeeperAssess: false
+dmg:
+  writeUpdateInfo: false
 win:
-  icon: icon.png
+  icon: icon.ico
   target:
-    - dir
-  artifactName: ${productName}-${version}-${os}-${arch}.${ext}
+    - nsis
+  signAndEditExecutable: false
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  perMachine: false
+  deleteAppDataOnUninstall: false
 linux:
   icon: icon.png
+  executableName: Pix
+  maintainer: num-scope <noreply@users.noreply.github.com>
   target:
-    - dir
+    - AppImage
+    - deb
   category: Development
+  synopsis: Desktop shell for the pi coding agent
+  description: Pix is a desktop shell for the pi coding agent.
 asarUnpack:
   - "**/*.node"
   - "**/@silvia-odwyer/photon-node/**"

@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -8,7 +9,17 @@ import { FakeOpenAiServer } from "../../../packages/test-utils/src/index.ts";
 if (process.platform !== "darwin") throw new Error("The current packaged smoke targets macOS");
 
 const appDirectory = join(dirname(fileURLToPath(import.meta.url)), "..");
-const executable = join(appDirectory, "release/app/mac-arm64/Pix.app/Contents/MacOS/Pix");
+const macCandidates = [
+  join(appDirectory, "release/app/mac-arm64/Pix.app/Contents/MacOS/Pix"),
+  join(appDirectory, "release/app/mac-x64/Pix.app/Contents/MacOS/Pix"),
+  join(appDirectory, "release/app/mac/Pix.app/Contents/MacOS/Pix"),
+];
+const executable = macCandidates.find((path) => existsSync(path));
+if (!executable) {
+  throw new Error(
+    `Packaged macOS app not found. Run pnpm package:dir first. Tried:\n${macCandidates.join("\n")}`,
+  );
+}
 const root = await mkdtemp(join(tmpdir(), "pix-packaged-smoke-"));
 const home = join(root, "home");
 const agentDir = join(home, ".pi", "agent");

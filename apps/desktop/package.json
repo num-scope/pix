@@ -2,6 +2,9 @@
   "name": "@pix/desktop",
   "version": "0.1.0",
   "private": true,
+  "description": "Desktop shell for the pi coding agent",
+  "homepage": "https://github.com/num-scope/pix",
+  "author": "num-scope <noreply@users.noreply.github.com>",
   "type": "module",
   "main": "dist/main/main.mjs",
   "scripts": {
@@ -13,7 +16,8 @@
     "e2e": "pnpm run build && playwright test",
     "e2e:ui": "pnpm run build && playwright test --ui",
     "electron:install": "install-electron",
-    "package": "pnpm run build && electron-builder --dir --config electron-builder.yml",
+    "package": "pnpm run build && electron-builder --config electron-builder.yml --publish never",
+    "package:dir": "pnpm run build && electron-builder --dir --config electron-builder.yml --publish never",
     "test": "vp test --run --config vite.renderer.config.ts"
   },
   "dependencies": {
