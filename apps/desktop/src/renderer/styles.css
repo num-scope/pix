@@ -9,31 +9,43 @@
 @theme {
   --font-sans: "Inter", "SF Pro Text", "Segoe UI", system-ui, -apple-system, sans-serif;
   --font-mono: "SF Mono", "JetBrains Mono", ui-monospace, Menlo, Consolas, monospace;
-  --radius-sm: 0.375rem;
-  --radius-md: 0.5rem;
-  --radius-lg: 0.625rem;
-  --radius-xl: 0.875rem;
-  --radius-2xl: 1rem;
+  /* Shared radius scale — use these everywhere (rows / controls / panels). */
+  --radius-sm: 0.375rem; /* 6px — list rows, icon buttons */
+  --radius-md: 0.625rem; /* 10px — inputs, bubbles, menu items */
+  --radius-lg: 0.75rem; /* 12px — cards, env panel, dialogs, popovers */
+  --radius-xl: 0.75rem; /* align large surfaces to panel radius */
+  --radius-2xl: 0.75rem;
 }
 
 :root,
 [data-theme="dark"] {
   color-scheme: dark;
-  /* OpenCowork .dark exact */
+  /* Canvas */
   --background: #191919;
   --foreground: oklch(0.985 0.004 260);
-  --card: #242424;
+  /*
+   * Unified surfaces (keep these in sync):
+   *  panel  #2d2d2d — input, env panel, menus, dialogs
+   *  muted  #383838 — session/hover highlight, composer protrusion
+   *  soft   #272727 — user message bubble
+   */
+  --surface-panel: #2d2d2d;
+  --surface-muted: #383838;
+  --surface-soft: #272727;
+  --card: var(--surface-panel);
   --card-foreground: oklch(0.985 0.004 260);
-  --popover: #2b2b2b;
+  --popover: var(--surface-panel);
   --popover-foreground: oklch(0.985 0.004 260);
   --primary: oklch(0.72 0.12 255);
   --primary-foreground: oklch(0.18 0.01 260);
-  --secondary: #2b2b2b;
+  --secondary: var(--surface-muted);
   --secondary-foreground: oklch(0.985 0.004 260);
   --muted: #222222;
   --muted-foreground: oklch(0.74 0.014 260);
-  --accent: #303030;
-  --accent-foreground: oklch(0.985 0.004 260);
+  --hover-fill: var(--surface-muted);
+  --hover-fill-foreground: oklch(0.985 0.004 260);
+  --accent: var(--hover-fill);
+  --accent-foreground: var(--hover-fill-foreground);
   --destructive: oklch(0.396 0.141 25.723);
   --border: #3a3a3a;
   --input: #3a3a3a;
@@ -42,20 +54,21 @@
   --sidebar-foreground: oklch(0.985 0.004 260);
   --sidebar-primary: oklch(0.72 0.12 255);
   --sidebar-primary-foreground: oklch(0.18 0.01 260);
-  --sidebar-accent: #252525;
-  --sidebar-accent-foreground: oklch(0.985 0.004 260);
+  --sidebar-accent: var(--hover-fill);
+  --sidebar-accent-foreground: var(--hover-fill-foreground);
   --sidebar-border: #303030;
   --sidebar-ring: oklch(0.62 0.09 255);
 
   --canvas: var(--background);
-  --surface: var(--card);
-  --surface-elevated: #242424;
-  --surface-hover: rgb(255 255 255 / 5%);
-  --surface-selected: #252525;
+  --surface: var(--surface-panel);
+  --surface-elevated: var(--surface-panel);
+  --surface-hover: var(--hover-fill);
+  --surface-selected: var(--hover-fill);
   --text: var(--foreground);
   --text-muted: var(--muted-foreground);
   --text-subtle: #6e6e6e;
-  --bg-composer: #232323;
+  --bg-composer: var(--surface-panel);
+  --composer-border: color-mix(in srgb, #ffffff 12%, var(--surface-panel));
   --success: #3ecf8e;
   --warning: #f0a500;
   --danger: #e05555;
@@ -67,32 +80,49 @@
   --bg-panel: var(--canvas);
   --bg-elevated: var(--surface-elevated);
   --bg-code: var(--code-bg);
-  --bg-hover: var(--surface-hover);
-  --bg-active: var(--surface-selected);
+  --bg-hover: var(--hover-fill);
+  --bg-active: var(--hover-fill);
   --border-strong: #3a3a3a;
   --text-on-dark: var(--code-fg);
+  --user-bubble: var(--surface-soft);
+  --user-bubble-fg: oklch(0.985 0.004 260);
   --sidebar-width: 272px;
   --thread-max: 760px;
   --review-width: 480px;
   --shadow-soft: 0 16px 48px rgb(0 0 0 / 0.45);
+  /* Radius aliases used by components */
+  --radius-control: var(--radius-sm);
+  --radius-field: var(--radius-md);
+  --radius-panel: var(--radius-lg);
 }
 
 [data-theme="light"] {
   color-scheme: light;
   --background: #ffffff;
   --foreground: #171717;
-  --card: #ffffff;
+  /*
+   * Unified surfaces:
+   *  panel  #ffffff — input, env panel, menus, dialogs
+   *  muted  #f6f6f6 — session/hover highlight, composer protrusion
+   *  soft   #f5f5f5 — user message bubble
+   */
+  --surface-panel: #ffffff;
+  --surface-muted: #f6f6f6;
+  --surface-soft: #f5f5f5;
+  --card: var(--surface-panel);
   --card-foreground: #171717;
-  --popover: #ffffff;
+  --popover: var(--surface-panel);
   --popover-foreground: #171717;
   --primary: #171717;
   --primary-foreground: #fafafa;
-  --secondary: #f1f2f4;
+  --secondary: var(--surface-muted);
   --secondary-foreground: #171717;
   --muted: #f1f2f4;
   --muted-foreground: #5c5c57;
-  --accent: #e7e8ec;
-  --accent-foreground: #171717;
+  --hover-fill: var(--surface-muted);
+  --hover-fill-foreground: #171717;
+  --accent: var(--hover-fill);
+  --accent-foreground: var(--hover-fill-foreground);
   --destructive: #dc2626;
   --border: #d9dbe2;
   --input: #d9dbe2;
@@ -101,29 +131,35 @@
   --sidebar-foreground: #171717;
   --sidebar-primary: #171717;
   --sidebar-primary-foreground: #fafafa;
-  --sidebar-accent: #e7e8ec;
-  --sidebar-accent-foreground: #171717;
+  --sidebar-accent: var(--hover-fill);
+  --sidebar-accent-foreground: var(--hover-fill-foreground);
   --sidebar-border: #d9dbe2;
   --sidebar-ring: #0a84ff;
   --canvas: var(--background);
-  --surface: var(--card);
-  --surface-elevated: #ffffff;
-  --surface-hover: rgb(0 0 0 / 4%);
-  --surface-selected: #e7e8ec;
+  --surface: var(--surface-panel);
+  --surface-elevated: var(--surface-panel);
+  --surface-hover: var(--hover-fill);
+  --surface-selected: var(--hover-fill);
   --text: var(--foreground);
   --text-muted: var(--muted-foreground);
   --text-subtle: #8a8a84;
-  --bg-composer: #f4f5f7;
+  --bg-composer: var(--surface-panel);
+  --composer-border: color-mix(in srgb, #9aa0ab 45%, #ffffff);
   --bg-app: var(--canvas);
   --bg-sidebar: var(--sidebar);
   --bg-panel: var(--canvas);
   --bg-elevated: var(--surface-elevated);
-  --bg-hover: var(--surface-hover);
-  --bg-active: var(--surface-selected);
+  --bg-hover: var(--hover-fill);
+  --bg-active: var(--hover-fill);
   --border-strong: #c8c9cf;
   --code-bg: #f1f2f4;
   --code-fg: #171717;
+  --user-bubble: var(--surface-soft);
+  --user-bubble-fg: #171717;
   --shadow-soft: 0 12px 32px rgb(0 0 0 / 0.08);
+  --radius-control: var(--radius-sm);
+  --radius-field: var(--radius-md);
+  --radius-panel: var(--radius-lg);
 }
 
 html,
@@ -131,12 +167,13 @@ body,
 #root {
   width: 100%;
   height: 100%;
+  background: transparent;
 }
 
 body {
   margin: 0;
   overflow: hidden;
-  background: var(--background);
+  /* Transparent so macOS window vibrancy can show through the frosted rail. */
   color: var(--foreground);
   font-family: var(--font-sans);
   font-size: 14px;
@@ -144,23 +181,55 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
-/* Shell layout — continuous canvas so frosted sidebar has something to sample */
+/* Shell layout — continuous canvas; main content paints under the rail for CSS glass */
 .app-shell {
   @apply relative h-full w-full overflow-hidden;
   color: var(--foreground);
-  /* Ambient depth: visible through translucent sidebar */
+  /* Keep shell transparent under the rail; opaque content lives in .shell-content. */
+  background: transparent;
+}
+
+/* Ambient layer full-bleed (sampled by sidebar backdrop-filter / vibrancy). */
+.app-shell-ambient {
+  pointer-events: none;
+  position: absolute;
+  inset: 0;
+  z-index: 0;
   background:
     radial-gradient(
-      1000px 700px at 8% 12%,
-      color-mix(in srgb, #3a3a48 35%, transparent),
+      720px 900px at 0% 18%,
+      color-mix(in srgb, #5c5c78 48%, transparent),
+      transparent 58%
+    ),
+    radial-gradient(
+      1000px 700px at 12% 8%,
+      color-mix(in srgb, #3a3a48 32%, transparent),
       transparent 60%
     ),
     radial-gradient(
       900px 600px at 92% 88%,
-      color-mix(in srgb, #243040 28%, transparent),
+      color-mix(in srgb, #243040 30%, transparent),
       transparent 55%
     ),
     var(--background);
+}
+
+/*
+ * Opaque content stack inset by rail.
+ * CRITICAL: background-clip: content-box so padding-left (under the frosted rail)
+ * stays transparent — otherwise a solid fill paints under the glass and kills translucency.
+ */
+.shell-content {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  height: 100%;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  background-color: var(--background);
+  background-clip: content-box;
+  box-sizing: border-box;
 }
 
 /* macOS traffic lights (hiddenInset) sit in the 46px titlebar row.
@@ -177,20 +246,42 @@ body {
   app-region: no-drag;
 }
 
-/* Frosted glass sidebar — samples shell canvas behind overlay rail */
+/* Collapsed-rail expand control — portaled to body; must stay above shell + no-drag. */
+.sidebar-expand-btn {
+  position: fixed;
+  z-index: 2147483000;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 0.5rem;
+  color: var(--muted-foreground);
+  pointer-events: auto;
+  -webkit-app-region: no-drag !important;
+  app-region: no-drag !important;
+  cursor: pointer;
+  border: 0;
+  background: transparent;
+  padding: 0;
+}
+.sidebar-expand-btn:hover {
+  background: var(--hover-fill);
+  color: var(--hover-fill-foreground);
+}
+
+/*
+ * True frosted rail:
+ * - Thin tint (not 70%+ solid)
+ * - backdrop-filter samples .app-shell-ambient + macOS window vibrancy
+ * - Opaque app chrome lives only in .shell-content (to the right of the rail)
+ */
 .pix-sidebar-translucent {
-  background: linear-gradient(
-    180deg,
-    color-mix(in srgb, var(--sidebar) 42%, transparent) 0%,
-    color-mix(in srgb, var(--sidebar) 52%, transparent) 100%
-  ) !important;
-  border-color: color-mix(in srgb, var(--sidebar-border) 42%, transparent) !important;
-  -webkit-backdrop-filter: blur(40px) saturate(1.55) brightness(1.05);
-  backdrop-filter: blur(40px) saturate(1.55) brightness(1.05);
+  background: color-mix(in srgb, var(--sidebar) 32%, transparent) !important;
+  border-color: color-mix(in srgb, var(--sidebar-border) 28%, transparent) !important;
+  -webkit-backdrop-filter: blur(48px) saturate(1.8) brightness(1.08);
+  backdrop-filter: blur(48px) saturate(1.8) brightness(1.08);
   box-shadow:
-    1px 0 0 color-mix(in srgb, #fff 4%, transparent),
-    12px 0 40px -16px rgb(0 0 0 / 0.55);
-  isolation: isolate;
+    inset -1px 0 0 color-mix(in srgb, #fff 10%, transparent),
+    1px 0 0 color-mix(in srgb, #000 22%, transparent);
 }
 
 .pix-sidebar-opaque {
@@ -201,8 +292,22 @@ body {
   box-shadow: none;
 }
 
-[data-theme="light"] .app-shell {
+/* When translucent is OFF, shell should still look solid (no desktop bleed). */
+[data-sidebar-translucent="false"] .app-shell-ambient {
+  background: var(--background);
+}
+[data-sidebar-translucent="false"] body,
+[data-sidebar-translucent="false"] #root {
+  background: var(--background);
+}
+
+[data-theme="light"] .app-shell-ambient {
   background:
+    radial-gradient(
+      720px 900px at 0% 18%,
+      color-mix(in srgb, #c8cdd8 55%, transparent),
+      transparent 58%
+    ),
     radial-gradient(
       1000px 700px at 8% 12%,
       color-mix(in srgb, #d8dce8 50%, transparent),
@@ -217,17 +322,13 @@ body {
 }
 
 [data-theme="light"] .pix-sidebar-translucent {
-  background: linear-gradient(
-    180deg,
-    color-mix(in srgb, var(--sidebar) 48%, transparent) 0%,
-    color-mix(in srgb, var(--sidebar) 58%, transparent) 100%
-  ) !important;
-  border-color: color-mix(in srgb, var(--sidebar-border) 40%, transparent) !important;
-  -webkit-backdrop-filter: blur(36px) saturate(1.4) brightness(1.02);
-  backdrop-filter: blur(36px) saturate(1.4) brightness(1.02);
+  background: color-mix(in srgb, var(--sidebar) 36%, transparent) !important;
+  border-color: color-mix(in srgb, var(--sidebar-border) 32%, transparent) !important;
+  -webkit-backdrop-filter: blur(44px) saturate(1.7) brightness(1.05);
+  backdrop-filter: blur(44px) saturate(1.7) brightness(1.05);
   box-shadow:
-    1px 0 0 color-mix(in srgb, #fff 55%, transparent),
-    10px 0 28px -14px rgb(0 0 0 / 0.12);
+    inset -1px 0 0 color-mix(in srgb, #fff 80%, transparent),
+    1px 0 0 color-mix(in srgb, #000 4%, transparent);
 }
 
 .sidebar {
@@ -257,18 +358,49 @@ body {
 }
 
 .nav-item {
-  @apply flex h-[34px] w-full items-center gap-2.5 rounded-lg px-2.5 text-left text-[13px] font-medium;
+  @apply flex h-8 w-full items-center gap-2.5 px-2.5 text-left text-[13px] font-medium;
+  border-radius: var(--radius-control);
   color: var(--sidebar-foreground);
 }
 
 .nav-item:hover {
-  background: var(--sidebar-accent);
-  color: var(--sidebar-foreground);
+  background: var(--hover-fill);
+  color: var(--hover-fill-foreground);
 }
 
 .nav-item[data-active="true"] {
-  background: var(--sidebar-accent);
-  color: var(--sidebar-accent-foreground);
+  background: var(--hover-fill);
+  color: var(--hover-fill-foreground);
+}
+
+/*
+ * Unified rail list row — compact h-8, same fill for hover + active.
+ * Project rows use .sidebar-list-row without data-active (only sessions highlight).
+ */
+.sidebar-list-row {
+  @apply relative flex h-8 w-full min-w-0 items-center px-2.5 text-[13px] font-medium transition-colors;
+  border-radius: var(--radius-control);
+  color: var(--sidebar-foreground);
+}
+
+.sidebar-list-row:hover,
+.sidebar-list-row[data-active="true"] {
+  background: var(--hover-fill);
+  color: var(--hover-fill-foreground);
+}
+
+.sidebar-section-head {
+  @apply flex h-8 w-full min-w-0 items-center gap-1 px-2.5 transition-colors;
+  border-radius: var(--radius-control);
+}
+
+.sidebar-section-head:hover {
+  background: var(--hover-fill);
+}
+
+.sidebar-section-label {
+  @apply flex h-8 w-full min-w-0 items-center px-2.5 text-[13px] font-semibold tracking-wide;
+  color: var(--text-subtle);
 }
 
 .nav-item-primary {
@@ -299,8 +431,8 @@ body {
 }
 
 .btn-icon:hover {
-  background: var(--sidebar-accent);
-  color: var(--sidebar-foreground);
+  background: var(--hover-fill);
+  color: var(--hover-fill-foreground);
 }
 
 .btn-quiet {
@@ -309,8 +441,8 @@ body {
 }
 
 .btn-quiet:hover:not(:disabled) {
-  background: var(--sidebar-accent);
-  color: var(--sidebar-foreground);
+  background: var(--hover-fill);
+  color: var(--hover-fill-foreground);
 }
 
 .btn-quiet.danger:hover:not(:disabled) {
@@ -331,18 +463,18 @@ body {
 }
 
 .project-row {
-  @apply grid w-full grid-cols-[18px_minmax(0,1fr)] items-center gap-2 rounded-lg px-2 py-1.5 text-left;
+  @apply grid w-full grid-cols-[18px_minmax(0,1fr)] items-center gap-2 rounded-md px-2 py-1.5 text-left;
   color: var(--muted-foreground);
 }
 
 .project-row:hover {
-  background: var(--sidebar-accent);
-  color: var(--sidebar-foreground);
+  background: var(--hover-fill);
+  color: var(--hover-fill-foreground);
 }
 
 .project-row[data-active="true"] {
-  background: var(--sidebar-accent);
-  color: var(--sidebar-foreground);
+  background: var(--hover-fill);
+  color: var(--hover-fill-foreground);
 }
 
 .project-meta {
@@ -395,17 +527,18 @@ body {
    and left a huge empty strip on the right. */
 .main-column {
   @apply relative flex h-full min-h-0 w-full min-w-0 flex-1 flex-col;
-  background: var(--background);
+  /* Transparent: solid fill comes from .shell-content content-box only. */
+  background: transparent;
 }
 
 .thread-header {
   @apply flex h-[46px] shrink-0 items-center gap-1.5 px-4;
 }
 
-/* Collapsed rail: titlebar row shares the window edge with traffic lights + expand btn. */
+/* Collapsed rail: titlebar row shares the window edge with traffic lights + expand btn.
+   Left inset comes from a no-drag spacer in ThreadHeader (not padding — padding stays drag). */
 .thread-header-collapsed {
-  @apply pr-3;
-  /* padding-left set inline from chrome constants */
+  @apply pr-3 pl-0;
 }
 
 .thread-header h2 {
@@ -414,12 +547,12 @@ body {
 
 /* Interactive / non-drag children inside a drag region (Electron -webkit-app-region). */
 .no-drag {
-  -webkit-app-region: no-drag;
-  app-region: no-drag;
+  -webkit-app-region: no-drag !important;
+  app-region: no-drag !important;
 }
 
 .env-action-btn {
-  @apply inline-flex h-7 shrink-0 items-center justify-center rounded-md border border-[var(--border)] px-2 text-[11px] font-medium text-[var(--foreground)] transition-colors hover:bg-[var(--accent)] disabled:opacity-40;
+  @apply inline-flex h-7 shrink-0 items-center justify-center rounded-md border border-[var(--border)] px-2 text-[11px] font-medium text-[var(--foreground)] transition-colors hover:bg-[var(--hover-fill)] disabled:opacity-40;
 }
 
 /*
@@ -463,8 +596,57 @@ body {
   opacity: 1;
 }
 
-.timeline-scroll {
-  @apply flex-1;
+/*
+ * Soft fade at the bottom of the content scrollport (just above the in-flow composer).
+ * Content area bottom edge = top of composer dock, not the window edge.
+ */
+.composer-dock-fade {
+  background: linear-gradient(
+    to bottom,
+    color-mix(in srgb, var(--canvas, var(--background)) 0%, transparent) 0%,
+    color-mix(in srgb, var(--canvas, var(--background)) 70%, transparent) 50%,
+    var(--canvas, var(--background)) 100%
+  );
+}
+
+/* Project protrusion: same fill as session hover/active; no border. */
+.composer-protrusion {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  align-items: center;
+  gap: 2rem;
+  border: none;
+  border-radius: var(--radius-panel) var(--radius-panel) 0 0;
+  background: var(--hover-fill);
+  padding: 0.375rem 0.75rem;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--foreground);
+  box-sizing: border-box;
+}
+/* Input card: light hairline border only. */
+.composer-card {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid var(--composer-border);
+  border-radius: var(--radius-panel);
+  background: var(--bg-composer);
+  box-shadow: none;
+  box-sizing: border-box;
+}
+.composer-card-with-protrusion {
+  border-top-left-radius: var(--radius-field);
+  border-top-right-radius: var(--radius-field);
+}
+
+/* Shared panel surface (env panel, dialogs, menus). */
+.surface-panel {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-panel);
+  background: var(--surface-panel);
+  color: var(--foreground);
+  box-sizing: border-box;
 }
 
 .timeline {
@@ -589,9 +771,10 @@ body {
   @apply flex flex-col gap-2;
 }
 .item-card {
-  @apply grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-1 rounded-xl border px-3.5 py-3;
+  @apply grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-1 border px-3.5 py-3;
+  border-radius: var(--radius-panel);
   border-color: var(--border);
-  background: var(--card);
+  background: var(--surface-panel);
 }
 .item-card .title {
   @apply text-[13px] leading-snug font-semibold break-all;
@@ -604,9 +787,10 @@ body {
   @apply flex flex-wrap items-center justify-end gap-1.5;
 }
 .empty-panel {
-  @apply flex flex-col items-start gap-1.5 rounded-xl border border-dashed p-5;
+  @apply flex flex-col items-start gap-1.5 border border-dashed p-5;
+  border-radius: var(--radius-panel);
   border-color: var(--border);
-  background: color-mix(in srgb, var(--card) 70%, transparent);
+  background: color-mix(in srgb, var(--surface-panel) 70%, transparent);
 }
 .empty-panel h2 {
   @apply m-0 text-[13px] font-semibold;
@@ -616,9 +800,10 @@ body {
   color: var(--muted-foreground);
 }
 .install-form {
-  @apply mb-3 grid grid-cols-[minmax(0,1fr)_11.5rem_auto] items-end gap-2.5 rounded-xl border p-3;
+  @apply mb-3 grid grid-cols-[minmax(0,1fr)_11.5rem_auto] items-end gap-2.5 border p-3;
+  border-radius: var(--radius-panel);
   border-color: var(--border);
-  background: var(--card);
+  background: var(--surface-panel);
 }
 .install-label {
   @apply flex min-w-0 flex-col gap-1.5 text-[11px] leading-none font-medium;
@@ -674,6 +859,7 @@ body {
 }
 .page-tab:hover {
   color: var(--foreground);
+  background: var(--hover-fill);
 }
 .page-tab[data-active="true"] {
   border-bottom: 2px solid var(--foreground);
@@ -699,7 +885,7 @@ a.btn-secondary {
 }
 .btn-secondary:hover:not(:disabled),
 a.btn-secondary:hover {
-  background: var(--accent);
+  background: var(--hover-fill);
 }
 .btn-secondary:disabled {
   @apply cursor-not-allowed opacity-40;
@@ -733,7 +919,7 @@ a.btn-secondary:focus-visible {
   box-sizing: border-box;
 }
 .btn-ghost:hover:not(:disabled) {
-  background: var(--accent);
+  background: var(--hover-fill);
   color: var(--foreground);
 }
 .btn-ghost:disabled {
@@ -778,9 +964,10 @@ a.btn-secondary:focus-visible {
   @apply fixed inset-0 z-50 flex items-start justify-center bg-black/45 pt-[12vh];
 }
 .palette-panel {
-  @apply w-[min(520px,92vw)] overflow-hidden rounded-xl border shadow-2xl;
-  border-color: var(--border);
-  background: var(--popover);
+  @apply w-[min(520px,92vw)] overflow-hidden shadow-2xl;
+  border-radius: var(--radius-panel);
+  background: var(--surface-panel);
+  border: 1px solid var(--border);
 }
 .palette-input {
   @apply w-full border-0 border-b bg-transparent px-3.5 py-3 text-sm outline-none;
@@ -791,12 +978,13 @@ a.btn-secondary:focus-visible {
   @apply m-0 max-h-80 list-none overflow-auto p-1;
 }
 .palette-item {
-  @apply flex w-full items-center justify-between gap-2.5 rounded-lg px-2.5 py-2 text-left text-[13px];
+  @apply flex w-full items-center justify-between gap-2.5 px-2.5 py-2 text-left text-[13px];
+  border-radius: var(--radius-control);
   color: var(--foreground);
 }
 .palette-item[data-active="true"],
 .palette-item:hover {
-  background: var(--accent);
+  background: var(--hover-fill);
 }
 .palette-item kbd {
   @apply font-mono text-[11px];
@@ -821,7 +1009,7 @@ a.btn-secondary:focus-visible {
     box-shadow 0.12s ease;
 }
 .shortcut-bind:hover {
-  background: var(--accent);
+  background: var(--hover-fill);
   border-color: color-mix(in srgb, var(--border) 80%, var(--foreground));
 }
 .shortcut-bind-empty {
@@ -955,13 +1143,19 @@ a.btn-secondary:focus-visible {
   @apply relative;
 }
 .archived-group-menu-panel {
-  @apply absolute top-full right-0 z-50 mt-1 min-w-[220px] overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--popover)] py-1 shadow-2xl;
+  @apply absolute top-full right-0 z-50 mt-1 min-w-[220px] overflow-hidden border py-1 shadow-2xl;
+  border-radius: var(--radius-panel);
+  border-color: var(--border);
+  background: var(--surface-panel);
 }
 .archived-group-menu-item {
   @apply flex w-full items-center gap-2 px-3 py-2 text-left text-[13px] text-red-400 hover:bg-red-500/10;
 }
 .archived-card {
-  @apply overflow-hidden rounded-[14px] border border-[var(--border)] bg-[var(--card)];
+  @apply overflow-hidden border;
+  border-radius: var(--radius-panel);
+  border-color: var(--border);
+  background: var(--surface-panel);
 }
 .archived-item {
   @apply flex items-center gap-3 border-b border-[var(--border)] px-3.5 py-3 last:border-b-0;
@@ -979,10 +1173,10 @@ a.btn-secondary:focus-visible {
   @apply flex shrink-0 items-center gap-1.5;
 }
 .archived-icon-btn {
-  @apply inline-flex h-8 w-8 items-center justify-center rounded-lg text-[var(--muted-foreground)] hover:bg-[var(--accent)] hover:text-red-500;
+  @apply inline-flex h-8 w-8 items-center justify-center rounded-lg text-[var(--muted-foreground)] hover:bg-[var(--hover-fill)] hover:text-red-500;
 }
 .archived-unarchive-btn {
-  @apply inline-flex h-8 items-center rounded-full border border-[var(--border)] bg-[var(--secondary,#f1f2f4)] px-3 text-[12.5px] text-[var(--foreground)] hover:bg-[var(--accent)];
+  @apply inline-flex h-8 items-center rounded-full border border-[var(--border)] bg-[var(--secondary,#f1f2f4)] px-3 text-[12.5px] text-[var(--foreground)] hover:bg-[var(--hover-fill)];
 }
 .settings-section-block {
   @apply flex flex-col gap-2;
@@ -994,7 +1188,10 @@ a.btn-secondary:focus-visible {
   @apply m-0;
 }
 .settings-card {
-  @apply overflow-hidden rounded-[14px] border border-[var(--border)] bg-[var(--card)];
+  @apply overflow-hidden border;
+  border-radius: var(--radius-panel);
+  border-color: var(--border);
+  background: var(--surface-panel);
 }
 .settings-row {
   @apply flex items-start justify-between gap-6 border-b border-[var(--border)] px-4 py-3.5;
@@ -1024,7 +1221,9 @@ a.btn-secondary:focus-visible {
   @apply flex flex-col gap-1.5;
 }
 .settings-code-field {
-  @apply w-full rounded-[10px] border border-[var(--border)] px-3 py-2 font-mono text-[12.5px] leading-snug outline-none transition-[border-color,box-shadow,background];
+  @apply w-full border px-3 py-2 font-mono text-[12.5px] leading-snug outline-none transition-[border-color,box-shadow,background];
+  border-radius: var(--radius-field);
+  border-color: var(--border);
   color: var(--foreground);
   background: color-mix(in srgb, var(--muted) 45%, transparent);
 }
@@ -1050,7 +1249,9 @@ a.btn-secondary:focus-visible {
 }
 /* AI prompt textareas (commit / PR instructions) — prose, not shell code */
 .settings-prompt-field {
-  @apply w-full resize-y rounded-[10px] border border-[var(--border)] px-3 py-2.5 text-[13px] leading-relaxed outline-none transition-[border-color,box-shadow,background];
+  @apply w-full resize-y border px-3 py-2.5 text-[13px] leading-relaxed outline-none transition-[border-color,box-shadow,background];
+  border-radius: var(--radius-field);
+  border-color: var(--border);
   min-height: 5.5rem;
   color: var(--foreground);
   background: color-mix(in srgb, var(--muted) 35%, transparent);
@@ -1100,14 +1301,14 @@ a.btn-secondary:focus-visible {
   background-position: right 8px center;
 }
 .settings-select:hover {
-  background-color: var(--accent);
+  background-color: var(--hover-fill);
 }
 .settings-select:focus-visible {
   border-color: color-mix(in srgb, var(--ring, #0a84ff) 55%, var(--border));
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--ring, #0a84ff) 22%, transparent);
 }
 .settings-pill-btn {
-  @apply inline-flex h-7 items-center justify-center rounded-full border border-[var(--border)] bg-[var(--secondary,#f1f2f4)] px-3 text-[12px] leading-none whitespace-nowrap text-[var(--foreground)] transition-colors hover:bg-[var(--accent)] disabled:pointer-events-none disabled:opacity-40;
+  @apply inline-flex h-7 items-center justify-center rounded-full border border-[var(--border)] bg-[var(--secondary,#f1f2f4)] px-3 text-[12px] leading-none whitespace-nowrap text-[var(--foreground)] transition-colors hover:bg-[var(--hover-fill)] disabled:pointer-events-none disabled:opacity-40;
 }
 .settings-pill-btn-danger:hover:not(:disabled) {
   border-color: color-mix(in srgb, #ef4444 35%, var(--border));
@@ -1185,9 +1386,10 @@ a.btn-secondary:focus-visible {
 
 /* Project / thread context menu — top-layer portal (fixed + z-index) */
 .project-context-menu {
-  background: var(--popover, #242424);
-  color: var(--popover-foreground, var(--foreground));
+  background: var(--surface-panel);
+  color: var(--foreground);
   border-color: var(--border) !important;
+  border-radius: var(--radius-panel);
   box-shadow:
     0 16px 48px rgb(0 0 0 / 0.22),
     0 0 0 1px color-mix(in srgb, var(--border) 80%, transparent);
@@ -1201,10 +1403,11 @@ a.btn-secondary:focus-visible {
 
 /* Settings rail (left) — Codex hierarchy */
 .settings-rail-back {
-  @apply flex h-8 w-full items-center gap-1.5 rounded-lg px-2 text-left text-[13px] font-medium text-[var(--sidebar-foreground)] transition-colors;
+  @apply flex h-8 w-full items-center gap-1.5 px-2 text-left text-[13px] font-medium text-[var(--sidebar-foreground)] transition-colors;
+  border-radius: var(--radius-control);
 }
 .settings-rail-back:hover {
-  background: color-mix(in srgb, var(--sidebar-accent) 80%, transparent);
+  background: var(--hover-fill);
 }
 .settings-rail-search {
   @apply flex h-8 min-w-0 items-center gap-2 rounded-full border border-[var(--sidebar-border)] px-2.5;
@@ -1214,16 +1417,17 @@ a.btn-secondary:focus-visible {
   @apply px-2.5 pb-1 pt-3 text-[11px] font-normal text-[var(--text-subtle)];
 }
 .settings-rail-item {
-  @apply flex h-[32px] w-full min-w-0 items-center gap-2.5 rounded-[10px] px-2.5 text-left text-[13px] font-normal transition-colors;
+  @apply flex h-[32px] w-full min-w-0 items-center gap-2.5 px-2.5 text-left text-[13px] font-normal transition-colors;
+  border-radius: var(--radius-control);
   color: var(--sidebar-foreground);
 }
 .settings-rail-item:hover {
-  background: color-mix(in srgb, var(--sidebar-accent) 70%, transparent);
+  background: var(--hover-fill);
   color: var(--sidebar-foreground);
 }
 .settings-rail-item[data-active="true"] {
-  background: var(--sidebar-accent);
-  color: var(--sidebar-accent-foreground);
+  background: var(--hover-fill);
+  color: var(--hover-fill-foreground);
 }
 
 @media (max-width: 900px) {

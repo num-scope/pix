@@ -422,7 +422,7 @@ export function ProjectList(props: ProjectListProps) {
   ) {
     event.preventDefault();
     event.stopPropagation();
-    setOrganizeOpen(false);
+    setOrganizeKind(null);
     setOrganizeAnchor(null);
     const key = `${kind}:${thread.id}`;
     setMenuKey(key);
@@ -541,19 +541,15 @@ export function ProjectList(props: ProjectListProps) {
     return (
       <div key={`${kind}-${thread.id}`} className="relative min-w-0">
         <div
-          className={cn(
-            "group/item relative flex w-full min-w-0 items-center rounded-md px-2 py-1 text-sm",
-            "text-[var(--sidebar-foreground)]",
-            // Selected session only — soft fill, no hover bg flash.
-            thread.active && "bg-[color-mix(in_srgb,var(--sidebar-foreground)_7%,transparent)]",
-          )}
+          className={cn("sidebar-list-row group/item", showMenu && "bg-[var(--hover-fill)]")}
+          data-active={thread.active ? "true" : "false"}
           onContextMenu={(e) => openThreadContextMenu(thread, e, kind)}
         >
           <button
             type="button"
             className={cn(
-              "flex min-w-0 flex-1 items-center gap-1.5 text-left transition-[padding]",
-              indent && "pl-6",
+              "flex h-full min-w-0 flex-1 items-center gap-1.5 text-left transition-[padding]",
+              indent && "pl-5",
               // Default: full width (fade to row end). Hover/open: leave room for actions.
               "pr-0 group-hover/item:pr-14 group-focus-within/item:pr-14",
               showMenu && "pr-14",
@@ -594,7 +590,7 @@ export function ProjectList(props: ProjectListProps) {
             <button
               type="button"
               data-testid={`${testPrefix}-pin-btn-${thread.id}`}
-              className="inline-flex h-6 w-6 items-center justify-center rounded-md text-[var(--muted-foreground)] hover:bg-[var(--sidebar-accent)] hover:text-[var(--sidebar-foreground)]"
+              className="inline-flex h-7 w-7 items-center justify-center rounded-lg text-[var(--muted-foreground)] hover:bg-[var(--hover-fill)] hover:text-[var(--sidebar-foreground)]"
               title={pinnedHere ? unpinLabel : pinLabel}
               aria-label={pinnedHere ? unpinLabel : pinLabel}
               onClick={(e) => {
@@ -611,7 +607,7 @@ export function ProjectList(props: ProjectListProps) {
             <button
               type="button"
               data-testid={`${testPrefix}-archive-btn-${thread.id}`}
-              className="inline-flex h-6 w-6 items-center justify-center rounded-md text-[var(--muted-foreground)] hover:bg-[var(--sidebar-accent)] hover:text-[var(--sidebar-foreground)]"
+              className="inline-flex h-7 w-7 items-center justify-center rounded-lg text-[var(--muted-foreground)] hover:bg-[var(--hover-fill)] hover:text-[var(--sidebar-foreground)]"
               title={archiveLabel}
               aria-label={archiveLabel}
               onClick={(e) => {
@@ -638,12 +634,23 @@ export function ProjectList(props: ProjectListProps) {
         ([k]) => k.replace(/\\/g, "/").replace(/\/+$/, "") === key,
       )?.[1] ??
       [];
+    // Only merge live host threads that belong to this project cwd. During global
+    //「新建会话」props.threads briefly becomes conversation sessions — never append
+    // those under a project card (causes a flash of wrong rows).
+    const liveForProject =
+      active && props.threads.length > 0
+        ? props.threads.filter((t) => {
+            const cwdKey = (t.cwd || "").replace(/\\/g, "/").replace(/\/+$/, "");
+            return !cwdKey || cwdKey === key;
+          })
+        : [];
+
     let list: SessionThreadSummary[];
     if (cached.length > 0) {
       list = cached;
       // Merge active flags / titles from live host list when available (same project).
-      if (active && props.threads.length > 0) {
-        const liveById = new Map(props.threads.map((t) => [t.id, t]));
+      if (liveForProject.length > 0) {
+        const liveById = new Map(liveForProject.map((t) => [t.id, t]));
         list = cached.map((t) => {
           const live = liveById.get(t.id);
           return live
@@ -656,12 +663,12 @@ export function ProjectList(props: ProjectListProps) {
             : { ...t, active: false };
         });
         // Append any live threads missing from cache (new session just created).
-        for (const live of props.threads) {
+        for (const live of liveForProject) {
           if (!list.some((t) => t.id === live.id)) list.push(live);
         }
       }
-    } else if (active && props.threads.length > 0) {
-      list = props.threads;
+    } else if (liveForProject.length > 0) {
+      list = liveForProject;
     } else {
       list = [];
     }
@@ -679,12 +686,12 @@ export function ProjectList(props: ProjectListProps) {
 
     return (
       <div
-        className="mt-0.5 mb-1 space-y-px"
+        className="mt-0.5 mb-1 flex flex-col gap-0.5"
         data-testid={active ? "thread-list" : "session-list"}
         data-kind="session"
       >
         {threadsForProject.length === 0 ? (
-          <p className="px-2 py-0.5 pl-8 text-[12px] text-[var(--text-subtle)]">
+          <p className="px-2.5 py-1.5 pl-8 text-[12px] text-[var(--text-subtle)]">
             {tr("session.empty")}
           </p>
         ) : null}
@@ -692,7 +699,7 @@ export function ProjectList(props: ProjectListProps) {
         {hasMore ? (
           <button
             type="button"
-            className="flex w-full items-center rounded-md px-2 py-0.5 pl-8 text-left text-[12px] text-[var(--text-subtle)] hover:bg-[var(--sidebar-accent)] hover:text-[var(--muted-foreground)]"
+            className="sidebar-list-row pl-8 text-[12px] text-[var(--text-subtle)]"
             data-testid="session-show-more"
             onClick={() => handleShowMoreProject(path)}
           >
@@ -720,24 +727,23 @@ export function ProjectList(props: ProjectListProps) {
         data-expanded={open ? "true" : "false"}
       >
         {/* group/item only on project row — nested threads are siblings, not inside this group */}
+        {/* Project row: hover only — never data-active (highlight the session, not the project). */}
         <div
           className={cn(
-            // Project row: no selected highlight, no hover bg.
-            "group/item relative flex w-full min-w-0 items-center rounded-md px-2 py-0.5 text-left text-sm",
-            "text-[var(--sidebar-foreground)]",
+            "sidebar-list-row group/item",
+            showMenu && "bg-[var(--hover-fill)]",
           )}
         >
           <button
             type="button"
             className={cn(
-              "flex min-w-0 flex-1 items-center gap-2 text-left transition-[padding]",
+              "flex h-full min-w-0 flex-1 items-center gap-2 text-left transition-[padding]",
               "pr-0 group-hover/item:pr-14 group-focus-within/item:pr-14",
               showMenu && "pr-14",
             )}
             data-testid={active ? "workspace-current" : "recent-workspace-item"}
             data-path={path}
             title={path}
-            disabled={props.running}
             onClick={() => {
               // Project row: only expand/collapse. Switching sessions happens via
               // nested session/conversation clicks (or project-row "new session").
@@ -760,7 +766,7 @@ export function ProjectList(props: ProjectListProps) {
             <button
               type="button"
               data-testid="project-menu-btn"
-              className="inline-flex h-6 w-6 items-center justify-center rounded-md text-[var(--muted-foreground)] hover:bg-[var(--sidebar-accent)] hover:text-[var(--sidebar-foreground)]"
+              className="inline-flex h-7 w-7 items-center justify-center rounded-lg text-[var(--muted-foreground)] hover:bg-[var(--hover-fill)] hover:text-[var(--sidebar-foreground)]"
               title={tr("project.more")}
               aria-label={tr("project.more")}
               onClick={(e) => openItemMenu(projectMenuId, e)}
@@ -770,10 +776,9 @@ export function ProjectList(props: ProjectListProps) {
             <button
               type="button"
               data-testid="project-edit-btn"
-              className="inline-flex h-6 w-6 items-center justify-center rounded-md text-[var(--muted-foreground)] hover:bg-[var(--sidebar-accent)] hover:text-[var(--sidebar-foreground)]"
+              className="inline-flex h-7 w-7 items-center justify-center rounded-lg text-[var(--muted-foreground)] hover:bg-[var(--hover-fill)] hover:text-[var(--sidebar-foreground)]"
               title={tr("project.newSession")}
               aria-label={tr("project.newSession")}
-              disabled={props.running}
               onClick={(e) => handleNewThread(path, e)}
             >
               <SquarePen className="size-3.5" strokeWidth={1.75} />
@@ -857,16 +862,14 @@ export function ProjectList(props: ProjectListProps) {
       {/* ── 置顶（独立分组，始终在项目上方） ── */}
       {pinnedPaths.length > 0 ? (
         <div data-testid="pinned-projects" className="mb-1 min-w-0">
-          <div className="px-1 py-0.5 text-[13px] font-semibold tracking-wide text-[var(--text-subtle)]">
-            {tr("section.pinned")}
-          </div>
-          <div className="space-y-0.5">{pinnedPaths.map(renderCard)}</div>
+          <div className="sidebar-section-label">{tr("section.pinned")}</div>
+          <div className="flex flex-col gap-0.5">{pinnedPaths.map(renderCard)}</div>
         </div>
       ) : null}
 
       {/* ── 项目 ── */}
       <div className="relative min-w-0">
-        <div className="group/section flex items-center gap-1 rounded-md px-1 py-0.5 hover:bg-[var(--sidebar-accent)]">
+        <div className="sidebar-section-head group/section">
           <button
             type="button"
             className="flex min-w-0 flex-1 items-center gap-1 truncate text-left text-[13px] font-semibold tracking-wide text-[var(--text-subtle)]"
@@ -888,7 +891,7 @@ export function ProjectList(props: ProjectListProps) {
             <button
               type="button"
               data-testid="projects-organize-btn"
-              className="inline-flex h-6 w-6 items-center justify-center rounded-md text-[var(--muted-foreground)] hover:bg-[var(--sidebar-accent)] hover:text-[var(--sidebar-foreground)]"
+              className="inline-flex h-7 w-7 items-center justify-center rounded-lg text-[var(--muted-foreground)] hover:bg-[var(--hover-fill)] hover:text-[var(--sidebar-foreground)]"
               title={tr("organize.title")}
               aria-label={tr("organize.title")}
               onClick={(e) => openOrganizeMenu("projects", e)}
@@ -898,7 +901,7 @@ export function ProjectList(props: ProjectListProps) {
             <button
               type="button"
               data-testid="workspace-open"
-              className="inline-flex h-6 w-6 items-center justify-center rounded-md text-[var(--muted-foreground)] hover:bg-[var(--sidebar-accent)] hover:text-[var(--sidebar-foreground)]"
+              className="inline-flex h-7 w-7 items-center justify-center rounded-lg text-[var(--muted-foreground)] hover:bg-[var(--hover-fill)] hover:text-[var(--sidebar-foreground)]"
               title={tr("workspace.open")}
               aria-label={tr("workspace.open")}
               onClick={props.onOpenWorkspace}
@@ -909,14 +912,11 @@ export function ProjectList(props: ProjectListProps) {
         </div>
 
         {projectsOpen ? (
-          <div className="min-w-0 space-y-0.5 overflow-x-hidden" data-testid="recent-workspaces">
+          <div className="flex min-w-0 flex-col gap-0.5 overflow-x-hidden" data-testid="recent-workspaces">
             {restPaths.length === 0 && pinnedPaths.length === 0 ? (
               // Keep list empty when no real project — never show auto date folders or stubs.
               props.workspacePath && !isNonProjectWorkspacePath(props.workspacePath) ? (
-                <div
-                  className="rounded-md px-2 py-0.5 text-sm hover:bg-[var(--sidebar-accent)]"
-                  data-testid="workspace-current"
-                >
+                <div className="sidebar-list-row" data-testid="workspace-current">
                   <span data-testid="workspace-name">{displayName(props.workspacePath)}</span>
                 </div>
               ) : null
@@ -928,8 +928,8 @@ export function ProjectList(props: ProjectListProps) {
       </div>
 
       {/* ── 对话 ── */}
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-        <div className="group/section flex items-center gap-1 rounded-md px-1 py-0.5 mt-1 hover:bg-[var(--sidebar-accent)]">
+      <div className="mt-0.5 flex min-h-0 min-w-0 flex-1 flex-col">
+        <div className="sidebar-section-head group/section">
           <button
             type="button"
             className="flex min-w-0 flex-1 items-center gap-1 truncate text-left text-[13px] font-semibold tracking-wide text-[var(--text-subtle)]"
@@ -957,7 +957,7 @@ export function ProjectList(props: ProjectListProps) {
             <button
               type="button"
               data-testid="threads-organize-btn"
-              className="inline-flex h-6 w-6 items-center justify-center rounded-md text-[var(--muted-foreground)] hover:bg-[var(--sidebar-accent)] hover:text-[var(--sidebar-foreground)]"
+              className="inline-flex h-7 w-7 items-center justify-center rounded-lg text-[var(--muted-foreground)] hover:bg-[var(--hover-fill)] hover:text-[var(--sidebar-foreground)]"
               title={tr("organize.title")}
               aria-label={tr("organize.title")}
               onClick={(e) => openOrganizeMenu("threads", e)}
@@ -967,10 +967,9 @@ export function ProjectList(props: ProjectListProps) {
             <button
               type="button"
               data-testid="threads-new-btn"
-              className="inline-flex h-6 w-6 items-center justify-center rounded-md text-[var(--muted-foreground)] hover:bg-[var(--sidebar-accent)] hover:text-[var(--sidebar-foreground)]"
+              className="inline-flex h-7 w-7 items-center justify-center rounded-lg text-[var(--muted-foreground)] hover:bg-[var(--hover-fill)] hover:text-[var(--sidebar-foreground)]"
               title={tr("nav.newThread")}
               aria-label={tr("nav.newThread")}
-              disabled={props.running}
               onClick={() => handleNewThread(undefined)}
             >
               <SquarePen className="size-3.5" strokeWidth={1.75} />
@@ -980,7 +979,7 @@ export function ProjectList(props: ProjectListProps) {
 
         {threadsOpen ? (
           <div
-            className="pix-scroll min-h-0 min-w-0 flex-1 space-y-px px-0.5"
+            className="pix-scroll flex min-h-0 min-w-0 flex-1 flex-col gap-0.5 px-0"
             data-testid="conversations-list"
             data-kind="conversation"
           >
@@ -992,7 +991,7 @@ export function ProjectList(props: ProjectListProps) {
             {conversationHasMore ? (
               <button
                 type="button"
-                className="flex w-full items-center rounded-md px-2 py-0.5 text-left text-[12px] text-[var(--text-subtle)] hover:bg-[var(--sidebar-accent)]"
+                className="sidebar-list-row text-[12px] text-[var(--text-subtle)]"
                 data-testid="threads-show-more"
                 onClick={() => setListVisible((n) => n + PROJECT_THREADS_PAGE)}
               >
@@ -1305,7 +1304,7 @@ function MenuItem(props: {
         "flex w-full items-center gap-2.5 px-3 py-2 text-left text-[13px] transition-colors",
         props.danger
           ? "text-red-400 hover:bg-red-500/10"
-          : "text-[var(--popover-foreground)] hover:bg-[var(--accent)]",
+          : "text-[var(--popover-foreground)] hover:bg-[var(--hover-fill)]",
       )}
       onClick={props.onClick}
     >
@@ -1327,7 +1326,7 @@ function CheckItem(props: {
       role="menuitemradio"
       aria-checked={props.checked}
       data-testid={props.testId}
-      className="flex w-full items-center gap-2.5 px-3 py-1.5 text-left text-[13px] text-[var(--popover-foreground)] hover:bg-[var(--accent)]"
+      className="flex w-full items-center gap-2.5 px-3 py-1.5 text-left text-[13px] text-[var(--popover-foreground)] hover:bg-[var(--hover-fill)]"
       onClick={props.onClick}
     >
       <span className="flex h-4 w-4 shrink-0 items-center justify-center">

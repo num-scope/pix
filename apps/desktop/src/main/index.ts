@@ -33,12 +33,21 @@ import {
   screen,
   shell,
   utilityProcess,
+  type NativeImage,
   type UtilityProcess,
 } from "electron";
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { readFileSync, writeFileSync, existsSync, mkdirSync, lstatSync } from "node:fs";
-import { homedir } from "node:os";
+import {
+  readFileSync,
+  writeFileSync,
+  existsSync,
+  mkdirSync,
+  lstatSync,
+  readdirSync,
+  unlinkSync,
+} from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { setTimeout as delay } from "node:timers/promises";
@@ -633,17 +642,219 @@ function resolveMacAppPath(appName: string): string | undefined {
   return undefined;
 }
 
-async function fileIconDataUrl(filePath: string): Promise<string | undefined> {
+function isUsableIconDataUrl(data: string | undefined): data is string {
+  // Reject empty / tiny payloads (broken extract) so UI can fall back to lucide icons.
+  return Boolean(data && data.startsWith("data:image/") && data.length > 200);
+}
+
+function nativeImageToPngDataUrl(img: NativeImage): string | undefined {
+  if (img.isEmpty()) return undefined;
   try {
-    const img = await app.getFileIcon(filePath, { size: "normal" });
-    if (img.isEmpty()) return undefined;
-    // Prefer PNG for crisp UI chips.
-    const png = img.toPNG();
-    if (!png?.length) return img.toDataURL();
-    return `data:image/png;base64,${png.toString("base64")}`;
+    const size = img.getSize();
+    if (!size.width || !size.height) return undefined;
+    // Normalize chip size — some ICNS frames are huge / multi-resolution.
+    let out = img;
+    if (size.width > 64 || size.height > 64) {
+      out = img.resize({ width: 64, height: 64, quality: "best" });
+    } else if (size.width > 0 && size.width < 32) {
+      out = img.resize({ width: 32, height: 32, quality: "best" });
+    }
+    const png = out.toPNG();
+    if (!png?.length) {
+      const url = out.toDataURL();
+      return isUsableIconDataUrl(url) ? url : undefined;
+    }
+    const data = `data:image/png;base64,${png.toString("base64")}`;
+    return isUsableIconDataUrl(data) ? data : undefined;
   } catch {
     return undefined;
   }
+}
+
+async function fileIconDataUrl(filePath: string): Promise<string | undefined> {
+  try {
+    // Prefer large size for crisp 20px chips after downscale.
+    const img = await app.getFileIcon(filePath, { size: "large" });
+    return nativeImageToPngDataUrl(img);
+  } catch {
+    return undefined;
+  }
+}
+
+/** Convert .icns/.png via macOS `sips` — more reliable than nativeImage for some ICNS. */
+async function sipsIconDataUrl(iconPath: string): Promise<string | undefined> {
+  const out = join(tmpdir(), `pix-icon-${randomUUID()}.png`);
+  try {
+    await execFileAsync(
+      "sips",
+      ["-s", "format", "png", "-z", "64", "64", iconPath, "--out", out],
+      { windowsHide: true, timeout: 4_000 },
+    );
+    if (!existsSync(out)) return undefined;
+    const buf = readFileSync(out);
+    if (!buf.length) return undefined;
+    const data = `data:image/png;base64,${buf.toString("base64")}`;
+    return isUsableIconDataUrl(data) ? data : undefined;
+  } catch {
+    return undefined;
+  } finally {
+    try {
+      unlinkSync(out);
+    } catch {
+      // ignore
+    }
+  }
+}
+
+/** Read CFBundleIconFile / CFBundleIconName from a macOS .app Info.plist. */
+async function macBundleIconBaseName(appPath: string): Promise<string | undefined> {
+  const plist = join(appPath, "Contents", "Info.plist");
+  if (!existsSync(plist)) return undefined;
+  for (const key of ["CFBundleIconFile", "CFBundleIconName"] as const) {
+    try {
+      const { stdout } = await execFileAsync(
+        "plutil",
+        ["-extract", key, "raw", "-o", "-", plist],
+        { windowsHide: true },
+      );
+      const name = stdout.trim();
+      if (name) return name;
+    } catch {
+      // key missing
+    }
+  }
+  return undefined;
+}
+
+function resolveMacIcnsPath(appPath: string, iconBase: string): string | undefined {
+  const resources = join(appPath, "Contents", "Resources");
+  const base = iconBase.replace(/\.icns$/i, "");
+  const candidates = [
+    join(resources, iconBase),
+    join(resources, `${base}.icns`),
+    join(resources, `${base}.png`),
+    join(resources, `${base}.ico`),
+  ];
+  for (const p of candidates) {
+    if (existsSync(p)) return p;
+  }
+  return undefined;
+}
+
+/** Prefer the largest .icns under Contents/Resources (real app art, not generic). */
+function findLargestMacIcns(appPath: string): string | undefined {
+  const resources = join(appPath, "Contents", "Resources");
+  if (!existsSync(resources)) return undefined;
+  let best: { path: string; size: number } | undefined;
+  try {
+    for (const name of readdirSync(resources)) {
+      if (!name.toLowerCase().endsWith(".icns")) continue;
+      const p = join(resources, name);
+      try {
+        const st = lstatSync(p);
+        if (!st.isFile()) continue;
+        if (!best || st.size > best.size) best = { path: p, size: st.size };
+      } catch {
+        // skip
+      }
+    }
+  } catch {
+    return undefined;
+  }
+  return best?.path;
+}
+
+/** Successful icon data URLs only — never cache failures forever. */
+const macAppIconCache = new Map<string, string>();
+
+/**
+ * Quick Look thumbnail of the .app (works for asset-catalog icons that have no loose .icns).
+ * Hard-capped: never block the env panel for seconds per app.
+ */
+async function qlmanageAppIconDataUrl(appPath: string): Promise<string | undefined> {
+  const outDir = join(tmpdir(), "pix-app-icons");
+  try {
+    mkdirSync(outDir, { recursive: true });
+    await execFileAsync("qlmanage", ["-t", "-s", "64", "-o", outDir, appPath], {
+      windowsHide: true,
+      timeout: 2_500,
+    });
+    const expected = join(outDir, `${basename(appPath)}.png`);
+    let pngPath = existsSync(expected) ? expected : undefined;
+    if (!pngPath) {
+      const stem = basename(appPath, ".app").toLowerCase();
+      const hit = readdirSync(outDir).find(
+        (f) => f.toLowerCase().includes(stem) && f.endsWith(".png"),
+      );
+      if (hit) pngPath = join(outDir, hit);
+    }
+    if (!pngPath || !existsSync(pngPath)) return undefined;
+    // Prefer raw file bytes (reliable) over nativeImage re-encode.
+    const buf = readFileSync(pngPath);
+    if (!buf.length) return undefined;
+    const data = `data:image/png;base64,${buf.toString("base64")}`;
+    return isUsableIconDataUrl(data) ? data : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+async function iconFromFilePath(iconPath: string): Promise<string | undefined> {
+  // 1) Electron nativeImage
+  const fromNi = nativeImageToPngDataUrl(nativeImage.createFromPath(iconPath));
+  if (fromNi) return fromNi;
+  // 2) sips re-encode (handles many ICNS cases nativeImage mishandles)
+  return sipsIconDataUrl(iconPath);
+}
+
+/**
+ * Real macOS app icons for "Open in…".
+ * Order: ICNS/sips → getFileIcon(.app) → Quick Look.
+ */
+async function macAppIconDataUrl(appPath: string): Promise<string | undefined> {
+  if (!appPath || !existsSync(appPath)) return undefined;
+  const cached = macAppIconCache.get(appPath);
+  if (cached) return cached;
+
+  try {
+    // 1) Info.plist → Resources icon file
+    const iconBase = await macBundleIconBaseName(appPath);
+    const fromPlist = iconBase ? resolveMacIcnsPath(appPath, iconBase) : undefined;
+    if (fromPlist) {
+      const data = await iconFromFilePath(fromPlist);
+      if (data) {
+        macAppIconCache.set(appPath, data);
+        return data;
+      }
+    }
+
+    // 2) Largest loose .icns (skip tiny utility icons when possible)
+    const largest = findLargestMacIcns(appPath);
+    if (largest && largest !== fromPlist) {
+      const data = await iconFromFilePath(largest);
+      if (data) {
+        macAppIconCache.set(appPath, data);
+        return data;
+      }
+    }
+
+    // 3) OS icon for the .app bundle (correct for most modern apps)
+    const fromOs = await fileIconDataUrl(appPath);
+    if (fromOs) {
+      macAppIconCache.set(appPath, fromOs);
+      return fromOs;
+    }
+
+    // 4) Quick Look fallback
+    const ql = await qlmanageAppIconDataUrl(appPath);
+    if (ql) {
+      macAppIconCache.set(appPath, ql);
+      return ql;
+    }
+  } catch {
+    // leave uncached so a later call can retry
+  }
+  return undefined;
 }
 
 async function listOpenTargets(cwd: string): Promise<DetectedApp[]> {
@@ -653,19 +864,24 @@ async function listOpenTargets(cwd: string): Promise<DetectedApp[]> {
   };
 
   if (process.platform === "darwin") {
-    // Finder
-    {
-      const finderPath =
-        resolveMacAppPath("Finder") ?? "/System/Library/CoreServices/Finder.app";
-      const iconDataUrl = existsSync(finderPath)
-        ? await fileIconDataUrl(finderPath)
-        : undefined;
-      push({
+    type Cand = {
+      id: string;
+      name: string;
+      kind: DetectedApp["kind"];
+      app: string;
+      appPath: string;
+    };
+    const pending: Cand[] = [];
+
+    const finderPath =
+      resolveMacAppPath("Finder") ?? "/System/Library/CoreServices/Finder.app";
+    if (existsSync(finderPath)) {
+      pending.push({
         id: "finder",
         name: "Finder",
         kind: "finder",
-        target: "Finder",
-        ...(iconDataUrl ? { iconDataUrl } : {}),
+        app: "Finder",
+        appPath: finderPath,
       });
     }
 
@@ -686,7 +902,6 @@ async function listOpenTargets(cwd: string): Promise<DetectedApp[]> {
       { id: "zed", name: "Zed", kind: "ide", app: "Zed" },
       { id: "webstorm", name: "WebStorm", kind: "ide", app: "WebStorm" },
       { id: "intellij", name: "IntelliJ IDEA", kind: "ide", app: "IntelliJ IDEA" },
-      // Terminals — include System/Utilities (Terminal.app is no longer only in /Applications)
       { id: "terminal", name: "Terminal", kind: "terminal", app: "Terminal" },
       { id: "iterm", name: "iTerm", kind: "terminal", app: "iTerm" },
       { id: "iterm2", name: "iTerm2", kind: "terminal", app: "iTerm2" },
@@ -705,27 +920,57 @@ async function listOpenTargets(cwd: string): Promise<DetectedApp[]> {
       const bundleKey = appPath.replace(/\\/g, "/").toLowerCase();
       if (seenBundles.has(bundleKey)) continue;
       seenBundles.add(bundleKey);
-      const iconDataUrl = await fileIconDataUrl(appPath);
-      const launchName = basename(appPath, ".app");
-      push({
-        id: c.id,
-        name: c.name === "iTerm2" || c.name === "iTerm" ? launchName : c.name,
-        kind: c.kind,
-        target: launchName,
-        ...(iconDataUrl ? { iconDataUrl } : {}),
-      });
+      pending.push({ ...c, appPath });
     }
+
+    // Resolve icons in parallel; isolate failures so one app cannot blank all icons.
+    const resolved = await Promise.all(
+      pending.map(async (c) => {
+        let iconDataUrl: string | undefined;
+        try {
+          iconDataUrl = await macAppIconDataUrl(c.appPath);
+        } catch {
+          iconDataUrl = undefined;
+        }
+        const launchName = basename(c.appPath, ".app");
+        const item: DetectedApp = {
+          id: c.id,
+          name: c.name === "iTerm2" || c.name === "iTerm" ? launchName : c.name,
+          kind: c.kind,
+          target: c.kind === "finder" ? "Finder" : launchName,
+          ...(iconDataUrl ? { iconDataUrl } : {}),
+        };
+        return item;
+      }),
+    );
+    for (const item of resolved) push(item);
   } else if (process.platform === "win32") {
     push({ id: "explorer", name: "Explorer", kind: "finder", target: "explorer" });
-    for (const c of [
-      { id: "cursor", name: "Cursor", kind: "ide" as const, target: "cursor" },
-      { id: "vscode", name: "Visual Studio Code", kind: "ide" as const, target: "code" },
-      { id: "wt", name: "Windows Terminal", kind: "terminal" as const, target: "wt" },
-      { id: "cmd", name: "Command Prompt", kind: "terminal" as const, target: "cmd" },
-      { id: "powershell", name: "PowerShell", kind: "terminal" as const, target: "powershell" },
-    ]) {
-      push({ ...c });
-    }
+    await Promise.all(
+      [
+        { id: "cursor", name: "Cursor", kind: "ide" as const, target: "cursor" },
+        { id: "vscode", name: "Visual Studio Code", kind: "ide" as const, target: "code" },
+        { id: "wt", name: "Windows Terminal", kind: "terminal" as const, target: "wt" },
+        { id: "cmd", name: "Command Prompt", kind: "terminal" as const, target: "cmd" },
+        { id: "powershell", name: "PowerShell", kind: "terminal" as const, target: "powershell" },
+      ].map(async (c) => {
+        let iconDataUrl: string | undefined;
+        try {
+          const { stdout } = await execFileAsync("where", [c.target], {
+            windowsHide: true,
+            shell: true,
+          });
+          const exe = stdout
+            .split(/\r?\n/)
+            .map((s) => s.trim())
+            .find(Boolean);
+          if (exe && existsSync(exe)) iconDataUrl = await fileIconDataUrl(exe);
+        } catch {
+          // lucide fallback
+        }
+        push({ ...c, ...(iconDataUrl ? { iconDataUrl } : {}) });
+      }),
+    );
   } else {
     push({ id: "files", name: "Files", kind: "finder", target: "xdg-open" });
     for (const c of [
@@ -737,7 +982,12 @@ async function listOpenTargets(cwd: string): Promise<DetectedApp[]> {
         kind: "terminal" as const,
         target: "x-terminal-emulator",
       },
-      { id: "gnome-terminal", name: "GNOME Terminal", kind: "terminal" as const, target: "gnome-terminal" },
+      {
+        id: "gnome-terminal",
+        name: "GNOME Terminal",
+        kind: "terminal" as const,
+        target: "gnome-terminal",
+      },
       { id: "konsole", name: "Konsole", kind: "terminal" as const, target: "konsole" },
     ]) {
       push({ ...c });
@@ -2216,13 +2466,20 @@ async function createWindow(): Promise<void> {
     title: "Pix",
     show: false,
     ...(iconPath ? { icon: iconPath } : {}),
-    // macOS: traffic lights sit in the sidebar titlebar row (Synara/Codex style).
+    // macOS: traffic lights in the sidebar titlebar + real sidebar vibrancy (true glass).
     ...(process.platform === "darwin"
       ? {
           titleBarStyle: "hiddenInset" as const,
           trafficLightPosition,
+          // System material behind the frosted rail; content stays opaque in the renderer.
+          vibrancy: "sidebar" as const,
+          visualEffectState: "active" as const,
+          transparent: true,
+          backgroundColor: "#00000000",
         }
-      : {}),
+      : {
+          backgroundColor: "#191919",
+        }),
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,

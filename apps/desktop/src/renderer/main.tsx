@@ -8,6 +8,7 @@ import type {
 } from "@pix/contracts";
 import {
   StrictMode,
+  memo,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -17,7 +18,7 @@ import {
   type KeyboardEvent,
 } from "react";
 import { createRoot } from "react-dom/client";
-import { Check, ChevronDown, Search, Terminal, X } from "lucide-react";
+import { ArrowDown, Check, Search, Terminal, X } from "lucide-react";
 import { AppSidebar } from "./components/AppSidebar.tsx";
 import { CommandPalette } from "./components/CommandPalette.tsx";
 import { Composer, type SpeedMode } from "./components/Composer.tsx";
@@ -25,10 +26,11 @@ import { ErrorDialog } from "./components/ErrorDialog.tsx";
 import { SettingsPage } from "./components/settings/SettingsPage.tsx";
 import {
   EnvPanel,
-  ENV_PANEL_MIN_CONTENT_PX,
-  ENV_PANEL_WIDTH_PX,
+  envPanelLayoutForWidth,
+  type EnvPanelLayoutMode,
 } from "./components/EnvPanel.tsx";
 import { MarkdownContent } from "./components/MarkdownContent.tsx";
+import { PixLogo } from "./components/PixLogo.tsx";
 import { ThreadHeader } from "./components/ThreadHeader.tsx";
 import { buildShellCommands } from "./lib/commands.ts";
 import { applyDocumentTheme, colorModeFromPiTheme, piThemeLabel } from "./lib/theme.ts";
@@ -45,7 +47,6 @@ import {
   type AccessMode,
   type AccessVisibility,
 } from "./lib/settings-prefs.ts";
-import { MAC_TRAFFIC_LIGHT_GUTTER_PX, TITLEBAR_CONTROL_SIZE_PX } from "./lib/desktop-chrome.ts";
 import { loadNotificationPrefs } from "./lib/notification-prefs.ts";
 import { installOverlayScroll } from "./lib/overlay-scroll.ts";
 import { sidebarRailWidth } from "./lib/sidebar-prefs.ts";
@@ -54,6 +55,7 @@ import {
   filterRecentWorkspaces,
   firstLine,
   isNonProjectWorkspacePath,
+  prependRecentPath,
   workspaceLabel,
 } from "./lib/workspace.ts";
 import {
@@ -177,7 +179,12 @@ function App() {
   const setRunning = useShellStore((s) => s.setRunning);
   const setReviewOpen = useShellStore((s) => s.setReviewOpen);
   const setEnvPanelOpen = useShellStore((s) => s.setEnvPanelOpen);
+  /** Whether env panel can be shown at current thread-column width. */
   const [envPanelFits, setEnvPanelFits] = useState(true);
+  /** float = overlay without squeeze; dock = flex squeeze. */
+  const [envPanelLayout, setEnvPanelLayout] = useState<Exclude<EnvPanelLayoutMode, "none">>(
+    "dock",
+  );
   const threadColumnRef = useRef<HTMLElement | null>(null);
   const setSidebarOpen = useShellStore((s) => s.setSidebarOpen);
   const setLastFailure = useShellStore((s) => s.setLastFailure);
@@ -266,10 +273,44 @@ function App() {
   });
   const [attachments, setAttachments] = useState<string[]>([]);
   /**
-   * Selected project for composer chrome. Survives global "新建任务" which clears the
-   * live session snapshot but must not drop the chosen project.
+   * Selected project for composer chrome / rail highlight.
+   * Global「新建会话」clears this (pure conversation) but must keep the project
+   * visible via recentWorkspaces — never leave a frame where it vanishes.
    */
   const [selectedWorkspacePath, setSelectedWorkspacePath] = useState<string | undefined>();
+  /** Always-current selection for async helpers (avoids stale closures after setState). */
+  const selectedWorkspacePathRef = useRef<string | undefined>(undefined);
+  selectedWorkspacePathRef.current = selectedWorkspacePath;
+  /**
+   * True while global「新建会话」is in flight. Forces conversation empty chrome
+   * (title + no project highlight) without wiping snapshot model/thinking mid-flight.
+   */
+  const [pendingPureConversation, setPendingPureConversation] = useState(false);
+  const pendingPureConversationRef = useRef(false);
+
+  function selectWorkspacePath(path: string | undefined) {
+    selectedWorkspacePathRef.current = path;
+    setSelectedWorkspacePath(path);
+  }
+
+  /** Last known model chrome — survives snapshot gaps so composer never flashes "未选择模型". */
+  const lastComposerChromeRef = useRef<{
+    model?: { provider: string; id: string };
+    thinkingLevel?: string;
+    availableThinkingLevels?: string[];
+  }>({});
+  if (snapshot?.model) {
+    const chrome: {
+      model?: { provider: string; id: string };
+      thinkingLevel?: string;
+      availableThinkingLevels?: string[];
+    } = { model: snapshot.model };
+    if (snapshot.thinkingLevel !== undefined) chrome.thinkingLevel = snapshot.thinkingLevel;
+    if (snapshot.availableThinkingLevels !== undefined) {
+      chrome.availableThinkingLevels = snapshot.availableThinkingLevels;
+    }
+    lastComposerChromeRef.current = chrome;
+  }
 
   /** Hide conversation/scratch dirs from project chrome / sidebar. */
   function asProjectPath(path: string | undefined): string | undefined {
@@ -278,35 +319,55 @@ function App() {
   }
 
   // Prefer explicit selection over host snapshot so mid-switch host.ready cannot flash the rail.
+  // While creating a pure conversation, never fall back to the old project snapshot cwd.
   const workspacePath =
-    asProjectPath(selectedWorkspacePath) ?? asProjectPath(snapshot?.cwd);
+    asProjectPath(selectedWorkspacePath) ??
+    (pendingPureConversation ? undefined : asProjectPath(snapshot?.cwd));
   const workspace = workspaceLabel(workspacePath);
-  /** Host running under conversation home (not a user project). */
-  const isPureConversation = Boolean(snapshot?.cwd && isNonProjectWorkspacePath(snapshot.cwd));
-  /** Suppress snapshot→selection sync while switchThread is in flight. */
+  /** Host running under conversation home (not a user project), or about to. */
+  const isPureConversation =
+    pendingPureConversation ||
+    Boolean(snapshot?.cwd && isNonProjectWorkspacePath(snapshot.cwd));
+  /** Suppress snapshot→selection sync while switchThread / newBlankTask is in flight. */
   const switchingSessionRef = useRef(false);
 
   useEffect(() => {
     // Never promote conversation/scratch dirs into the "selected project" slot.
-    if (switchingSessionRef.current) return;
+    if (switchingSessionRef.current || pendingPureConversationRef.current) return;
     if (snapshot?.cwd && !isNonProjectWorkspacePath(snapshot.cwd)) {
-      setSelectedWorkspacePath(snapshot.cwd);
+      selectWorkspacePath(snapshot.cwd);
     }
   }, [snapshot?.cwd]);
   const runState = deriveRunState({ hostStatus: status, running, lastFailure });
-  const timeline = useMemo(
-    () => [...historyToTimeline(history), ...projectEventsToTimeline(events, sentPrompts)],
-    [history, events, sentPrompts],
-  );
+  /** Session identity — used to pin scroll + remount timeline rows on switch. */
+  const sessionKey = snapshot?.sessionFile ?? snapshot?.sessionId ?? "";
+  const timeline = useMemo(() => {
+    const items = [
+      ...historyToTimeline(history),
+      ...projectEventsToTimeline(events, sentPrompts),
+    ];
+    // Prefix ids with session so React does not reuse rows across switches.
+    if (!sessionKey) return items;
+    return items.map((item) => ({ ...item, id: `${sessionKey}:${item.id}` }));
+  }, [history, events, sentPrompts, sessionKey]);
   const hasActivity = timeline.length > 0;
   const activeThread = threads.find((thread) => thread.active);
   const threadTitle =
     activeThread?.title ||
     (sentPrompts[0]
       ? firstLine(sentPrompts[0])
-      : snapshot
-        ? t(locale, "thread.current")
-        : t(locale, "thread.new"));
+      : pendingPureConversation || isPureConversation || !snapshot
+        ? t(locale, "thread.new")
+        : t(locale, "thread.current"));
+  const displayModel = snapshot?.model ?? lastComposerChromeRef.current.model;
+  const displayThinkingLevel =
+    snapshot?.thinkingLevel ?? lastComposerChromeRef.current.thinkingLevel ?? "off";
+  const displayThinkingLevels =
+    snapshot?.availableThinkingLevels?.length
+      ? snapshot.availableThinkingLevels
+      : lastComposerChromeRef.current.availableThinkingLevels?.length
+        ? lastComposerChromeRef.current.availableThinkingLevels
+        : [displayThinkingLevel];
 
   function normalizeCwdKey(path: string): string {
     return path.replace(/\\/g, "/").replace(/\/+$/, "");
@@ -352,15 +413,17 @@ function App() {
   // Overlay auto-hide scrollbars for main content panes (settings / packages / thread…).
   useEffect(() => installOverlayScroll(), []);
 
-  // Docked env rail: hide when thread column cannot keep min content width + panel.
+  // Env panel: float in free right gutter when it would not cover conversation;
+  // dock (squeeze) when it would cover; auto-hide when min widths no longer fit both.
   useEffect(() => {
     if (view !== "thread") return;
     const el = threadColumnRef.current;
     if (!el || typeof ResizeObserver === "undefined") return;
     const apply = (width: number) => {
-      // content (timeline) + env rail + padding must both fit.
-      const fits = width >= ENV_PANEL_WIDTH_PX + ENV_PANEL_MIN_CONTENT_PX;
+      const mode = envPanelLayoutForWidth(width);
+      const fits = mode !== "none";
       setEnvPanelFits(fits);
+      if (mode === "float" || mode === "dock") setEnvPanelLayout(mode);
       if (!fits && useShellStore.getState().envPanelOpen) {
         useShellStore.getState().setEnvPanelOpen(false);
       }
@@ -432,11 +495,22 @@ function App() {
             }));
           }
         } else if (event.type === "session.opened") {
-          // Skip if switchThread is handling the open (it already schedules bottom scroll).
-          if (!switchingSessionRef.current) {
-            markSessionOpenForBottomScroll();
+          // switchThread / newBlankTask apply the open themselves. Intermediate
+          // session.opened (e.g. from workspace.openPath) must not wipe history into
+          // an empty hero flash mid-transition.
+          if (switchingSessionRef.current || pendingPureConversationRef.current) {
+            const cwd = event.snapshot.cwd;
+            if (cwd && event.threads.length > 0) {
+              setThreadsByCwd((prev) => ({
+                ...prev,
+                [normalizeCwdKey(cwd)]: event.threads,
+              }));
+            }
+            return;
           }
+          markSessionOpenForBottomScroll();
           store.applySessionOpen(event);
+          requestContentReveal();
           // Keep sidebar caches in sync without clearing other projects' lists.
           const cwd = event.snapshot.cwd;
           if (cwd && event.threads.length > 0) {
@@ -476,65 +550,122 @@ function App() {
     [],
   );
 
-  function scrollTimelineToBottom(behavior: ScrollBehavior = "smooth") {
+  /**
+   * Pin the conversation scrollport to its true bottom (above the in-flow composer).
+   * Never use element.scrollIntoView — that can scroll the window/app chrome instead
+   * of only the content column.
+   */
+  function pinTimelineScrollport(behavior: ScrollBehavior = "auto") {
     const el = timelineScrollRef.current;
     if (!el) return;
-    // scrollHeight already includes bottom padding sized to the composer dock.
-    el.scrollTo({ top: el.scrollHeight, behavior });
+    const maxTop = Math.max(0, el.scrollHeight - el.clientHeight);
+    if (behavior === "smooth") {
+      el.scrollTo({ top: maxTop, behavior: "smooth" });
+    } else {
+      el.scrollTop = maxTop;
+    }
+  }
+
+  function scrollTimelineToBottom(behavior: ScrollBehavior = "smooth") {
+    pinTimelineScrollport(behavior);
     setShowScrollToBottom(false);
   }
 
-  /** Session identity — used to pin scroll to bottom when entering a thread. */
-  const sessionKey = snapshot?.sessionFile ?? snapshot?.sessionId ?? "";
   /**
-   * After open/switch: hide timeline until layout finishes, then jump to bottom and reveal.
-   * Avoids flashing the top of a long thread before scroll.
+   * Session open/switch: hold the content pane blank until history is applied and
+   * scrolled to bottom. Never show empty-hero or project-bar protrusion mid-transition.
    */
   const pendingScrollBottomRef = useRef(false);
+  /** True from switch/open start until we intentionally reveal (blocks empty early-exit). */
+  const holdBlankRef = useRef(false);
   const [timelineReady, setTimelineReady] = useState(true);
+  /** Bumped after applySessionOpen so settle re-runs even when history length is unchanged. */
+  const [revealToken, setRevealToken] = useState(0);
 
   function markSessionOpenForBottomScroll() {
     pendingScrollBottomRef.current = true;
+    holdBlankRef.current = true;
     setTimelineReady(false);
+    setShowScrollToBottom(false);
   }
 
-  // Open page first; after paint/layout, scroll to bottom then show.
+  function requestContentReveal() {
+    setRevealToken((n) => n + 1);
+  }
+
+  function finishBlankHold() {
+    holdBlankRef.current = false;
+    pendingScrollBottomRef.current = false;
+    setShowScrollToBottom(false);
+    setTimelineReady(true);
+  }
+
+  // After history lands: pin to bottom while still invisible, then reveal, then
+  // re-pin once ThreadHeader / composer height change the viewport.
   useLayoutEffect(() => {
     if (!pendingScrollBottomRef.current) return;
+
+    // Mid-switch before applySessionOpen: dock resize / partial renders must stay blank.
+    // Never flash empty-hero ("在 xxx 中开始") or the composer project protrusion.
+    if (switchingSessionRef.current) return;
+
     const el = timelineScrollRef.current;
-    if (!el) {
-      // Empty / not mounted yet — reveal and clear pending.
-      pendingScrollBottomRef.current = false;
-      setTimelineReady(true);
+    if (!el) return;
+
+    if (timeline.length === 0) {
+      // True empty session after apply (revealToken bumped, switch done).
+      finishBlankHold();
       return;
     }
 
     let cancelled = false;
     let frames = 0;
-    const maxFrames = 8;
+    // Markdown layout can take a few frames; stay invisible while measuring.
+    const preRevealFrames = 6;
 
-    const settle = () => {
+    // Pin only the conversation scrollport (bottom edge = top of composer dock).
+    const pinBottom = () => pinTimelineScrollport("auto");
+
+    // Sync pin before paint of this commit.
+    pinBottom();
+
+    const tick = () => {
       if (cancelled) return;
-      el.scrollTop = el.scrollHeight;
+      pinBottom();
       frames += 1;
-      // Keep adjusting a few frames so late layout (composer height / markdown) is included.
-      if (frames < maxFrames) {
-        requestAnimationFrame(settle);
+      if (frames < preRevealFrames) {
+        requestAnimationFrame(tick);
         return;
       }
-      pendingScrollBottomRef.current = false;
+      // Reveal while already pinned; header/composer height changes resize the scrollport.
       setShowScrollToBottom(false);
+      holdBlankRef.current = false;
       setTimelineReady(true);
+      // Post-reveal pins: after paint so clientHeight reflects final column layout.
+      requestAnimationFrame(() => {
+        if (cancelled) return;
+        pinBottom();
+        requestAnimationFrame(() => {
+          if (cancelled) return;
+          pinBottom();
+          requestAnimationFrame(() => {
+            if (cancelled) return;
+            pinBottom();
+            pendingScrollBottomRef.current = false;
+            setShowScrollToBottom(false);
+          });
+        });
+      });
     };
 
-    // Start after this commit's layout.
-    requestAnimationFrame(settle);
+    requestAnimationFrame(tick);
     return () => {
       cancelled = true;
     };
-  }, [sessionKey, history.length, timeline.length, composerDockHeight]);
+  }, [sessionKey, history.length, timeline.length, composerDockHeight, revealToken]);
 
-  // Keep timeline bottom padding in sync with the floating composer height.
+  // Track composer height only so scroll-to-bottom / settle re-run when the dock resizes
+  // (composer is in-flow now — content area bottom is the dock top, not the window edge).
   useEffect(() => {
     const dock = composerDockRef.current;
     if (!dock || typeof ResizeObserver === "undefined") return;
@@ -545,38 +676,61 @@ function App() {
     return () => ro.disconnect();
   }, [hasActivity, showScrollToBottom, showContextUsage, accessVisibility, timelineReady]);
 
+  /** Pixels from scrollport bottom before we consider "not at bottom" (show jump chip). */
+  const SCROLL_BOTTOM_GAP_PX = 64;
+
   useEffect(() => {
     if (!hasActivity || !timelineReady) return;
     const el = timelineScrollRef.current;
     if (!el) return;
-    // Streaming: auto-stick only while already near the bottom (don't yank when reading history).
-    if (pendingScrollBottomRef.current) return;
+    // Streaming: auto-stick only while already near the scrollport bottom.
+    if (pendingScrollBottomRef.current || holdBlankRef.current) return;
     const gap = el.scrollHeight - el.scrollTop - el.clientHeight;
-    if (gap < 120) {
-      scrollTimelineToBottom("auto");
+    if (gap < SCROLL_BOTTOM_GAP_PX) {
+      pinTimelineScrollport("auto");
+      setShowScrollToBottom(false);
     }
   }, [timeline, hasActivity, running, composerDockHeight, timelineReady]);
 
   useEffect(() => {
-    const el = timelineScrollRef.current;
-    if (!el || !hasActivity) {
+    if (!hasActivity || !timelineReady) {
       setShowScrollToBottom(false);
       return;
     }
+    const el = timelineScrollRef.current;
+    if (!el) return;
+
     const update = () => {
+      // Always attach listeners — pending is a ref and must not skip subscription
+      // (otherwise after switch settle we never re-bind scroll and the chip never appears).
+      if (pendingScrollBottomRef.current || holdBlankRef.current) {
+        setShowScrollToBottom(false);
+        return;
+      }
       const gap = el.scrollHeight - el.scrollTop - el.clientHeight;
-      setShowScrollToBottom(gap > 120);
+      const overflows = el.scrollHeight > el.clientHeight + 4;
+      setShowScrollToBottom(overflows && gap > SCROLL_BOTTOM_GAP_PX);
     };
-    update();
+
+    // Defer so layout (absolute scrollport height) is settled after paint.
+    const measure = () => requestAnimationFrame(update);
+    measure();
     el.addEventListener("scroll", update, { passive: true });
+    el.addEventListener("wheel", measure, { passive: true });
     const ro =
-      typeof ResizeObserver !== "undefined" ? new ResizeObserver(() => update()) : undefined;
+      typeof ResizeObserver !== "undefined" ? new ResizeObserver(() => measure()) : undefined;
     ro?.observe(el);
+    // After session open, pending clears async — re-measure a few times.
+    const t1 = window.setTimeout(update, 120);
+    const t2 = window.setTimeout(update, 400);
     return () => {
       el.removeEventListener("scroll", update);
+      el.removeEventListener("wheel", measure);
       ro?.disconnect();
+      window.clearTimeout(t1);
+      window.clearTimeout(t2);
     };
-  }, [hasActivity, timeline.length, composerDockHeight]);
+  }, [hasActivity, timeline.length, composerDockHeight, timelineReady, revealToken]);
 
   async function ensureHost(): Promise<HostSnapshot> {
     const store = useShellStore.getState();
@@ -595,7 +749,7 @@ function App() {
       knownCwd = await window.pix.workspace.ensureConversation();
     }
     if (!isNonProjectWorkspacePath(knownCwd)) {
-      setSelectedWorkspacePath(knownCwd);
+      selectWorkspacePath(knownCwd);
     }
     setStatus("正在启动 Agent Host…");
     const value = await window.pix.host.start({ cwd: knownCwd });
@@ -651,14 +805,28 @@ function App() {
     // Clear the box immediately — do not wait for the full agent turn.
     setPrompt("");
     setSentPrompts((current) => [...current, message]);
+    // If the user switches sessions mid-generation, ignore late host results.
+    const sessionAtStart =
+      useShellStore.getState().snapshot?.sessionFile ??
+      useShellStore.getState().snapshot?.sessionId ??
+      "";
+    const stillSameSession = () => {
+      const s = useShellStore.getState().snapshot;
+      const key = s?.sessionFile ?? s?.sessionId ?? "";
+      return key === sessionAtStart;
+    };
     try {
-      if (!snapshot) await ensureHost();
-      acceptSnapshot(await window.pix.agent.prompt(message));
+      if (!useShellStore.getState().snapshot) await ensureHost();
+      if (!stillSameSession()) return;
+      const next = await window.pix.agent.prompt(message);
+      if (!stillSameSession()) return;
+      acceptSnapshot(next);
       setStatus("Agent settled");
       await refreshThreads();
     } catch (error) {
+      // Switched away / aborted for navigation — do not restore draft into the new session.
+      if (!stillSameSession()) return;
       // Host/workspace/IPC failures → modal + restore draft for retry.
-      // Agent stream failures usually complete the prompt RPC; no restore needed then.
       setPrompt(message);
       setSentPrompts((current) => {
         const idx = current.lastIndexOf(message);
@@ -667,7 +835,7 @@ function App() {
       });
       reportAppError(error, "发送失败");
     } finally {
-      setRunning(false);
+      if (stillSameSession()) setRunning(false);
     }
   }
 
@@ -789,14 +957,16 @@ function App() {
   async function refreshRecentWorkspaces() {
     try {
       const listed = await window.pix.workspace.listRecent();
-      // Only exclude the live open project (snapshot cwd). After global 新建会话 the
-      // snapshot is cleared — previous project must still appear in the sidebar group.
-      const cwd = useShellStore.getState().snapshot?.cwd;
+      // Exclude only the explicitly selected project (shown via workspacePath).
+      // Do NOT exclude snapshot.cwd — during global 新建会话 the snapshot may still
+      // be the old project for a tick, and filtering it out makes the rail flash empty.
+      // Read from ref so callers that just cleared selection don't exclude the old project.
+      const selected = asProjectPath(selectedWorkspacePathRef.current);
       setRecentWorkspaces(
-        filterRecentWorkspaces(listed, cwd ? { current: cwd, max: 12 } : { max: 12 }),
+        filterRecentWorkspaces(listed, selected ? { current: selected, max: 12 } : { max: 12 }),
       );
     } catch {
-      setRecentWorkspaces([]);
+      // Keep the previous list — never wipe the rail on a transient listRecent failure.
     }
   }
 
@@ -808,7 +978,7 @@ function App() {
     setEvents([]);
     setSentPrompts([]);
     useShellStore.getState().setHistory([]);
-    setSelectedWorkspacePath(cwd);
+    selectWorkspacePath(cwd);
     const snap = await window.pix.workspace.openPath(cwd, {
       resumeRecent: options?.resumeRecent === true && !options?.sessionFile,
       ...(options?.sessionFile ? { sessionFile: options.sessionFile } : {}),
@@ -884,6 +1054,17 @@ function App() {
   async function openThread() {
     setView("thread");
     setSidebarOpen(false);
+    // Thread column remounts when leaving settings/packages — restore true content bottom
+    // (scrollport above composer), not the window top.
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        const el = timelineScrollRef.current;
+        if (!el) return;
+        if (el.scrollHeight > el.clientHeight + 4) {
+          pinTimelineScrollport("auto");
+        }
+      });
+    });
   }
 
   /**
@@ -891,8 +1072,23 @@ function App() {
    * Pure conversation — NOT bound to any project.
    * Host cwd = Documents/Pix/conversations (hidden from 项目 rail / recent).
    * Only the project-row ✏️ creates a session under that project.
+   *
+   * UI rules (no intermediate flash):
+   * - Keep last model/thinking chrome until the new snapshot arrives
+   * - Keep previous project on the rail via recentWorkspaces (never a missing frame)
+   * - Empty hero shows「开始对话」immediately, never「打开工作区以开始」
    */
   async function newBlankTask() {
+    // Leaving a generating session — abort first so the host is free for a new thread.
+    if (useShellStore.getState().running) {
+      try {
+        acceptSnapshot(await window.pix.agent.abort());
+      } catch {
+        // ignore
+      } finally {
+        setRunning(false);
+      }
+    }
     setView("thread");
     setSidebarOpen(false);
     setPrompt("");
@@ -901,34 +1097,67 @@ function App() {
     setSentPrompts([]);
     setLastFailure(undefined);
     setAttachments([]);
-    setSelectedWorkspacePath(undefined);
     useShellStore.getState().setHistory([]);
-    setRuntimeId(undefined);
-    setLastSequence(0);
-    useShellStore.getState().setSnapshot(undefined);
+
+    const prevSnap = useShellStore.getState().snapshot;
+    const prevProject =
+      asProjectPath(selectedWorkspacePath) ?? asProjectPath(prevSnap?.cwd);
+    // Project was listed only via workspacePath (excluded from recent while open).
+    // Promote it into recent BEFORE clearing selection so the card never unmounts.
+    if (prevProject) {
+      setRecentWorkspaces((prev) => prependRecentPath(prev, prevProject, 12));
+    }
+
+    pendingPureConversationRef.current = true;
+    setPendingPureConversation(true);
+    selectWorkspacePath(undefined);
+    // Do NOT setSnapshot(undefined) — composer would flash 未选择模型 / empty would
+    // flash 打开工作区以开始. pendingPureConversation drives conversation chrome instead.
 
     try {
-      // Leave any open project; keep it on recent list only.
       await window.pix.workspace.clearActive();
-      setSelectedWorkspacePath(undefined);
+      selectWorkspacePath(undefined);
 
       // After clearActive: e2e may keep PIX_WORKSPACE fixture; product returns undefined.
       const afterClear = await window.pix.workspace.getCwd().catch(() => undefined);
       // Product: Documents/Pix/conversations — never listed under 项目.
       const convCwd = afterClear ?? (await window.pix.workspace.ensureConversation());
-      setStatus("Creating conversation...");
-      const value = await window.pix.host.start({ cwd: convCwd });
-      acceptSnapshot(value);
-      // Never treat conversation/scratch cwd as the selected project.
-      setSelectedWorkspacePath(asProjectPath(convCwd));
+
+      const live = useShellStore.getState();
+      const alreadyOnConvHost =
+        Boolean(live.runtimeId && live.snapshot?.cwd) &&
+        isNonProjectWorkspacePath(live.snapshot!.cwd) &&
+        normalizeCwdKey(live.snapshot!.cwd) === normalizeCwdKey(convCwd);
+
+      if (!alreadyOnConvHost) {
+        setStatus("Creating conversation...");
+        // Drop runtime identity so events from the dying project host are ignored.
+        setRuntimeId(undefined);
+        setLastSequence(0);
+        const value = await window.pix.host.start({ cwd: convCwd });
+        acceptSnapshot(value);
+        try {
+          const models = await window.pix.models.list();
+          setModelOptions(models.map((m) => ({ provider: m.provider, id: m.id, name: m.name })));
+        } catch {
+          // keep previous modelOptions
+        }
+      }
+
       const opened = await window.pix.session.create();
       markSessionOpenForBottomScroll();
       applySessionOpen(opened);
-      setSelectedWorkspacePath(asProjectPath(convCwd));
+      requestContentReveal();
+      // Pure conversation — never select conversation/scratch as a project.
+      selectWorkspacePath(undefined);
+      pendingPureConversationRef.current = false;
+      setPendingPureConversation(false);
       setStatus("Agent Host ready");
       await refreshThreads();
       await refreshRecentWorkspaces();
     } catch (error) {
+      pendingPureConversationRef.current = false;
+      setPendingPureConversation(false);
       reportAppError(error, "无法开始新会话");
       setTimelineReady(true);
       pendingScrollBottomRef.current = false;
@@ -937,13 +1166,26 @@ function App() {
 
   /** Project-row only: open that project if needed, then create a new session under it. */
   async function newThreadForProject(path: string) {
+    if (useShellStore.getState().running) {
+      try {
+        acceptSnapshot(await window.pix.agent.abort());
+      } catch {
+        // ignore
+      } finally {
+        setRunning(false);
+      }
+    }
     try {
       setView("thread");
       setSidebarOpen(false);
       setPrompt("");
       setReviewOpen(false);
+      setEvents([]);
+      setSentPrompts([]);
+      setLastFailure(undefined);
       setAttachments([]);
-      setSelectedWorkspacePath(path);
+      useShellStore.getState().setHistory([]);
+      selectWorkspacePath(path);
       const current = useShellStore.getState().snapshot?.cwd;
       if (!current || normalizeCwdKey(current) !== normalizeCwdKey(path)) {
         await openWorkspacePath(path, { resumeRecent: false });
@@ -954,6 +1196,7 @@ function App() {
       const opened = await window.pix.session.create();
       markSessionOpenForBottomScroll();
       applySessionOpen(opened);
+      requestContentReveal();
       setStatus("Agent Host ready");
       await refreshThreads();
     } catch (error) {
@@ -972,7 +1215,7 @@ function App() {
       // ProjectList keeps injecting workspacePath into allPaths and it never disappears.
       if (wasActive) {
         await window.pix.workspace.clearActive().catch(() => undefined);
-        setSelectedWorkspacePath(undefined);
+        selectWorkspacePath(undefined);
         useShellStore.getState().setSnapshot(undefined);
         setRuntimeId(undefined);
         setLastSequence(0);
@@ -1015,6 +1258,7 @@ function App() {
       const opened = await window.pix.session.fork(entryId);
       markSessionOpenForBottomScroll();
       applySessionOpen(opened);
+      requestContentReveal();
       setStatus("Agent Host ready");
     } catch (error) {
       reportAppError(error, "Failed to fork thread");
@@ -1024,8 +1268,23 @@ function App() {
   }
 
   async function switchThread(sessionPath: string, projectCwd?: string) {
-    if (running) return;
+    // Allow switching while AI is generating — abort the in-flight turn first.
+    if (useShellStore.getState().running) {
+      try {
+        acceptSnapshot(await window.pix.agent.abort());
+      } catch {
+        // Host may already be settling; still proceed with the switch.
+      } finally {
+        setRunning(false);
+      }
+    }
     switchingSessionRef.current = true;
+    // Blank immediately: no empty-hero, no project protrusion, no stale messages.
+    markSessionOpenForBottomScroll();
+    setEvents([]);
+    setSentPrompts([]);
+    // Drop prior history so empty chrome cannot paint even if ready flips early.
+    useShellStore.getState().setHistory([]);
     try {
       const store = useShellStore.getState();
 
@@ -1076,7 +1335,6 @@ function App() {
       if (sameCwd) {
         setThreads(markActive(store.threads));
       }
-      // Do NOT clear history/events here — swap atomically in applySessionOpen.
       // Do NOT change selectedWorkspacePath until open succeeds (avoids rail flash).
       setStatus("Switching thread...");
       setView("thread");
@@ -1088,10 +1346,11 @@ function App() {
 
       // Authoritative open: history + threads + snapshot in one store update.
       const opened = await window.pix.session.switch(sessionPath);
-      markSessionOpenForBottomScroll();
+      // Keep switchingSessionRef true until after apply+reveal so layout won't
+      // treat the empty interim as a settled empty session.
       applySessionOpen(opened);
       const cwd = opened.snapshot.cwd || targetCwd;
-      setSelectedWorkspacePath(asProjectPath(cwd));
+      selectWorkspacePath(asProjectPath(cwd));
       if (cwd) {
         setThreadsByCwd((prev) => ({
           ...prev,
@@ -1102,10 +1361,14 @@ function App() {
       setSentPrompts([]);
       setStatus("Agent Host ready");
       if (needWorkspaceSwitch) void refreshRecentWorkspaces();
+      // End switch gate, then bump reveal so settle runs with final history.
+      switchingSessionRef.current = false;
+      requestContentReveal();
     } catch (error) {
       reportAppError(error, "无法打开会话");
-      setTimelineReady(true);
+      holdBlankRef.current = false;
       pendingScrollBottomRef.current = false;
+      setTimelineReady(true);
       void refreshThreads();
     } finally {
       switchingSessionRef.current = false;
@@ -1304,23 +1567,29 @@ function App() {
         onStop={() => void stop()}
       />
 
-      {/* Content sits to the right of the overlay rail; full-bleed canvas shows under frosted glass. */}
+      {/*
+        True glass stack:
+        - .app-shell-ambient is full-bleed (behind the frosted rail for blur/vibrancy)
+        - .shell-content is opaque and inset by the rail (no solid paint under the glass)
+      */}
+      <div className="app-shell-ambient" aria-hidden />
       <div
-        className="flex h-full min-w-0 flex-1"
+        className="shell-content"
         style={{
-          marginLeft: railWidth,
-          width: `calc(100% - ${railWidth}px)`,
-          maxWidth: `calc(100% - ${railWidth}px)`,
+          paddingLeft: railWidth,
+          // When collapsed, content is full width.
+          maxWidth: "100%",
         }}
         data-testid="shell-main"
+        data-rail-width={railWidth}
       >
         {view === "thread" ? (
           <section
             ref={threadColumnRef}
             className="main-column relative flex h-full min-w-0 flex-1 flex-col"
           >
-            {/* Title + env icon only after the session has conversation content. */}
-            {hasActivity ? (
+            {/* Title only when content is ready and the session has messages. */}
+            {timelineReady && hasActivity ? (
               <ThreadHeader
                 locale={locale}
                 title={threadTitle}
@@ -1329,94 +1598,114 @@ function App() {
                 sessionId={snapshot?.sessionId}
                 collapsed={sidebarCollapsed}
                 envToggleVisible={Boolean(workspacePath) && envPanelFits}
-                {...(sidebarCollapsed
-                  ? {
-                      style: {
-                        paddingLeft: MAC_TRAFFIC_LIGHT_GUTTER_PX + TITLEBAR_CONTROL_SIZE_PX + 12,
-                      },
-                    }
-                  : {})}
               />
             ) : null}
 
-            {/* Content + docked env rail: env squeezes content, never overlays it. */}
-            <div className="flex min-h-0 min-w-0 flex-1 flex-row">
+            {/*
+              Env panel:
+              - float: sits in right gutter, does not squeeze conversation
+              - dock: would cover content if floated → take flex space and squeeze
+              - auto-hide when column cannot fit min content + panel
+            */}
+            <div className="relative flex min-h-0 min-w-0 flex-1 flex-row">
+              {/*
+                Column layout: scrollport ends at the composer top (not the window bottom).
+                Composer is in normal flow below the content area.
+              */}
               <div className="relative flex min-h-0 min-w-0 flex-1 flex-col">
-                <div
-                  className={cn(
-                    "timeline-scroll transition-opacity duration-100",
-                    !timelineReady && hasActivity && "opacity-0",
-                  )}
-                  ref={timelineScrollRef}
-                >
+                <div className="relative min-h-0 min-w-0 flex-1">
                   <div
                     className={cn(
-                      "mx-auto w-[min(760px,100%)] px-6",
-                      hasActivity ? "pt-6" : "empty flex min-h-full flex-col p-0",
+                      "timeline-scroll absolute inset-0",
+                      // Hold fully blank while switching — empty-hero must not flash either.
+                      !timelineReady && "invisible pointer-events-none",
                     )}
-                    style={
-                      hasActivity
-                        ? { paddingBottom: Math.max(composerDockHeight + 24, 160) }
-                        : undefined
-                    }
-                    data-testid="timeline"
+                    ref={timelineScrollRef}
+                    aria-busy={!timelineReady}
+                    data-ready={timelineReady ? "true" : "false"}
                   >
-                    {hasActivity ? (
-                      <>
-                        {timeline.map((item) => (
-                          <TimelineRow key={item.id} item={item} />
-                        ))}
-                        <div ref={timelineEndRef} className="h-px w-full shrink-0" aria-hidden />
-                      </>
-                    ) : (
-                      <div
-                        className="flex min-h-full flex-1 flex-col items-center justify-center px-4 text-center"
-                        style={{ paddingBottom: Math.max(composerDockHeight + 24, 160) }}
-                        data-testid="empty-hero"
-                      >
-                        <h1 className="m-0 max-w-lg text-[26px] leading-snug font-semibold tracking-[-0.03em] text-[var(--text)]">
-                          {workspacePath
-                            ? t(locale, "empty.title", { name: workspace.name })
-                            : isPureConversation || snapshot
-                              ? t(locale, "empty.titleConversation")
-                              : t(locale, "empty.titleNoWorkspace")}
-                        </h1>
-                        <p className="mt-3 max-w-md text-[13px] text-[var(--muted-foreground)]">
-                          {workspacePath
-                            ? t(locale, "empty.subtitle")
-                            : isPureConversation || snapshot
-                              ? t(locale, "empty.subtitleConversation")
-                              : t(locale, "empty.subtitleNoWorkspace")}
-                        </p>
-                      </div>
-                    )}
+                    <div
+                      className={cn(
+                        "mx-auto w-[min(760px,100%)] px-6",
+                        hasActivity ? "pt-6 pb-4" : "empty flex min-h-full flex-col p-0",
+                      )}
+                      data-testid="timeline"
+                    >
+                      {hasActivity ? (
+                        <>
+                          {timeline.map((item) => (
+                            <TimelineRow key={item.id} item={item} />
+                          ))}
+                          <div ref={timelineEndRef} className="h-px w-full shrink-0" aria-hidden />
+                        </>
+                      ) : timelineReady ? (
+                        <div
+                          className="flex min-h-full flex-1 flex-col items-center justify-center px-4 text-center"
+                          data-testid="empty-hero"
+                        >
+                          <PixLogo
+                            className="mb-5 size-12"
+                            title={t(locale, "app.name")}
+                          />
+                          <h1 className="m-0 max-w-lg text-[26px] leading-snug font-semibold tracking-[-0.03em] text-[var(--text)]">
+                            {workspacePath
+                              ? t(locale, "empty.title", { name: workspace.name })
+                              : isPureConversation || snapshot || pendingPureConversation
+                                ? t(locale, "empty.titleConversation")
+                                : t(locale, "empty.titleNoWorkspace")}
+                          </h1>
+                          {/* Workspace empty state has title only — no subtitle under「构建什么？」. */}
+                          {!workspacePath ? (
+                            <p className="mt-3 max-w-md text-[13px] text-[var(--muted-foreground)]">
+                              {isPureConversation || snapshot || pendingPureConversation
+                                ? t(locale, "empty.subtitleConversation")
+                                : t(locale, "empty.subtitleNoWorkspace")}
+                            </p>
+                          ) : null}
+                        </div>
+                      ) : null}
+                    </div>
                   </div>
+                  {/* Soft fade at the content area bottom edge (just above composer). */}
+                  {hasActivity && timelineReady ? (
+                    <div
+                      className="composer-dock-fade pointer-events-none absolute inset-x-0 bottom-0 z-[1] h-10"
+                      aria-hidden
+                    />
+                  ) : null}
                 </div>
 
                 <div
                   ref={composerDockRef}
-                  className={cn(
-                    "composer-dock pointer-events-none absolute inset-x-0 bottom-0 z-5 bg-gradient-to-b from-transparent via-[var(--canvas)]/80 to-[var(--canvas)] px-6 pb-6 pt-10",
-                  )}
-                  data-mode="bottom"
+                  className="composer-dock pointer-events-none relative z-[2] shrink-0 bg-[var(--canvas)] px-6 pt-1 pb-6"
+                  data-mode="flow"
                   data-testid="composer-dock"
                 >
-                  {showScrollToBottom ? (
-                    <div className="pointer-events-none mb-2 flex justify-center">
+                  {/*
+                    Jump chip: absolutely overlaid on the horizontal center of the composer,
+                    just above it. Must not participate in layout — otherwise showing it
+                    grows the dock and shifts the content fade range.
+                  */}
+                  {showScrollToBottom && timelineReady && hasActivity ? (
+                    <div
+                      className="pointer-events-none absolute inset-x-0 top-0 z-20 flex -translate-y-[calc(100%+20px)] justify-center"
+                      data-testid="scroll-to-bottom-wrap"
+                    >
                       <button
                         type="button"
                         data-testid="scroll-to-bottom"
                         title={t(locale, "thread.scrollToBottom")}
                         aria-label={t(locale, "thread.scrollToBottom")}
                         className={cn(
-                          "pointer-events-auto inline-flex h-8 w-8 items-center justify-center rounded-full",
-                          "border border-[var(--border)] bg-[var(--popover)] text-[var(--muted-foreground)]",
-                          "shadow-[var(--shadow-soft)] transition-colors",
-                          "hover:bg-[var(--accent)] hover:text-[var(--foreground)]",
+                          // Match send button: h-7 w-7 circle; ArrowDown is inverse of send's ArrowUp.
+                          "pointer-events-auto inline-flex h-7 w-7 items-center justify-center rounded-full",
+                          "border border-[var(--border)] bg-[var(--popover)] text-[var(--foreground)]",
+                          "shadow-[0_4px_16px_rgb(0_0_0/0.28)] transition-colors",
+                          "hover:bg-[var(--hover-fill)]",
                         )}
                         onClick={() => scrollTimelineToBottom("smooth")}
                       >
-                        <ChevronDown className="size-4" strokeWidth={2} />
+                        <ArrowDown className="h-3.5 w-3.5" strokeWidth={2.25} />
                       </button>
                     </div>
                   ) : null}
@@ -1433,21 +1722,18 @@ function App() {
                     recentWorkspaces={recentWorkspaces}
                     onOpenProject={(path) => void openWorkspacePath(path, { resumeRecent: true })}
                     onAddProject={() => void openWorkspacePicker()}
-                    showProjectBar={!hasActivity}
+                    // Project protrusion only when empty chrome is settled (never mid-switch).
+                    showProjectBar={timelineReady && !hasActivity}
                     accessMode={accessMode}
                     onAccessMode={applyAccessMode}
                     accessVisibility={accessVisibility}
                     modelOptions={modelOptions}
                     modelValue={
-                      snapshot?.model ? `${snapshot.model.provider}/${snapshot.model.id}` : ""
+                      displayModel ? `${displayModel.provider}/${displayModel.id}` : ""
                     }
                     onModelChange={(provider, id) => void changeModel(provider, id)}
-                    thinkingLevel={snapshot?.thinkingLevel ?? "off"}
-                    thinkingLevels={
-                      snapshot?.availableThinkingLevels?.length
-                        ? snapshot.availableThinkingLevels
-                        : [snapshot?.thinkingLevel ?? "off"]
-                    }
+                    thinkingLevel={displayThinkingLevel}
+                    thinkingLevels={displayThinkingLevels}
                     onThinkingChange={(level) => void changeThinking(level)}
                     speedMode={speedMode}
                     onSpeedMode={(mode) => {
@@ -1460,7 +1746,9 @@ function App() {
                     }}
                     contextPercent={snapshot?.usage?.context?.percent ?? undefined}
                     contextTokens={
-                      snapshot?.usage?.context?.tokens ?? snapshot?.usage?.tokens.total ?? undefined
+                      snapshot?.usage?.context?.tokens ??
+                      snapshot?.usage?.tokens.total ??
+                      undefined
                     }
                     showContextUsage={showContextUsage}
                     projectTrusted={snapshot?.projectTrusted}
@@ -1487,6 +1775,7 @@ function App() {
               <EnvPanel
                 locale={locale}
                 cwd={workspacePath}
+                layout={envPanelLayout}
                 open={hasActivity && Boolean(workspacePath) && envPanelOpen && envPanelFits}
                 onOpenSettings={() => {
                   setSettingsSection("environment");
@@ -2103,12 +2392,22 @@ function ResourcesPage(props: {
   );
 }
 
-function TimelineRow({ item }: { item: TimelineItem }) {
+const TimelineRow = memo(function TimelineRow({ item }: { item: TimelineItem }) {
   if (item.kind === "user") {
     return (
-      <article className="mb-5 flex justify-end" data-kind="user">
-        <div className="max-w-[min(85%,36rem)] rounded-2xl bg-[var(--foreground)] px-3.5 py-2.5 text-[var(--background)]">
-          <p className="m-0 text-[14px] leading-relaxed wrap-break-word whitespace-pre-wrap">
+      <article className="mb-7 mt-1 flex justify-end" data-kind="user">
+        {/*
+          Theme-aligned bubble: dark→dark surface + light text, light→light surface + dark text.
+          More margin from surrounding messages; tighter radius than assistant chrome.
+        */}
+        <div
+          className={cn(
+            "max-w-[min(72%,26rem)] px-3 py-1.5",
+            "bg-[var(--user-bubble)] text-[var(--user-bubble-fg)]",
+          )}
+          style={{ borderRadius: "var(--radius-field)" }}
+        >
+          <p className="m-0 text-[13px] leading-snug wrap-break-word whitespace-pre-wrap">
             {item.text}
           </p>
         </div>
@@ -2138,7 +2437,7 @@ function TimelineRow({ item }: { item: TimelineItem }) {
             "group inline-flex max-w-full items-center gap-2 rounded-lg border px-2.5 py-1.5 text-[12px] transition-colors",
             item.isError
               ? "border-red-500/25 bg-red-500/[0.06] text-red-600"
-              : "border-[var(--border)] bg-[var(--muted)] text-[var(--muted-foreground)] hover:bg-[var(--accent)]",
+              : "border-[var(--border)] bg-[var(--muted)] text-[var(--muted-foreground)] hover:bg-[var(--hover-fill)]",
           )}
         >
           <span
@@ -2164,7 +2463,7 @@ function TimelineRow({ item }: { item: TimelineItem }) {
       <p className="m-0 text-[12.5px] text-[var(--muted-foreground)]">{item.text}</p>
     </article>
   );
-}
+});
 
 const root = document.querySelector("#root");
 if (!root) throw new Error("Renderer root element is missing");

@@ -9,9 +9,9 @@ const buttonVariants = cva(
       variant: {
         default: "bg-[var(--foreground)] text-[var(--background)] hover:opacity-90",
         secondary:
-          "border border-[var(--border)] bg-transparent text-[var(--foreground)] hover:bg-[var(--accent)]",
+          "border border-[var(--border)] bg-transparent text-[var(--foreground)] hover:bg-[var(--hover-fill)]",
         ghost:
-          "text-[var(--muted-foreground)] hover:bg-[var(--accent)] hover:text-[var(--foreground)]",
+          "text-[var(--muted-foreground)] hover:bg-[var(--hover-fill)] hover:text-[var(--foreground)]",
         destructive: "text-red-500 hover:bg-red-500/10 hover:text-red-600",
         primary: "bg-[var(--foreground)] text-[var(--background)] font-semibold hover:opacity-90",
       },

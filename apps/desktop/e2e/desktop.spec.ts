@@ -349,20 +349,25 @@ test.describe("Desktop shell Playwright E2E (macOS Electron)", () => {
       expect(main).toBeTruthy();
       expect(dock).toBeTruthy();
       expect(app).toBeTruthy();
-      // Composer is centered with min-width 630; left edge is within main column.
+      // shell-main is full-bleed under the frosted rail; content is inset via padding.
+      expect(Math.abs(main!.x - app!.x)).toBeLessThan(8);
+      expect(Math.abs(main!.x + main!.width - (app!.x + app!.width))).toBeLessThan(12);
+      // Composer is centered with min-width 630; left edge is within the padded content.
       expect(dock!.x).toBeGreaterThanOrEqual(main!.x - 2);
       expect(dock!.x + dock!.width).toBeLessThanOrEqual(main!.x + main!.width + 2);
-      expect(Math.abs(main!.x + main!.width - (app!.x + app!.width))).toBeLessThan(12);
       if (opts?.collapsed) {
         const sidebar = await page.getByTestId("sidebar").boundingBox();
         const sidebarWidth = sidebar?.width ?? 0;
         expect(sidebarWidth).toBeLessThan(4);
-        expect(main!.x - app!.x).toBeLessThan(8);
+        expect(Number(await page.getByTestId("shell-main").getAttribute("data-rail-width"))).toBe(0);
       } else {
         const sidebar = await page.getByTestId("sidebar").boundingBox();
         expect(sidebar).toBeTruthy();
         expect(sidebar!.width).toBeGreaterThan(200);
-        expect(Math.abs(main!.x - (sidebar!.x + sidebar!.width))).toBeLessThan(12);
+        // Content (composer) starts after the rail overlay.
+        expect(dock!.x).toBeGreaterThanOrEqual(sidebar!.x + sidebar!.width - 4);
+        const railAttr = Number(await page.getByTestId("shell-main").getAttribute("data-rail-width"));
+        expect(railAttr).toBeGreaterThan(200);
       }
     }
     await assertComposerAlignedToMain();
@@ -373,9 +378,14 @@ test.describe("Desktop shell Playwright E2E (macOS Electron)", () => {
     await expect(page.getByTestId("packages-page")).toBeVisible();
     const packagesBox = await page.getByTestId("packages-page").boundingBox();
     const shellMain = await page.getByTestId("shell-main").boundingBox();
+    const sidebarBox = await page.getByTestId("sidebar").boundingBox();
     expect(packagesBox).toBeTruthy();
     expect(shellMain).toBeTruthy();
-    expect(Math.abs(packagesBox!.width - shellMain!.width)).toBeLessThan(16);
+    expect(sidebarBox).toBeTruthy();
+    // Content width ≈ full shell minus rail padding (full-bleed main under glass).
+    const railW = sidebarBox!.width;
+    expect(Math.abs(packagesBox!.width - (shellMain!.width - railW))).toBeLessThan(24);
+    expect(packagesBox!.x).toBeGreaterThanOrEqual(sidebarBox!.x + railW - 4);
     await page.getByTestId("settings-back").or(page.getByRole("button", { name: /Back|返回/i })).first().click().catch(async () => {
       // Packages page back button
       await page.getByRole("button", { name: /Back to thread|返回对话|返回应用/i }).click();
@@ -389,8 +399,10 @@ test.describe("Desktop shell Playwright E2E (macOS Electron)", () => {
     await expect(page.getByTestId("sidebar")).toHaveAttribute("data-collapsed", "true");
     await assertComposerAlignedToMain({ collapsed: true });
     const mainCollapsed = await page.getByTestId("shell-main").boundingBox();
-    expect(mainCollapsed!.x).toBeLessThan(mainExpanded!.x);
-    expect(mainCollapsed!.width).toBeGreaterThan(mainExpanded!.width);
+    // Full-bleed main keeps the same frame; rail padding drops so content gains width.
+    expect(Math.abs(mainCollapsed!.x - mainExpanded!.x)).toBeLessThan(8);
+    expect(Math.abs(mainCollapsed!.width - mainExpanded!.width)).toBeLessThan(8);
+    expect(Number(await page.getByTestId("shell-main").getAttribute("data-rail-width"))).toBe(0);
     await expect(page.getByTestId("sidebar-collapse")).toBeVisible();
     await expect(page.getByTestId("nav-packages")).toHaveCount(0);
 

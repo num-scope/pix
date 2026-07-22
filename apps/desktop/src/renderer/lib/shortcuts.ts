@@ -39,7 +39,15 @@ export const SHORTCUT_DEFINITIONS: ShortcutDefinition[] = [
 
 const STORAGE_KEY = "pix.shortcuts.overrides";
 
+/**
+ * Overrides map. Missing key → use default.
+ * Value `""` (empty string) → explicitly unbound (no shortcut).
+ * Any other string → custom combo.
+ */
 export type ShortcutOverrides = Partial<Record<ShortcutId, string>>;
+
+/** Explicit unbound sentinel stored in overrides. */
+export const SHORTCUT_UNBOUND = "";
 
 export function loadShortcutOverrides(): ShortcutOverrides {
   try {
@@ -60,18 +68,48 @@ export function saveShortcutOverrides(overrides: ShortcutOverrides): void {
   }
 }
 
+/** True when user has any override for this id (custom combo or unbound). */
+export function hasShortcutOverride(
+  id: ShortcutId,
+  overrides: ShortcutOverrides = loadShortcutOverrides(),
+): boolean {
+  return Object.prototype.hasOwnProperty.call(overrides, id);
+}
+
+/** True when this shortcut is explicitly unbound (no keys). */
+export function isShortcutUnbound(
+  id: ShortcutId,
+  overrides: ShortcutOverrides = loadShortcutOverrides(),
+): boolean {
+  return hasShortcutOverride(id, overrides) && (overrides[id] ?? "").trim() === "";
+}
+
 export function getEffectiveCombo(
   id: ShortcutId,
   overrides: ShortcutOverrides = loadShortcutOverrides(),
 ): string {
   const def = SHORTCUT_DEFINITIONS.find((d) => d.id === id);
-  const custom = overrides[id]?.trim();
-  return custom || def?.defaultCombo || "";
+  if (hasShortcutOverride(id, overrides)) {
+    // Explicit empty = unbound; non-empty = custom binding.
+    return (overrides[id] ?? "").trim();
+  }
+  return def?.defaultCombo || "";
 }
 
+/**
+ * Set override for a shortcut.
+ * - `null` → reset to app default
+ * - `""` → unbound (no shortcut)
+ * - other → custom combo (if equals default, clears override)
+ */
 export function setShortcutOverride(id: ShortcutId, combo: string | null): ShortcutOverrides {
   const next = { ...loadShortcutOverrides() };
-  if (!combo || combo === SHORTCUT_DEFINITIONS.find((d) => d.id === id)?.defaultCombo) {
+  const def = SHORTCUT_DEFINITIONS.find((d) => d.id === id);
+  if (combo === null) {
+    delete next[id];
+  } else if (combo.trim() === "") {
+    next[id] = SHORTCUT_UNBOUND;
+  } else if (combo === def?.defaultCombo) {
     delete next[id];
   } else {
     next[id] = combo;
@@ -137,7 +175,8 @@ export function eventToCombo(event: KeyboardEvent): string | null {
 }
 
 export function eventMatchesCombo(event: KeyboardEvent, combo: string): boolean {
-  if (!combo) return false;
+  // Empty / unbound combos never match.
+  if (!combo || !combo.trim()) return false;
   const parsed = parseCombo(combo);
   if (!parsed.key) return false;
   const mod = event.metaKey || event.ctrlKey;

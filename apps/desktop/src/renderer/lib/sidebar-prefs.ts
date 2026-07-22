@@ -14,15 +14,14 @@ export function sidebarRailWidth(collapsed: boolean, widthPx: number): number {
 }
 
 /**
- * Composer is absolutely positioned inside the main column / shell-main.
- * Horizontal inset inside that content column is always 0 (sidebar is an overlay;
- * content uses marginLeft for the rail, not a second left offset on the dock).
+ * Composer sits in-flow at the bottom of the thread column (content area ends above it).
+ * Horizontal inset inside that content column is always 0 (sidebar overlay uses paddingLeft).
  */
 export function composerLeftOffsetInMainColumn(): number {
   return 0;
 }
 
-/** Content column left edge equals overlay rail width (marginLeft on shell-main). */
+/** Content column left inset equals overlay rail width (paddingLeft on shell-main). */
 export function mainColumnLeftForRail(railWidthPx: number): number {
   return Math.max(0, Math.round(railWidthPx));
 }
@@ -32,8 +31,8 @@ export function shellMainWidth(shellWidthPx: number, railWidthPx: number): numbe
   return Math.max(0, Math.round(shellWidthPx) - Math.round(railWidthPx));
 }
 
-/** CSS alpha for frosted sidebar (for unit/structural checks). */
-export const SIDEBAR_TRANSLUCENT_MIX_PERCENT = 58;
+/** CSS alpha for frosted sidebar fill (for unit/structural checks). */
+export const SIDEBAR_TRANSLUCENT_MIX_PERCENT = 32;
 
 /** OpenCowork-aligned dark shell hex values (for unit/structural checks). */
 /** Exact OpenCowork `.dark` shell palette (main.css). */

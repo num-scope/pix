@@ -28,6 +28,7 @@ import {
 } from "lucide-react";
 import type { PointerEvent as ReactPointerEvent, ReactNode } from "react";
 import { useCallback, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import {
   MAC_TRAFFIC_LIGHT_GUTTER_PX,
   TITLEBAR_CONTROL_SIZE_PX,
@@ -173,38 +174,53 @@ export function AppSidebar(props: AppSidebarProps) {
               aria-valuemin={SHELL_SIDEBAR.minPx}
               aria-valuemax={SHELL_SIDEBAR.maxPx}
               data-testid="sidebar-resize-handle"
-              className="absolute top-0 right-0 z-10 h-full w-1 cursor-col-resize bg-transparent hover:bg-[var(--sidebar-accent)] active:bg-[var(--sidebar-accent)]"
+              className="absolute top-0 right-0 z-10 h-full w-1 cursor-col-resize bg-transparent hover:bg-[var(--hover-fill)] active:bg-[var(--hover-fill)]"
               onPointerDown={onResizePointerDown}
             />
           </div>
         ) : null}
       </aside>
 
-      {/* Fully collapsed: expand control fixed after traffic-light gutter (Synara). */}
+      {/* Keep status probe available while rail is fully tucked away. */}
       {props.collapsed ? (
-        <>
-          <button
-            type="button"
-            data-testid="sidebar-collapse"
-            title="Expand sidebar"
-            aria-label="Expand sidebar"
-            className="fixed z-50 inline-flex items-center justify-center rounded-lg text-[var(--muted-foreground)] hover:bg-[var(--accent)] hover:text-[var(--foreground)]"
-            style={{
-              left: MAC_TRAFFIC_LIGHT_GUTTER_PX,
-              top: titlebarControlTopPx(),
-              width: TITLEBAR_CONTROL_SIZE_PX,
-              height: TITLEBAR_CONTROL_SIZE_PX,
-            }}
-            onClick={props.onToggleCollapse}
-          >
-            <PanelLeft className="h-4 w-4" strokeWidth={1.75} />
-          </button>
-          {/* Keep status probe available while rail is fully tucked away. */}
-          <span className="sr-only" data-testid="host-status" data-state={props.hostPillState}>
-            {props.status}
-          </span>
-        </>
+        <span className="sr-only" data-testid="host-status" data-state={props.hostPillState}>
+          {props.status}
+        </span>
       ) : null}
+
+      {/*
+        Expand control is portaled to document.body so full-bleed shell-main and
+        Electron -webkit-app-region:drag titlebars cannot steal hits. no-drag is required.
+      */}
+      {props.collapsed && typeof document !== "undefined"
+        ? createPortal(
+            <button
+              type="button"
+              data-testid="sidebar-collapse"
+              title="Expand sidebar"
+              aria-label="Expand sidebar"
+              className="sidebar-expand-btn no-drag"
+              style={{
+                left: MAC_TRAFFIC_LIGHT_GUTTER_PX,
+                top: titlebarControlTopPx(),
+                width: TITLEBAR_CONTROL_SIZE_PX,
+                height: TITLEBAR_CONTROL_SIZE_PX,
+              }}
+              onClick={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                props.onToggleCollapse();
+              }}
+              onPointerDown={(event) => {
+                // Stop drag-region ancestors / window chrome from claiming the gesture.
+                event.stopPropagation();
+              }}
+            >
+              <PanelLeft className="h-4 w-4" strokeWidth={1.75} />
+            </button>,
+            document.body,
+          )
+        : null}
     </>
   );
 }
@@ -229,7 +245,7 @@ function TitlebarTrafficRow(props: { showCollapse?: boolean; onToggleCollapse: (
           data-testid="sidebar-collapse"
           title="Collapse sidebar"
           aria-label="Collapse sidebar"
-          className="inline-flex shrink-0 items-center justify-center rounded-lg text-[var(--muted-foreground)] hover:bg-[var(--sidebar-accent)] hover:text-[var(--sidebar-foreground)]"
+          className="inline-flex shrink-0 items-center justify-center rounded-lg text-[var(--muted-foreground)] hover:bg-[var(--hover-fill)] hover:text-[var(--sidebar-foreground)]"
           style={{
             width: TITLEBAR_CONTROL_SIZE_PX,
             height: TITLEBAR_CONTROL_SIZE_PX,
@@ -258,7 +274,7 @@ function ProductRail(
           type="button"
           data-testid="brand-menu"
           title={tr("app.name")}
-          className="flex min-w-0 items-center gap-2 rounded-md px-0.5 py-0.5 text-left transition-colors hover:bg-[var(--sidebar-accent)]"
+          className="flex min-w-0 items-center gap-2 rounded-md px-0.5 py-0.5 text-left transition-colors hover:bg-[var(--hover-fill)]"
           onClick={props.onOpenPalette}
         >
           <PixLogo className="size-5" title={tr("app.name")} />
@@ -274,13 +290,13 @@ function ProductRail(
         </span>
       </div>
 
-      {/* Primary action — Codex "新建任务" style */}
-      <nav className="mb-2 flex flex-col gap-0.5" aria-label="Primary">
+      {/* Primary action — Codex "新建任务" style; tight stack so 新建/插件/资源 read as one group */}
+      <nav className="mb-2 flex flex-col gap-0" aria-label="Primary">
         <button
           type="button"
           data-testid="start-host"
           title={tr("nav.newThread")}
-          className="flex h-9 w-full items-center gap-2.5 rounded-lg px-2.5 text-left text-[13.5px] font-medium text-[var(--sidebar-foreground)] transition-colors hover:bg-[var(--sidebar-accent)]"
+          className="nav-item nav-item-primary"
           onClick={props.onNewThread}
         >
           <SquarePen className="size-4 shrink-0 opacity-85" strokeWidth={1.6} />
@@ -335,7 +351,7 @@ function ProductRail(
         />
         {/* Dev probes — not product chrome; stay collapsed under Developer. */}
         <details
-          className="group rounded-lg border border-transparent open:border-[var(--sidebar-border)] open:bg-[var(--sidebar-accent)]/40"
+          className="group rounded-lg border border-transparent open:border-[var(--sidebar-border)] open:bg-[var(--hover-fill)]/40"
           data-testid="developer-details"
         >
           <summary
@@ -621,7 +637,7 @@ function IconBtn(props: {
       data-testid={props.testId}
       title={props.title}
       aria-label={props.title}
-      className="inline-flex h-7 w-7 items-center justify-center rounded-lg text-[var(--muted-foreground)] hover:bg-[var(--sidebar-accent)] hover:text-[var(--sidebar-foreground)]"
+      className="inline-flex h-7 w-7 items-center justify-center rounded-lg text-[var(--muted-foreground)] hover:bg-[var(--hover-fill)] hover:text-[var(--sidebar-foreground)]"
       onClick={props.onClick}
     >
       {props.children}
@@ -644,14 +660,7 @@ function NavBtn(props: {
       data-testid={props.testId}
       data-active={props.active ? "true" : "false"}
       title={props.label}
-      className={cn(
-        "flex h-[34px] w-full min-w-0 items-center gap-2.5 rounded-lg px-2.5 text-left text-[13px] font-medium transition-colors",
-        props.primary
-          ? "font-semibold text-[var(--sidebar-foreground)] hover:bg-[var(--sidebar-accent)]"
-          : props.active
-            ? "bg-[var(--sidebar-accent)] text-[var(--sidebar-accent-foreground)]"
-            : "text-[var(--sidebar-foreground)] hover:bg-[var(--sidebar-accent)]",
-      )}
+      className={cn("nav-item", props.primary && "nav-item-primary")}
       onClick={props.onClick}
     >
       {props.icon}
@@ -681,7 +690,7 @@ function QuietBtn(props: {
         "inline-flex h-6 items-center rounded-md px-2 text-[11px] text-[var(--text-subtle)] disabled:opacity-40",
         props.danger
           ? "hover:bg-red-500/10 hover:text-red-600"
-          : "hover:bg-[var(--sidebar-accent)] hover:text-[var(--sidebar-foreground)]",
+          : "hover:bg-[var(--hover-fill)] hover:text-[var(--sidebar-foreground)]",
       )}
       onClick={props.onClick}
     >

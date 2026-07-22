@@ -381,7 +381,7 @@ function ArchivedSection(props: {
                 >
                   <button
                     type="button"
-                    className="inline-flex h-7 w-7 items-center justify-center rounded-lg text-[var(--muted-foreground)] hover:bg-[var(--accent)]"
+                    className="inline-flex h-7 w-7 items-center justify-center rounded-lg text-[var(--muted-foreground)] hover:bg-[var(--hover-fill)]"
                     data-testid="archived-project-menu"
                     aria-label="More"
                     onClick={() => setOpenGroupMenu((v) => (v === cwdKey ? null : cwdKey))}
@@ -476,12 +476,27 @@ function ShortcutsSection(
         setConflict(undefined);
         return;
       }
+      // Backspace / Delete alone → clear binding (no shortcut).
+      if (
+        (event.key === "Backspace" || event.key === "Delete") &&
+        !event.metaKey &&
+        !event.ctrlKey &&
+        !event.altKey &&
+        !event.shiftKey
+      ) {
+        setOverrides(setShortcutOverride(recordingId, ""));
+        setRecordingId(null);
+        setConflict(undefined);
+        return;
+      }
       const combo = eventToCombo(event);
       if (!combo) return;
-      // Conflict check
+      // Conflict check (skip unbound rows)
       for (const def of SHORTCUT_DEFINITIONS) {
         if (def.id === recordingId) continue;
-        if (getEffectiveCombo(def.id, overrides) === combo) {
+        const other = getEffectiveCombo(def.id, overrides);
+        if (!other) continue;
+        if (other === combo) {
           setConflict(tr("shortcuts.conflict", { name: tr(def.labelKey as MessageKey) }));
           return;
         }
@@ -535,7 +550,8 @@ function ShortcutsSection(
         ) : (
           filtered.map((def, index) => {
             const effective = getEffectiveCombo(def.id, overrides);
-            const isCustom = Boolean(overrides[def.id]);
+            const isCustom = Object.prototype.hasOwnProperty.call(overrides, def.id);
+            const unbound = isCustom && !effective;
             const recording = recordingId === def.id;
             const keyParts = comboToDisplayParts(effective);
             return (
@@ -551,6 +567,21 @@ function ShortcutsSection(
                   <div className="settings-row-title">{tr(def.labelKey as MessageKey)}</div>
                 </div>
                 <div className="flex shrink-0 items-center gap-2">
+                  {effective && !recording ? (
+                    <button
+                      type="button"
+                      className="text-[11px] text-[var(--muted-foreground)] hover:text-[var(--foreground)]"
+                      data-testid={`shortcut-clear-${def.id}`}
+                      title={tr("shortcuts.clear")}
+                      onClick={() => {
+                        setOverrides(setShortcutOverride(def.id, ""));
+                        setConflict(undefined);
+                        setRecordingId(null);
+                      }}
+                    >
+                      {tr("shortcuts.clear")}
+                    </button>
+                  ) : null}
                   {isCustom ? (
                     <button
                       type="button"
@@ -559,6 +590,7 @@ function ShortcutsSection(
                       onClick={() => {
                         setOverrides(setShortcutOverride(def.id, null));
                         setConflict(undefined);
+                        setRecordingId(null);
                       }}
                     >
                       {tr("shortcuts.reset")}
@@ -575,7 +607,9 @@ function ShortcutsSection(
                     aria-label={
                       recording
                         ? tr("shortcuts.pressKeys")
-                        : formatComboDisplay(effective) || tr("shortcuts.clickToBind")
+                        : effective
+                          ? formatComboDisplay(effective)
+                          : tr("shortcuts.none")
                     }
                     onClick={() => {
                       setConflict(undefined);
@@ -585,7 +619,7 @@ function ShortcutsSection(
                     {recording ? (
                       <>
                         <span className="shortcut-bind-dot" aria-hidden />
-                        <span className="shortcut-bind-hint">{tr("shortcuts.pressKeys")}</span>
+                        <span className="shortcut-bind-hint">{tr("shortcuts.pressKeysHint")}</span>
                       </>
                     ) : keyParts.length > 0 ? (
                       keyParts.map((part, i) => (
@@ -594,7 +628,9 @@ function ShortcutsSection(
                         </kbd>
                       ))
                     ) : (
-                      <span className="shortcut-bind-hint">{tr("shortcuts.clickToBind")}</span>
+                      <span className="shortcut-bind-hint">
+                        {unbound || isCustom ? tr("shortcuts.none") : tr("shortcuts.clickToBind")}
+                      </span>
                     )}
                   </button>
                 </div>

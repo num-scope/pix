@@ -39,7 +39,7 @@ export function ErrorDialog(props: {
       }}
     >
       <div
-        className="w-full max-w-sm rounded-xl border border-[var(--border)] bg-[var(--popover)] p-4 shadow-2xl"
+        className="surface-panel w-full max-w-sm p-4 shadow-2xl"
         onMouseDown={(e) => e.stopPropagation()}
       >
         <h2

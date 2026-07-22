@@ -16,6 +16,7 @@ import {
   type ReactNode,
   type RefObject,
 } from "react";
+import { createPortal } from "react-dom";
 import type { GitBranchInfo, GitContextInfo } from "@pix/contracts";
 import {
   ArrowUp,
@@ -138,8 +139,8 @@ function MenuRow(props: {
       className={cn(
         "flex w-full items-start gap-2 px-2.5 py-2 text-left transition-colors",
         props.muted
-          ? "text-[var(--muted-foreground)] hover:bg-[var(--accent)]"
-          : "text-[var(--popover-foreground,var(--foreground))] hover:bg-[var(--accent)]",
+          ? "text-[var(--muted-foreground)] hover:bg-[var(--hover-fill)]"
+          : "text-[var(--popover-foreground,var(--foreground))] hover:bg-[var(--hover-fill)]",
         danger && "hover:bg-red-500/10",
         props.active && !danger && "bg-[var(--accent)]",
         props.active && danger && "bg-red-500/10",
@@ -185,16 +186,22 @@ function MenuRow(props: {
   );
 }
 
+/** Full-access caution: orange-red (not pale system orange, not pure error red). */
+const ACCESS_FULL_ORANGE = "text-[#ff5c1a]";
+const ACCESS_FULL_ORANGE_MUTED = "text-[#ff5c1a]/90";
+const ACCESS_FULL_ORANGE_HOVER = "hover:bg-[#ff5c1a]/12";
+
 /**
- * Access-control option: rounded card inset from menu edges.
- * Active state highlights text only (not a full-bleed row).
+ * Access-control option — same hover/active fill + radius as session rows
+ * (`--hover-fill`, rounded-md). Full access keeps orange caution text.
  */
 function AccessOption(props: {
   icon: ReactNode;
   label: string;
   description: string;
   active?: boolean;
-  danger?: boolean;
+  /** Full-access caution (orange), not destructive red. */
+  caution?: boolean;
   onClick: () => void;
   testId?: string;
 }) {
@@ -204,17 +211,17 @@ function AccessOption(props: {
       role="menuitem"
       data-testid={props.testId}
       className={cn(
-        "flex w-full items-start gap-2.5 rounded-xl px-2.5 py-2 text-left transition-colors",
-        "bg-transparent hover:bg-[var(--accent)]",
-        props.danger && "hover:bg-red-500/10",
+        "flex w-full items-start gap-2.5 rounded-[var(--radius-control)] px-2.5 py-2 text-left transition-colors",
+        // Match session list: transparent default, hover-fill on hover/active.
+        props.active ? "bg-[var(--hover-fill)]" : "bg-transparent hover:bg-[var(--hover-fill)]",
+        props.caution && !props.active && ACCESS_FULL_ORANGE_HOVER,
       )}
       onClick={props.onClick}
     >
       <span
         className={cn(
           "mt-0.5 inline-flex size-4 shrink-0",
-          props.danger ? "text-red-500" : "text-[var(--muted-foreground)]",
-          props.active && !props.danger && "text-[#0a84ff]",
+          props.caution ? ACCESS_FULL_ORANGE : "text-[var(--muted-foreground)]",
         )}
       >
         {props.icon}
@@ -223,8 +230,7 @@ function AccessOption(props: {
         <span
           className={cn(
             "block text-[13px] font-medium leading-snug",
-            props.danger ? "text-red-500" : "text-[var(--foreground)]",
-            props.active && !props.danger && "text-[#0a84ff]",
+            props.caution ? ACCESS_FULL_ORANGE : "text-[var(--foreground)]",
           )}
         >
           {props.label}
@@ -232,8 +238,7 @@ function AccessOption(props: {
         <span
           className={cn(
             "mt-0.5 block text-[11px] leading-snug",
-            props.danger ? "text-red-500/75" : "text-[var(--text-subtle)]",
-            props.active && !props.danger && "text-[#0a84ff]/80",
+            props.caution ? ACCESS_FULL_ORANGE_MUTED : "text-[var(--text-subtle)]",
           )}
         >
           {props.description}
@@ -243,7 +248,7 @@ function AccessOption(props: {
         <span
           className={cn(
             "mt-0.5 shrink-0 text-[11px] font-medium",
-            props.danger ? "text-red-500" : "text-[#0a84ff]",
+            props.caution ? ACCESS_FULL_ORANGE : "text-[var(--foreground)]",
           )}
         >
           ✓
@@ -304,7 +309,7 @@ function FlyoutRow(props: {
         data-testid={props.testId}
         className={cn(
           "flex w-full cursor-default items-center gap-2 px-2.5 py-2 text-left text-[13px] transition-colors",
-          "text-[var(--popover-foreground,var(--foreground))] hover:bg-[var(--accent)]",
+          "text-[var(--popover-foreground,var(--foreground))] hover:bg-[var(--hover-fill)]",
           props.open && "bg-[var(--accent)]",
         )}
         onMouseEnter={show}
@@ -378,6 +383,8 @@ export function Composer(props: ComposerProps) {
   const [branches, setBranches] = useState<GitBranchInfo[]>([]);
   const [branchesLoading, setBranchesLoading] = useState(false);
   const [gitBusy, setGitBusy] = useState(false);
+  /** Hover tip for local-menu options (description bubble outside the menu). */
+  const [localTip, setLocalTip] = useState<{ text: string; x: number; y: number } | null>(null);
   const showAppError = useShellStore((s) => s.showAppError);
   /** Which model-submenu flyout is open: thinking | speed */
   const [modelFlyout, setModelFlyout] = useState<"thinking" | "speed" | null>(null);
@@ -510,6 +517,7 @@ export function Composer(props: ComposerProps) {
     setProjectQuery("");
     setBranchQuery("");
     setModelFlyout(null);
+    setLocalTip(null);
   }
 
   function openMenu(kind: MenuKind, event: ReactMouseEvent) {
@@ -524,9 +532,16 @@ export function Composer(props: ComposerProps) {
   }
 
   const filteredBranches = useMemo(() => {
+    // Local branches only — hide origin/* and other remote-tracking refs.
+    // Keep names like feature/foo (local with slash); drop remote flag / origin/ prefix.
+    const locals = branches.filter((b) => {
+      if (b.remote) return false;
+      if (/^(origin|upstream)\//.test(b.name)) return false;
+      return true;
+    });
     const q = branchQuery.trim().toLowerCase();
-    if (!q) return branches;
-    return branches.filter((b) => b.name.toLowerCase().includes(q));
+    if (!q) return locals;
+    return locals.filter((b) => b.name.toLowerCase().includes(q));
   }, [branches, branchQuery]);
 
   const canCreateBranch = useMemo(() => {
@@ -639,23 +654,12 @@ export function Composer(props: ComposerProps) {
       */}
       {showProjectBar ? (
         <div className="relative z-[2] flex w-full justify-center px-[18px]">
-          <div
-            className={cn(
-              "flex w-full min-w-0 items-center gap-5 px-3 py-1.5",
-              "rounded-t-[16px] bg-[var(--bg-composer)]",
-              "text-[12px] font-medium text-[var(--foreground)]",
-            )}
-            data-testid="composer-project-bar"
-          >
+          <div className="composer-protrusion" data-testid="composer-project-bar">
             <button
               type="button"
               data-testid="composer-project-picker"
               aria-expanded={projectMenuOpen}
-              className={cn(
-                "inline-flex min-w-0 max-w-[42%] items-center gap-1.5 transition-colors",
-                "hover:opacity-80",
-                projectMenuOpen && "opacity-100",
-              )}
+              className="inline-flex min-w-0 max-w-[42%] items-center gap-1.5 text-[var(--foreground)]"
               onClick={(e) => openMenu("project", e)}
             >
               <Folder className="size-3.5 shrink-0 opacity-80" strokeWidth={1.75} />
@@ -668,35 +672,29 @@ export function Composer(props: ComposerProps) {
               <>
                 <button
                   type="button"
-                  className={cn(
-                    "inline-flex min-w-0 max-w-[26%] items-center gap-1.5 text-[var(--muted-foreground)] transition-colors hover:text-[var(--foreground)]",
-                    localMenuOpen && "text-[var(--foreground)]",
-                  )}
+                  className="inline-flex min-w-0 max-w-[26%] items-center gap-1.5 text-[var(--foreground)]"
                   title={localLabel}
                   data-testid="composer-local"
                   aria-expanded={localMenuOpen}
                   onClick={(e) => openMenu("local", e)}
                 >
-                  <Monitor className="size-3.5 shrink-0 opacity-75" strokeWidth={1.75} />
+                  <Monitor className="size-3.5 shrink-0 opacity-80" strokeWidth={1.75} />
                   <span className="min-w-0 truncate">{localLabel}</span>
-                  <ChevronDown className="size-3 shrink-0 opacity-50" strokeWidth={2} />
+                  <ChevronDown className="size-3 shrink-0 opacity-60" strokeWidth={2} />
                 </button>
                 <button
                   type="button"
-                  className={cn(
-                    "inline-flex min-w-0 max-w-[26%] items-center gap-1.5 text-[var(--muted-foreground)] transition-colors hover:text-[var(--foreground)]",
-                    branchMenuOpen && "text-[var(--foreground)]",
-                  )}
+                  className="inline-flex min-w-0 max-w-[26%] items-center gap-1.5 text-[var(--foreground)]"
                   title={tr("composer.project.branch")}
                   data-testid="composer-git-branch"
                   aria-expanded={branchMenuOpen}
                   onClick={(e) => openMenu("branch", e)}
                 >
-                  <GitBranch className="size-3.5 shrink-0 opacity-75" strokeWidth={1.75} />
+                  <GitBranch className="size-3.5 shrink-0 opacity-80" strokeWidth={1.75} />
                   <span className="min-w-0 truncate">
                     {gitContext.branch || tr("composer.project.noBranch")}
                   </span>
-                  <ChevronDown className="size-3 shrink-0 opacity-50" strokeWidth={2} />
+                  <ChevronDown className="size-3 shrink-0 opacity-60" strokeWidth={2} />
                 </button>
               </>
             ) : null}
@@ -704,11 +702,11 @@ export function Composer(props: ComposerProps) {
         </div>
       ) : null}
 
-      {/* Full independent border — not shared / clipped by the protrusion. */}
+      {/* Full card border; joins the protrusion tab when present. */}
       <form
         className={cn(
-          "relative overflow-hidden rounded-[18px] border border-[var(--border)] bg-[var(--bg-composer)]",
-          "shadow-[var(--shadow-soft)]",
+          "composer-card",
+          showProjectBar && "composer-card-with-protrusion",
         )}
         onSubmit={(event) => props.onSubmit(event)}
       >
@@ -752,7 +750,7 @@ export function Composer(props: ComposerProps) {
             <button
               type="button"
               data-testid="composer-attach"
-              className="inline-flex h-8 w-8 items-center justify-center rounded-full text-[var(--muted-foreground)] hover:bg-[var(--accent)] hover:text-[var(--foreground)]"
+              className="inline-flex h-8 w-8 items-center justify-center rounded-full text-[var(--muted-foreground)] hover:bg-[var(--hover-fill)] hover:text-[var(--foreground)]"
               title={tr("composer.attach")}
               aria-label={tr("composer.attach")}
               onClick={(e) => openMenu("attach", e)}
@@ -764,9 +762,9 @@ export function Composer(props: ComposerProps) {
               data-testid="composer-access"
               className={cn(
                 "inline-flex h-8 max-w-[11rem] items-center gap-1 rounded-full px-2",
-                "text-[12px] hover:bg-[var(--accent)]",
+                "text-[12px] hover:bg-[var(--hover-fill)]",
                 props.accessMode === "full"
-                  ? "text-red-500 hover:bg-red-500/10 hover:text-red-600"
+                  ? "text-[#ff5c1a] hover:bg-[#ff5c1a]/12 hover:text-[#ff4d00]"
                   : "text-[var(--muted-foreground)] hover:text-[var(--foreground)]",
               )}
               onClick={(e) => openMenu("access", e)}
@@ -775,7 +773,6 @@ export function Composer(props: ComposerProps) {
               <span className="min-w-0 truncate">
                 {accessLabel(props.locale, props.accessMode)}
               </span>
-              <ChevronDown className="size-3 shrink-0 opacity-50" strokeWidth={2} />
             </button>
             {/* legacy probes (hidden) */}
             <span className="hidden" data-testid="trust-chip">
@@ -805,7 +802,7 @@ export function Composer(props: ComposerProps) {
               data-testid="model-select-wrap"
               className={cn(
                 "inline-flex h-8 max-w-[10rem] items-center gap-1 rounded-full px-2",
-                "text-[12px] text-[var(--muted-foreground)] hover:bg-[var(--accent)] hover:text-[var(--foreground)]",
+                "text-[12px] text-[var(--muted-foreground)] hover:bg-[var(--hover-fill)] hover:text-[var(--foreground)]",
                 !props.modelOptions.length && !props.modelValue && "opacity-50",
               )}
               disabled={props.running}
@@ -914,7 +911,7 @@ export function Composer(props: ComposerProps) {
         placement="top"
         testId="composer-project-menu"
         minWidth={260}
-        className="!py-0 overflow-hidden rounded-xl border-[var(--border)] bg-[var(--popover)] shadow-[var(--shadow-soft)]"
+        className="!rounded-[var(--radius-panel)] !border-[var(--border)] !bg-[var(--surface-panel)] !py-0 overflow-hidden shadow-[var(--shadow-soft)]"
       >
         <div className="flex items-center gap-2 px-3 py-2.5 text-[var(--muted-foreground)]">
           <Search className="size-3.5 shrink-0 opacity-80" strokeWidth={1.75} />
@@ -948,7 +945,7 @@ export function Composer(props: ComposerProps) {
                     "flex w-full items-center gap-2.5 px-3 py-1.5 text-left text-[13px] transition-colors",
                     active
                       ? "bg-[var(--accent)] text-[var(--foreground)]"
-                      : "text-[var(--foreground)] hover:bg-[var(--accent)]",
+                      : "text-[var(--foreground)] hover:bg-[var(--hover-fill)]",
                   )}
                   onClick={() => {
                     closeMenu();
@@ -967,7 +964,7 @@ export function Composer(props: ComposerProps) {
             type="button"
             role="menuitem"
             data-testid="composer-project-add"
-            className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-[13px] text-[var(--foreground)] transition-colors hover:bg-[var(--accent)]"
+            className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-[13px] text-[var(--foreground)] transition-colors hover:bg-[var(--hover-fill)]"
             onClick={() => {
               closeMenu();
               props.onAddProject();
@@ -980,15 +977,18 @@ export function Composer(props: ComposerProps) {
         </div>
       </FloatingMenu>
 
-      {/* Local / worktree menu */}
+      {/* Local / worktree menu — labels only; descriptions show in a hover bubble */}
       <FloatingMenu
         open={localMenuOpen && Boolean(anchor)}
         anchor={anchor}
-        onClose={closeMenu}
+        onClose={() => {
+          setLocalTip(null);
+          closeMenu();
+        }}
         placement="top"
         testId="composer-local-menu"
-        minWidth={260}
-        className="!py-0 overflow-hidden rounded-xl border-[var(--border)] bg-[var(--popover)] shadow-[var(--shadow-soft)]"
+        minWidth={200}
+        className="!rounded-[var(--radius-panel)] !border-[var(--border)] !bg-[var(--surface-panel)] !py-0 overflow-hidden shadow-[var(--shadow-soft)]"
       >
         <div className="flex flex-col gap-0.5 p-1.5">
           <button
@@ -997,26 +997,27 @@ export function Composer(props: ComposerProps) {
             data-testid="composer-local-option-local"
             disabled={gitBusy}
             className={cn(
-              "flex w-full items-start gap-2.5 rounded-lg px-2.5 py-2 text-left transition-colors",
-              "hover:bg-[var(--accent)] disabled:opacity-50",
+              "flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left transition-colors",
+              "hover:bg-[var(--hover-fill)] disabled:opacity-50",
               gitContext.isMainWorktree !== false && "bg-[var(--accent)]/60",
             )}
+            onMouseEnter={(e) => {
+              const r = e.currentTarget.getBoundingClientRect();
+              setLocalTip({
+                text: tr("composer.local.menuLocalHint"),
+                x: r.right + 8,
+                y: r.top + r.height / 2,
+              });
+            }}
+            onMouseLeave={() => setLocalTip(null)}
             onClick={() => void handleSwitchToLocal()}
           >
-            <Monitor className="mt-0.5 size-3.5 shrink-0 opacity-80" strokeWidth={1.75} />
-            <span className="min-w-0 flex-1">
-              <span className="block text-[13px] font-medium text-[var(--foreground)]">
-                {tr("composer.local.menuLocal")}
-              </span>
-              <span className="mt-0.5 block text-[11px] text-[var(--text-subtle)]">
-                {tr("composer.local.menuLocalHint")}
-              </span>
+            <Monitor className="size-3.5 shrink-0 opacity-80" strokeWidth={1.75} />
+            <span className="min-w-0 flex-1 truncate text-[13px] font-medium text-[var(--foreground)]">
+              {tr("composer.local.menuLocal")}
             </span>
             {gitContext.isMainWorktree !== false ? (
-              <Check
-                className="mt-0.5 size-3.5 shrink-0 text-[var(--foreground)]"
-                strokeWidth={2}
-              />
+              <Check className="size-3.5 shrink-0 text-[var(--foreground)]" strokeWidth={2} />
             ) : null}
           </button>
           <button
@@ -1024,21 +1025,38 @@ export function Composer(props: ComposerProps) {
             role="menuitem"
             data-testid="composer-local-option-worktree"
             disabled={gitBusy}
-            className="flex w-full items-start gap-2.5 rounded-lg px-2.5 py-2 text-left transition-colors hover:bg-[var(--accent)] disabled:opacity-50"
+            className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left transition-colors hover:bg-[var(--hover-fill)] disabled:opacity-50"
+            onMouseEnter={(e) => {
+              const r = e.currentTarget.getBoundingClientRect();
+              setLocalTip({
+                text: tr("composer.local.menuNewWorktreeHint"),
+                x: r.right + 8,
+                y: r.top + r.height / 2,
+              });
+            }}
+            onMouseLeave={() => setLocalTip(null)}
             onClick={() => void handleNewWorktree()}
           >
-            <FolderGit2 className="mt-0.5 size-3.5 shrink-0 opacity-80" strokeWidth={1.75} />
-            <span className="min-w-0 flex-1">
-              <span className="block text-[13px] font-medium text-[var(--foreground)]">
-                {gitBusy ? tr("composer.local.creating") : tr("composer.local.menuNewWorktree")}
-              </span>
-              <span className="mt-0.5 block text-[11px] text-[var(--text-subtle)]">
-                {tr("composer.local.menuNewWorktreeHint")}
-              </span>
+            <FolderGit2 className="size-3.5 shrink-0 opacity-80" strokeWidth={1.75} />
+            <span className="min-w-0 flex-1 truncate text-[13px] font-medium text-[var(--foreground)]">
+              {gitBusy ? tr("composer.local.creating") : tr("composer.local.menuNewWorktree")}
             </span>
           </button>
         </div>
       </FloatingMenu>
+      {localTip && typeof document !== "undefined"
+        ? createPortal(
+            <div
+              role="tooltip"
+              data-testid="composer-local-tip"
+              className="surface-panel pointer-events-none fixed z-[12050] max-w-[220px] -translate-y-1/2 px-2.5 py-1.5 text-[11px] leading-snug text-[var(--muted-foreground)] shadow-lg"
+              style={{ left: localTip.x, top: localTip.y }}
+            >
+              {localTip.text}
+            </div>,
+            document.body,
+          )
+        : null}
 
       {/* Branch menu — search + list + create & checkout */}
       <FloatingMenu
@@ -1048,7 +1066,7 @@ export function Composer(props: ComposerProps) {
         placement="top"
         testId="composer-branch-menu"
         minWidth={280}
-        className="!py-0 overflow-hidden rounded-xl border-[var(--border)] bg-[var(--popover)] shadow-[var(--shadow-soft)]"
+        className="!rounded-[var(--radius-panel)] !border-[var(--border)] !bg-[var(--surface-panel)] !py-0 overflow-hidden shadow-[var(--shadow-soft)]"
       >
         <div className="flex items-center gap-2 px-3 py-2.5 text-[var(--muted-foreground)]">
           <Search className="size-3.5 shrink-0 opacity-80" strokeWidth={1.75} />
@@ -1083,7 +1101,7 @@ export function Composer(props: ComposerProps) {
                   "flex w-full items-center gap-2.5 px-3 py-1.5 text-left text-[13px] transition-colors disabled:opacity-50",
                   branch.current
                     ? "bg-[var(--accent)] text-[var(--foreground)]"
-                    : "text-[var(--foreground)] hover:bg-[var(--accent)]",
+                    : "text-[var(--foreground)] hover:bg-[var(--hover-fill)]",
                 )}
                 onClick={() => {
                   if (!branch.current) void handleCheckoutBranch(branch.name);
@@ -1092,11 +1110,6 @@ export function Composer(props: ComposerProps) {
               >
                 <GitBranch className="size-3.5 shrink-0 opacity-70" strokeWidth={1.75} />
                 <span className="min-w-0 flex-1 truncate">{branch.name}</span>
-                {branch.remote ? (
-                  <span className="shrink-0 text-[10px] text-[var(--text-subtle)]">
-                    {tr("composer.branch.remote")}
-                  </span>
-                ) : null}
                 {branch.current ? (
                   <Check className="size-3.5 shrink-0 opacity-80" strokeWidth={2} />
                 ) : null}
@@ -1111,7 +1124,7 @@ export function Composer(props: ComposerProps) {
               role="menuitem"
               data-testid="composer-branch-create"
               disabled={gitBusy}
-              className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-[13px] text-[var(--foreground)] transition-colors hover:bg-[var(--accent)] disabled:opacity-50"
+              className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-[13px] text-[var(--foreground)] transition-colors hover:bg-[var(--hover-fill)] disabled:opacity-50"
               onClick={() => void handleCreateCheckoutBranch()}
             >
               <Plus className="size-3.5 shrink-0 opacity-80" strokeWidth={2} />
@@ -1155,7 +1168,7 @@ export function Composer(props: ComposerProps) {
               icon={accessIcon(mode)}
               label={accessLabel(props.locale, mode)}
               description={accessDesc(props.locale, mode)}
-              danger={mode === "full"}
+              caution={mode === "full"}
               active={props.accessMode === mode}
               testId={`composer-access-${mode}`}
               onClick={() => {

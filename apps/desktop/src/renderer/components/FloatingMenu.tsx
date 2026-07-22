@@ -173,7 +173,7 @@ export function FloatingMenu(props: {
       data-testid={props.testId}
       data-floating-menu=""
       className={cn(
-        "project-context-menu fixed overflow-hidden rounded-xl border border-[var(--sidebar-border)] bg-[var(--popover)] py-1 shadow-2xl",
+        "project-context-menu surface-panel fixed overflow-hidden py-1 shadow-2xl",
         !pos.ready && "invisible",
         props.className,
       )}

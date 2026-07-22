@@ -4,6 +4,7 @@
  */
 import type { DetectedApp, GitBranchInfo, GitContextInfo, GitStatusSummary } from "@pix/contracts";
 import {
+  Check,
   ChevronRight,
   ExternalLink,
   FileDiff,
@@ -13,6 +14,8 @@ import {
   GitPullRequest,
   Laptop,
   Monitor,
+  Plus,
+  Search,
   Settings as SettingsIcon,
   SquareTerminal,
   Upload,
@@ -22,6 +25,7 @@ import {
   useEffect,
   useMemo,
   useState,
+  type CSSProperties,
   type MouseEvent as ReactMouseEvent,
   type ReactNode,
 } from "react";
@@ -36,8 +40,31 @@ import { useShellStore } from "../store/shell-store.ts";
 import { anchorFromEvent, FloatingMenu, type AnchorRect } from "./FloatingMenu.tsx";
 
 export const ENV_PANEL_WIDTH_PX = 300;
-/** Minimum width left for timeline/composer when env rail is open (matches composer default). */
+/** Outer right margin of the env card (matches `mr-4`). */
+export const ENV_PANEL_EDGE_GAP_PX = 16;
+/** Minimum width left for timeline/composer when env rail is docked (matches composer default). */
 export const ENV_PANEL_MIN_CONTENT_PX = 630;
+/** Preferred conversation column width (timeline `min(760px,100%)`). */
+export const ENV_PANEL_CONTENT_IDEAL_PX = 760;
+
+/** How the env panel sits relative to the conversation column. */
+export type EnvPanelLayoutMode = "float" | "dock" | "none";
+
+/**
+ * float — enough right gutter that a 760px-centered column is not covered (no squeeze).
+ * dock  — panel would cover content if floated; take flex space and squeeze conversation.
+ * none  — cannot keep min content + panel; caller should auto-hide.
+ */
+export function envPanelLayoutForWidth(columnWidthPx: number): EnvPanelLayoutMode {
+  const w = Math.max(0, Math.round(columnWidthPx));
+  const panelBudget = ENV_PANEL_WIDTH_PX + ENV_PANEL_EDGE_GAP_PX;
+  const contentIdeal = Math.min(ENV_PANEL_CONTENT_IDEAL_PX, w);
+  // Centered content free margin on each side.
+  const sideGutter = Math.max(0, (w - contentIdeal) / 2);
+  if (sideGutter >= panelBudget) return "float";
+  if (w >= ENV_PANEL_MIN_CONTENT_PX + panelBudget) return "dock";
+  return "none";
+}
 
 type FlyoutId = "changes" | "local" | "branch" | "git" | "openIn" | null;
 type CommitMode = "commit" | "commitAndPush";
@@ -60,9 +87,12 @@ export function EnvPanel(props: {
   locale: Locale;
   cwd: string | undefined;
   open: boolean;
+  /** float = overlay in right gutter (no squeeze); dock = flex sibling (squeezes). */
+  layout?: "float" | "dock";
   onOpenSettings?: () => void;
   onOpenProject?: (path: string) => void;
 }) {
+  const layout = props.layout ?? "dock";
   const tr = (key: MessageKey, vars?: Record<string, string>) => t(props.locale, key, vars);
   const showAppError = useShellStore((s) => s.showAppError);
   const [visibility, setVisibility] = useState<EnvPanelVisibility>(loadEnvPanelVisibility);
@@ -74,6 +104,7 @@ export function EnvPanel(props: {
   });
   const [apps, setApps] = useState<DetectedApp[]>([]);
   const [branches, setBranches] = useState<GitBranchInfo[]>([]);
+  /** Only true during mutating git actions — never for background refresh / icon load. */
   const [busy, setBusy] = useState(false);
   const [commitMsg, setCommitMsg] = useState("");
   const [commitOpen, setCommitOpen] = useState(false);
@@ -83,6 +114,10 @@ export function EnvPanel(props: {
   const [flyout, setFlyout] = useState<FlyoutId>(null);
   const [flyoutAnchor, setFlyoutAnchor] = useState<AnchorRect | null>(null);
 
+  /**
+   * Refresh env data without greying out rows. App list (icons) is loaded after
+   * git status so the panel stays interactive immediately.
+   */
   const refresh = useCallback(async () => {
     if (!props.cwd) {
       setStatus(undefined);
@@ -91,23 +126,25 @@ export function EnvPanel(props: {
       setGitContext({ branch: "—", worktree: "本地", isMainWorktree: true });
       return;
     }
-    setBusy(true);
     try {
-      const [st, targets, ctx, br] = await Promise.all([
+      const [st, ctx, br] = await Promise.all([
         window.pix.workspace.gitStatus(props.cwd).catch(() => undefined),
-        window.pix.workspace.listOpenTargets(props.cwd).catch(() => [] as DetectedApp[]),
         window.pix.workspace
           .getGitContext(props.cwd)
           .catch((): GitContextInfo => ({ branch: "—", worktree: "本地", isMainWorktree: true })),
         window.pix.workspace.listGitBranches(props.cwd).catch(() => [] as GitBranchInfo[]),
       ]);
       setStatus(st);
-      setApps(targets);
       setGitContext(ctx);
       setBranches(br);
-    } finally {
-      setBusy(false);
+    } catch {
+      // keep previous
     }
+    // Icons / app discovery can be slow — never block the whole panel on it.
+    void window.pix.workspace
+      .listOpenTargets(props.cwd)
+      .then((targets) => setApps(targets))
+      .catch(() => setApps([]));
   }, [props.cwd]);
 
   useEffect(() => {
@@ -134,7 +171,19 @@ export function EnvPanel(props: {
       setCommitMsg("");
       setCommitOpen(false);
       setCommitMode("commit");
-      void refresh();
+      // Refresh git state only — keep rows enabled; don't re-lock for icons.
+      if (props.cwd) {
+        const [st, ctx, br] = await Promise.all([
+          window.pix.workspace.gitStatus(props.cwd).catch(() => undefined),
+          window.pix.workspace
+            .getGitContext(props.cwd)
+            .catch((): GitContextInfo => ({ branch: "—", worktree: "本地", isMainWorktree: true })),
+          window.pix.workspace.listGitBranches(props.cwd).catch(() => [] as GitBranchInfo[]),
+        ]);
+        setStatus(st);
+        setGitContext(ctx);
+        setBranches(br);
+      }
     } catch (error) {
       showAppError(error instanceof Error ? error.message : tr("env.error.git"));
     } finally {
@@ -145,6 +194,7 @@ export function EnvPanel(props: {
   function closeFlyout() {
     setFlyout(null);
     setFlyoutAnchor(null);
+    setBranchQuery("");
   }
 
   function openFlyout(id: Exclude<FlyoutId, null>, event: ReactMouseEvent) {
@@ -158,9 +208,15 @@ export function EnvPanel(props: {
   }
 
   const filteredBranches = useMemo(() => {
+    // Local only — hide origin/* remote-tracking branches.
+    const locals = branches.filter((b) => {
+      if (b.remote) return false;
+      if (/^(origin|upstream)\//.test(b.name)) return false;
+      return true;
+    });
     const q = branchQuery.trim().toLowerCase();
-    if (!q) return branches;
-    return branches.filter((b) => b.name.toLowerCase().includes(q));
+    if (!q) return locals;
+    return locals.filter((b) => b.name.toLowerCase().includes(q));
   }, [branches, branchQuery]);
 
   const canCreateBranch = useMemo(() => {
@@ -259,63 +315,94 @@ export function EnvPanel(props: {
         ) : null}
       </div>
     ) : flyout === "branch" ? (
-      <div className="flex max-h-[min(55vh,380px)] min-w-[220px] flex-col gap-2 p-2">
-        <input
-          className="h-8 w-full rounded-md border border-[var(--border)] bg-transparent px-2 text-[12px] outline-none focus:border-[var(--ring,#0a84ff)]"
-          placeholder={tr("composer.branch.search")}
-          value={branchQuery}
-          disabled={busy}
-          onChange={(e) => setBranchQuery(e.target.value)}
-        />
-        {canCreateBranch ? (
-          <button
-            type="button"
-            className="rounded-md bg-[var(--accent)] px-2 py-1.5 text-left text-[12px] font-medium"
+      // Same UX as composer protrusion branch menu: search → local list → create footer.
+      <>
+        <div className="flex items-center gap-2 px-3 py-2.5 text-[var(--muted-foreground)]">
+          <Search className="size-3.5 shrink-0 opacity-80" strokeWidth={1.75} />
+          <input
+            autoFocus
+            value={branchQuery}
+            onChange={(e) => setBranchQuery(e.target.value)}
+            placeholder={tr("composer.branch.search")}
+            data-testid="env-branch-search"
             disabled={busy}
-            onClick={() => {
-              void (async () => {
-                const name = branchQuery.trim();
-                if (!props.cwd || !isValidBranchName(name)) return;
-                setBusy(true);
-                try {
-                  const next = await window.pix.workspace.createGitBranch(name, {
-                    checkout: true,
-                    cwd: props.cwd,
-                  });
-                  setGitContext(next);
-                  setBranchQuery("");
-                  closeFlyout();
-                  void refresh();
-                } catch (error) {
-                  showAppError(
-                    error instanceof Error ? error.message : tr("composer.branch.failed"),
-                  );
-                } finally {
-                  setBusy(false);
-                }
-              })();
-            }}
-          >
-            {tr("env.createBranch")}: {branchQuery.trim()}
-          </button>
-        ) : null}
-        <div className="pix-scroll min-h-0 flex-1 space-y-0.5 overflow-y-auto">
-          {filteredBranches.map((b) => (
+            className="min-w-0 flex-1 border-0 bg-transparent text-[13px] text-[var(--foreground)] outline-none placeholder:text-[var(--text-subtle)] disabled:opacity-50"
+          />
+        </div>
+        <div className="pix-scroll max-h-[260px] overscroll-contain py-0.5">
+          {filteredBranches.length === 0 ? (
+            <p className="px-3 py-3 text-[12px] text-[var(--text-subtle)]">
+              {tr("composer.branch.empty")}
+            </p>
+          ) : (
+            filteredBranches.map((b) => (
+              <button
+                key={b.name}
+                type="button"
+                role="menuitem"
+                data-testid="env-branch-item"
+                disabled={busy}
+                className={cn(
+                  "flex w-full items-center gap-2.5 px-3 py-1.5 text-left text-[13px] transition-colors disabled:opacity-50",
+                  b.current
+                    ? "bg-[var(--accent)] text-[var(--foreground)]"
+                    : "text-[var(--foreground)] hover:bg-[var(--hover-fill)]",
+                )}
+                onClick={() => {
+                  if (b.current) {
+                    closeFlyout();
+                    return;
+                  }
+                  void (async () => {
+                    if (!props.cwd || busy) return;
+                    setBusy(true);
+                    try {
+                      const next = await window.pix.workspace.checkoutGitBranch(
+                        b.name,
+                        props.cwd,
+                      );
+                      setGitContext(next);
+                      closeFlyout();
+                      void refresh();
+                    } catch (error) {
+                      showAppError(
+                        error instanceof Error ? error.message : tr("composer.branch.failed"),
+                      );
+                    } finally {
+                      setBusy(false);
+                    }
+                  })();
+                }}
+              >
+                <GitBranch className="size-3.5 shrink-0 opacity-70" strokeWidth={1.75} />
+                <span className="min-w-0 flex-1 truncate">{b.name}</span>
+                {b.current ? (
+                  <Check className="size-3.5 shrink-0 opacity-80" strokeWidth={2} />
+                ) : null}
+              </button>
+            ))
+          )}
+        </div>
+        {canCreateBranch ? (
+          <div className="border-t border-[var(--border)]">
             <button
-              key={b.name}
               type="button"
-              className={cn(
-                "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[12px] hover:bg-[var(--accent)]",
-                b.current && "bg-[var(--accent)] font-medium",
-              )}
-              disabled={busy || b.current}
+              role="menuitem"
+              data-testid="env-branch-create"
+              disabled={busy}
+              className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-[13px] text-[var(--foreground)] transition-colors hover:bg-[var(--hover-fill)] disabled:opacity-50"
               onClick={() => {
                 void (async () => {
-                  if (!props.cwd || busy) return;
+                  const name = branchQuery.trim();
+                  if (!props.cwd || !isValidBranchName(name)) return;
                   setBusy(true);
                   try {
-                    const next = await window.pix.workspace.checkoutGitBranch(b.name, props.cwd);
+                    const next = await window.pix.workspace.createGitBranch(name, {
+                      checkout: true,
+                      cwd: props.cwd,
+                    });
                     setGitContext(next);
+                    setBranchQuery("");
                     closeFlyout();
                     void refresh();
                   } catch (error) {
@@ -328,12 +415,14 @@ export function EnvPanel(props: {
                 })();
               }}
             >
-              <GitBranch className="size-3 shrink-0 opacity-70" strokeWidth={1.75} />
-              <span className="min-w-0 flex-1 truncate">{b.name}</span>
+              <Plus className="size-3.5 shrink-0 opacity-80" strokeWidth={2} />
+              <span className="min-w-0 flex-1 truncate">
+                {tr("composer.branch.createCheckout", { name: branchQuery.trim() })}
+              </span>
             </button>
-          ))}
-        </div>
-      </div>
+          </div>
+        ) : null}
+      </>
     ) : flyout === "git" ? (
       <div className="flex flex-col gap-0.5 p-1">
         <ActionRow
@@ -397,7 +486,7 @@ export function EnvPanel(props: {
             <button
               key={app.id}
               type="button"
-              className="flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-left text-[12.5px] hover:bg-[var(--accent)]"
+              className="flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-left text-[12.5px] hover:bg-[var(--hover-fill)]"
               disabled={busy}
               onClick={() => {
                 closeFlyout();
@@ -408,22 +497,7 @@ export function EnvPanel(props: {
                   );
               }}
             >
-              <span className="inline-flex size-5 shrink-0 items-center justify-center overflow-hidden rounded-[4px]">
-                {app.iconDataUrl ? (
-                  <img
-                    src={app.iconDataUrl}
-                    alt=""
-                    className="size-5 object-contain"
-                    draggable={false}
-                  />
-                ) : app.kind === "finder" ? (
-                  <Folder className="size-3.5 opacity-70" strokeWidth={1.75} />
-                ) : app.kind === "terminal" ? (
-                  <SquareTerminal className="size-3.5 opacity-70" strokeWidth={1.75} />
-                ) : (
-                  <ExternalLink className="size-3.5 opacity-70" strokeWidth={1.75} />
-                )}
-              </span>
+              <OpenInAppIcon app={app} />
               <span className="min-w-0 flex-1 truncate">
                 {app.kind === "finder"
                   ? tr("env.showIn", { name: app.name })
@@ -438,15 +512,18 @@ export function EnvPanel(props: {
   return (
     <aside
       className={cn(
-        "env-panel relative z-10 mt-2 mb-2 ml-0 mr-4 flex shrink-0 flex-col self-start overflow-hidden",
-        "rounded-2xl border border-[var(--border)] bg-[var(--popover)] shadow-lg",
+        // grid: header auto + body scrolls when card hits max-height (avoids zero-height flex bugs).
+        "env-panel surface-panel z-20 grid max-h-[calc(100%-16px)] shrink-0 grid-rows-[auto_minmax(0,1fr)] overflow-hidden shadow-lg",
+        // float: overlay in the right gutter (height follows content, capped by max-h).
+        // dock: in-flow sibling that squeezes the conversation column.
+        layout === "float"
+          ? "pointer-events-auto absolute top-2 right-4"
+          : "relative my-2 mr-4 self-start",
       )}
-      style={{
-        width: ENV_PANEL_WIDTH_PX,
-        maxHeight: "calc(100% - 16px)",
-      }}
+      style={{ width: ENV_PANEL_WIDTH_PX } satisfies CSSProperties}
       data-testid="env-panel"
       data-open="true"
+      data-layout={layout}
     >
       {/* Group header (same size as sidebar「项目」) + settings gear */}
       <div className="flex h-9 shrink-0 items-center gap-1 px-2.5 pt-1.5">
@@ -456,7 +533,7 @@ export function EnvPanel(props: {
         {props.onOpenSettings ? (
           <button
             type="button"
-            className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-[var(--muted-foreground)] hover:bg-[var(--accent)] hover:text-[var(--foreground)]"
+            className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-[var(--muted-foreground)] hover:bg-[var(--hover-fill)] hover:text-[var(--foreground)]"
             title={tr("env.openSettings")}
             aria-label={tr("env.openSettings")}
             data-testid="env-panel-settings"
@@ -467,7 +544,7 @@ export function EnvPanel(props: {
         ) : null}
       </div>
 
-      <div className="overflow-y-auto px-1 pb-1.5">
+      <div className="min-h-0 overflow-y-auto overscroll-contain px-1 pb-1.5">
         {!props.cwd ? (
           <p className="m-0 px-2 py-2 text-[12px] text-[var(--muted-foreground)]">
             {tr("env.noCwd")}
@@ -542,10 +619,14 @@ export function EnvPanel(props: {
         anchor={flyoutAnchor}
         onClose={closeFlyout}
         placement="left"
-        minWidth={220}
+        minWidth={flyout === "branch" ? 280 : 220}
         zIndex={12_000}
         testId={flyout ? `env-flyout-${flyout}` : "env-flyout"}
-        className="!py-0"
+        className={
+          flyout === "branch"
+            ? "!rounded-[var(--radius-panel)] !border-[var(--border)] !bg-[var(--surface-panel)] !py-0 overflow-hidden shadow-[var(--shadow-soft)]"
+            : "!rounded-[var(--radius-panel)] !bg-[var(--surface-panel)] !py-0"
+        }
       >
         {flyoutContent}
       </FloatingMenu>
@@ -557,7 +638,7 @@ export function EnvPanel(props: {
         generating={commitGenerating}
         value={commitMsg}
         mode={commitMode}
-        cwd={props.cwd}
+        {...(props.cwd !== undefined ? { cwd: props.cwd } : {})}
         onChange={setCommitMsg}
         onCancel={() => {
           if (commitGenerating) return;
@@ -596,6 +677,32 @@ export function EnvPanel(props: {
   );
 }
 
+/** App icon with data-URL + onError fallback to lucide (broken extract → blank img). */
+function OpenInAppIcon(props: { app: DetectedApp }) {
+  const [failed, setFailed] = useState(false);
+  const showImg = Boolean(props.app.iconDataUrl) && !failed;
+  return (
+    <span className="inline-flex size-5 shrink-0 items-center justify-center overflow-hidden rounded-[5px] bg-[color-mix(in_srgb,var(--foreground)_6%,transparent)]">
+      {showImg ? (
+        <img
+          src={props.app.iconDataUrl}
+          alt=""
+          className="size-5 object-contain"
+          draggable={false}
+          decoding="async"
+          onError={() => setFailed(true)}
+        />
+      ) : props.app.kind === "finder" ? (
+        <Folder className="size-3.5 opacity-70" strokeWidth={1.75} />
+      ) : props.app.kind === "terminal" ? (
+        <SquareTerminal className="size-3.5 opacity-70" strokeWidth={1.75} />
+      ) : (
+        <ExternalLink className="size-3.5 opacity-70" strokeWidth={1.75} />
+      )}
+    </span>
+  );
+}
+
 function MenuRow(props: {
   icon: ReactNode;
   label: string;
@@ -611,10 +718,10 @@ function MenuRow(props: {
     <button
       type="button"
       className={cn(
-        "flex w-full items-center gap-2.5 rounded-xl px-2.5 py-2 text-left text-[13px] transition-colors",
+        "flex w-full items-center gap-2.5 rounded-[var(--radius-control)] px-2.5 py-2 text-left text-[13px] transition-colors",
         props.muted
           ? "cursor-default text-[var(--text-subtle)]"
-          : "text-[var(--foreground)] hover:bg-[var(--accent)]",
+          : "text-[var(--foreground)] hover:bg-[var(--hover-fill)]",
         props.active && "bg-[var(--accent)]",
         props.disabled && "opacity-50",
       )}
@@ -640,7 +747,7 @@ function ActionRow(props: {
   return (
     <button
       type="button"
-      className="flex w-full items-center gap-2 rounded-md px-1.5 py-1.5 text-left text-[12px] text-[var(--foreground)] hover:bg-[var(--accent)] disabled:opacity-40"
+      className="flex w-full items-center gap-2 rounded-md px-1.5 py-1.5 text-left text-[12px] text-[var(--foreground)] hover:bg-[var(--hover-fill)] disabled:opacity-40"
       disabled={props.disabled}
       onClick={props.onClick}
     >
@@ -689,7 +796,7 @@ function CommitDialog(props: {
       }}
     >
       <div
-        className="w-full max-w-md rounded-xl border border-[var(--border)] bg-[var(--popover)] p-4 shadow-2xl"
+        className="surface-panel w-full max-w-md p-4 shadow-2xl"
         onMouseDown={(e) => e.stopPropagation()}
       >
         <h2 className="m-0 mb-2 text-[15px] font-semibold text-[var(--foreground)]">
@@ -708,7 +815,7 @@ function CommitDialog(props: {
         <div className="flex justify-end gap-2">
           <button
             type="button"
-            className="h-8 rounded-lg px-3 text-[13px] text-[var(--muted-foreground)] hover:bg-[var(--accent)]"
+            className="h-8 rounded-lg px-3 text-[13px] text-[var(--muted-foreground)] hover:bg-[var(--hover-fill)]"
             onClick={props.onCancel}
             disabled={locked}
           >

@@ -43,7 +43,7 @@ export function ConfirmDialog(props: {
       }}
     >
       <div
-        className="w-full max-w-sm rounded-xl border border-[var(--border)] bg-[var(--popover)] p-4 shadow-2xl"
+        className="surface-panel w-full max-w-sm p-4 shadow-2xl"
         onMouseDown={(e) => e.stopPropagation()}
       >
         <h2
@@ -62,7 +62,7 @@ export function ConfirmDialog(props: {
           <button
             type="button"
             data-testid="confirm-dialog-cancel"
-            className="h-8 rounded-lg px-3 text-[13px] text-[var(--muted-foreground)] hover:bg-[var(--accent)]"
+            className="h-8 rounded-lg px-3 text-[13px] text-[var(--muted-foreground)] hover:bg-[var(--hover-fill)]"
             onClick={props.onCancel}
           >
             {props.cancelLabel}

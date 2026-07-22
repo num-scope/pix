@@ -20,6 +20,10 @@ import {
   type ReactNode,
 } from "react";
 import { loadConfirmArchive } from "../lib/behavior-prefs.ts";
+import {
+  MAC_TRAFFIC_LIGHT_GUTTER_PX,
+  TITLEBAR_CONTROL_SIZE_PX,
+} from "../lib/desktop-chrome.ts";
 import { t, type Locale } from "../lib/i18n.ts";
 import {
   archiveThread,
@@ -155,6 +159,23 @@ export function ThreadHeader(props: {
         style={props.style}
         data-testid="thread-header"
       >
+        {/* When the rail is fully collapsed, punch a no-drag hole under the portaled
+            expand control. Padding alone stays part of the drag region and steals clicks. */}
+        {props.collapsed ? (
+          <>
+            <div
+              className="pointer-events-none shrink-0"
+              style={{ width: MAC_TRAFFIC_LIGHT_GUTTER_PX }}
+              aria-hidden
+            />
+            <div
+              className="no-drag shrink-0 self-stretch"
+              style={{ width: TITLEBAR_CONTROL_SIZE_PX + 12 }}
+              aria-hidden
+              data-testid="thread-header-expand-slot"
+            />
+          </>
+        ) : null}
         <div className="no-drag flex min-w-0 max-w-[calc(100%-2.5rem)] items-center gap-0.5">
           <h2
             className="m-0 min-w-0 shrink-0 text-[13px] font-semibold tracking-tight"
@@ -167,7 +188,7 @@ export function ThreadHeader(props: {
             data-testid="thread-header-menu"
             className={cn(
               "inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg",
-              "text-[var(--muted-foreground)] hover:bg-[var(--accent)] hover:text-[var(--foreground)]",
+              "text-[var(--muted-foreground)] hover:bg-[var(--hover-fill)] hover:text-[var(--foreground)]",
               !canAct && "pointer-events-none opacity-30",
             )}
             title={tr("thread.more")}
@@ -186,7 +207,7 @@ export function ThreadHeader(props: {
             data-testid="thread-header-env"
             className={cn(
               "no-drag inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg",
-              "text-[var(--muted-foreground)] hover:bg-[var(--accent)] hover:text-[var(--foreground)]",
+              "text-[var(--muted-foreground)] hover:bg-[var(--hover-fill)] hover:text-[var(--foreground)]",
               envPanelOpen && "bg-[var(--accent)] text-[var(--foreground)]",
             )}
             title={tr("env.togglePanel")}
@@ -286,7 +307,7 @@ function MenuItem(props: { icon: ReactNode; label: string; onClick: () => void; 
       type="button"
       role="menuitem"
       data-testid={props.testId}
-      className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-[13px] text-[var(--popover-foreground)] transition-colors hover:bg-[var(--accent)]"
+      className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-[13px] text-[var(--popover-foreground)] transition-colors hover:bg-[var(--hover-fill)]"
       onClick={props.onClick}
     >
       <span className="opacity-70">{props.icon}</span>
