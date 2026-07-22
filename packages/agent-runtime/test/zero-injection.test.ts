@@ -20,7 +20,7 @@ async function listFiles(root: string, relative = ""): Promise<string[]> {
     else files.push(path);
   }
 
-  return files.sort();
+  return files.map((path) => path.replace(/\\/g, "/")).sort();
 }
 
 function isolatedEnvironment(home: string, agentDir: string): NodeJS.ProcessEnv {

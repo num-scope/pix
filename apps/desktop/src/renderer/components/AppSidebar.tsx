@@ -132,7 +132,7 @@ export function AppSidebar(props: AppSidebarProps) {
     <>
       <aside
         className={cn(
-          // Overlay rail so frosted glass can sample the shell/main canvas behind it.
+          // Overlay rail so frosted glass can expose the native window material behind it.
           // Never allow horizontal scroll; full collapse uses width 0 (not an icon strip).
           "absolute inset-y-0 left-0 z-30 flex h-full min-w-0 flex-col overflow-x-hidden text-[var(--sidebar-foreground)]",
           props.collapsed

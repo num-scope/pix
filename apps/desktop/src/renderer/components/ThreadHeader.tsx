@@ -3,15 +3,7 @@
  * Env floating popup toggled from the top-right control.
  */
 import type { SessionThreadSummary } from "@pix/contracts";
-import {
-  Archive,
-  Copy,
-  Layers,
-  MoreHorizontal,
-  Pencil,
-  Pin,
-  PinOff,
-} from "lucide-react";
+import { Archive, Copy, Layers, MoreHorizontal, Pencil, Pin, PinOff } from "lucide-react";
 import {
   useEffect,
   useState,
@@ -20,10 +12,7 @@ import {
   type ReactNode,
 } from "react";
 import { loadConfirmArchive } from "../lib/behavior-prefs.ts";
-import {
-  MAC_TRAFFIC_LIGHT_GUTTER_PX,
-  TITLEBAR_CONTROL_SIZE_PX,
-} from "../lib/desktop-chrome.ts";
+import { MAC_TRAFFIC_LIGHT_GUTTER_PX, TITLEBAR_CONTROL_SIZE_PX } from "../lib/desktop-chrome.ts";
 import { t, type Locale } from "../lib/i18n.ts";
 import {
   archiveThread,

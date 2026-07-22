@@ -133,8 +133,11 @@ export function ProjectList(props: ProjectListProps) {
   const [organizeAnchor, setOrganizeAnchor] = useState<AnchorRect | null>(null);
   const [groupMode, setGroupMode] = useState<GroupMode>(loadGroupMode);
   const [sortMode, setSortMode] = useState<SortMode>(loadSortMode);
-  const [conversationSortMode, setConversationSortMode] = useState<SortMode>(loadConversationSortMode);
-  const [conversationManualOrder, setConversationManualOrder] = useState(loadConversationManualOrder);
+  const [conversationSortMode, setConversationSortMode] =
+    useState<SortMode>(loadConversationSortMode);
+  const [conversationManualOrder, setConversationManualOrder] = useState(
+    loadConversationManualOrder,
+  );
   const [projectsOpen, setProjectsOpen] = useState(loadProjectsSectionOpen);
   const [threadsOpen, setThreadsOpen] = useState(loadThreadsSectionOpen);
   const [listVisible, setListVisible] = useState(PROJECT_THREADS_PAGE);
@@ -728,12 +731,7 @@ export function ProjectList(props: ProjectListProps) {
       >
         {/* group/item only on project row — nested threads are siblings, not inside this group */}
         {/* Project row: hover only — never data-active (highlight the session, not the project). */}
-        <div
-          className={cn(
-            "sidebar-list-row group/item",
-            showMenu && "bg-[var(--hover-fill)]",
-          )}
-        >
+        <div className={cn("sidebar-list-row group/item", showMenu && "bg-[var(--hover-fill)]")}>
           <button
             type="button"
             className={cn(
@@ -912,7 +910,10 @@ export function ProjectList(props: ProjectListProps) {
         </div>
 
         {projectsOpen ? (
-          <div className="flex min-w-0 flex-col gap-0.5 overflow-x-hidden" data-testid="recent-workspaces">
+          <div
+            className="flex min-w-0 flex-col gap-0.5 overflow-x-hidden"
+            data-testid="recent-workspaces"
+          >
             {restPaths.length === 0 && pinnedPaths.length === 0 ? (
               // Keep list empty when no real project — never show auto date folders or stubs.
               props.workspacePath && !isNonProjectWorkspacePath(props.workspacePath) ? (

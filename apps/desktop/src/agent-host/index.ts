@@ -11,10 +11,12 @@ import {
   type HostCommand,
   type HostEvent,
   isHostCommand,
+  isHostEvent,
   type RuntimeEvent,
 } from "@pix/contracts";
 import type { AgentSessionEvent } from "@earendil-works/pi-coding-agent";
 import { readFile } from "node:fs/promises";
+import { ProviderOAuthCoordinator, type OAuthModelRuntime } from "./provider-oauth.ts";
 
 interface ElectronParentPort {
   postMessage(message: unknown): void;
@@ -31,6 +33,94 @@ let sequence = 0;
 
 function post(event: HostEvent): void {
   parentPort.postMessage(event);
+}
+
+const providerOAuth = new ProviderOAuthCoordinator(post);
+const testOAuthProviders = new Set<string>();
+
+function testOAuthRuntime(provider: string): OAuthModelRuntime | undefined {
+  if (process.env.PIX_ENABLE_TEST_COMMANDS !== "1") return undefined;
+  if (process.env.PIX_TEST_PROVIDER_OAUTH !== provider) return undefined;
+  return {
+    getProvider: (providerId) =>
+      providerId === provider ? { auth: { oauth: { testOnly: true } } } : undefined,
+    async login(_providerId, _type, interaction) {
+      const method = await interaction.prompt({
+        type: "select",
+        message: "Choose a test OAuth flow",
+        options: [
+          { id: "browser", label: "Browser login" },
+          { id: "device", label: "Device code login" },
+        ],
+      });
+      if (method === "browser") {
+        interaction.notify({
+          type: "auth_url",
+          url: "https://example.com/pix-oauth-test",
+          instructions: "Complete the test authorization in your browser",
+        });
+      } else {
+        interaction.notify({
+          type: "device_code",
+          userCode: "PIX-E2E",
+          verificationUri: "https://example.com/device",
+        });
+      }
+      await interaction.prompt({
+        type: "manual_code",
+        message: "Enter any value to complete the test login",
+      });
+      testOAuthProviders.add(provider);
+      return {};
+    },
+  };
+}
+
+function listProvidersForHost(): ReturnType<NonNullable<typeof handle>["listProviders"]> {
+  if (!handle) return [];
+  const providers = handle.listProviders();
+  const fixtureProvider = process.env.PIX_TEST_PROVIDER_OAUTH;
+  if (process.env.PIX_ENABLE_TEST_COMMANDS !== "1" || !fixtureProvider) return providers;
+  const active = testOAuthProviders.has(fixtureProvider);
+  const index = providers.findIndex((entry) => entry.provider === fixtureProvider);
+  const existing = index >= 0 ? providers[index] : undefined;
+  if (existing) {
+    providers[index] = {
+      ...existing,
+      configured: active || existing.configured,
+      oauthSupported: true,
+      oauthActive: active || existing.oauthActive,
+      ...(active ? { source: "stored" as const } : {}),
+    };
+    return providers;
+  }
+  providers.push({
+    provider: fixtureProvider,
+    displayName: "OpenAI Codex",
+    configured: active,
+    modelCount: 0,
+    oauthSupported: true,
+    oauthActive: active,
+    ...(active ? { source: "stored" as const } : {}),
+  });
+  return providers;
+}
+
+function testProviderUsageEvent(requestId: string): HostEvent | undefined {
+  if (process.env.PIX_ENABLE_TEST_COMMANDS !== "1") return undefined;
+  const fixture = process.env.PIX_TEST_PROVIDER_USAGE;
+  if (!fixture) return undefined;
+  try {
+    const event: unknown = {
+      protocolVersion: IPC_PROTOCOL_VERSION,
+      type: "providers.usage",
+      requestId,
+      usage: JSON.parse(fixture) as unknown,
+    };
+    return isHostEvent(event) && event.type === "providers.usage" ? event : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function errorEvent(error: unknown, requestId?: string): HostEvent {
@@ -59,15 +149,48 @@ function toolOutput(result: unknown): string {
     .slice(0, 16_000);
 }
 
+function userMessageText(message: unknown): string | undefined {
+  if (typeof message !== "object" || message === null || !("role" in message)) return undefined;
+  if (message.role !== "user" || !("content" in message)) return undefined;
+  if (typeof message.content === "string") return message.content;
+  if (!Array.isArray(message.content)) return undefined;
+  return message.content
+    .map((part) =>
+      typeof part === "object" &&
+      part !== null &&
+      "type" in part &&
+      part.type === "text" &&
+      "text" in part &&
+      typeof part.text === "string"
+        ? part.text
+        : "",
+    )
+    .filter(Boolean)
+    .join("\n");
+}
+
 function projectRuntimeEvent(event: AgentSessionEvent): RuntimeEvent | undefined {
   switch (event.type) {
     case "agent_start":
       return { type: "agent.started" };
     case "agent_settled":
       return { type: "agent.settled" };
+    case "queue_update":
+      return {
+        type: "queue.updated",
+        steering: [...event.steering],
+        followUp: [...event.followUp],
+      };
+    case "message_start": {
+      const content = userMessageText(event.message);
+      return content === undefined ? undefined : { type: "user.message", content };
+    }
     case "message_update": {
       const update = event.assistantMessageEvent;
       if (update.type === "text_delta") return { type: "message.delta", delta: update.delta };
+      if (update.type === "thinking_delta") {
+        return { type: "thinking.delta", delta: update.delta };
+      }
       return undefined;
     }
     case "message_end": {
@@ -165,6 +288,8 @@ async function handleCommand(command: HostCommand): Promise<void> {
   try {
     switch (command.type) {
       case "host.start": {
+        providerOAuth.cancel();
+        testOAuthProviders.clear();
         unsubscribe?.();
         unsubscribe = undefined;
         await handle?.dispose();
@@ -200,7 +325,21 @@ async function handleCommand(command: HostCommand): Promise<void> {
       }
       case "agent.prompt": {
         if (!handle) throw new Error("Agent Host is not ready");
-        await handle.runtime.session.prompt(command.message);
+        await handle.runtime.session.prompt(
+          command.message,
+          command.streamingBehavior ? { streamingBehavior: command.streamingBehavior } : undefined,
+        );
+        post({
+          protocolVersion: IPC_PROTOCOL_VERSION,
+          type: "runtime.snapshot",
+          requestId: command.requestId,
+          snapshot: handle.snapshot(++sequence),
+        });
+        break;
+      }
+      case "agent.queue.clear": {
+        if (!handle) throw new Error("Agent Host is not ready");
+        handle.runtime.session.clearQueue();
         post({
           protocolVersion: IPC_PROTOCOL_VERSION,
           type: "runtime.snapshot",
@@ -333,6 +472,36 @@ async function handleCommand(command: HostCommand): Promise<void> {
         });
         break;
       }
+      case "models.config.get": {
+        if (!handle) throw new Error("Agent Host is not ready");
+        post({
+          protocolVersion: IPC_PROTOCOL_VERSION,
+          type: "models.config",
+          requestId: command.requestId,
+          config: await handle.getModelsJsonConfig(),
+        });
+        break;
+      }
+      case "models.config.upsert": {
+        if (!handle) throw new Error("Agent Host is not ready");
+        post({
+          protocolVersion: IPC_PROTOCOL_VERSION,
+          type: "models.config",
+          requestId: command.requestId,
+          config: await handle.upsertCustomProvider(command.input),
+        });
+        break;
+      }
+      case "models.config.remove": {
+        if (!handle) throw new Error("Agent Host is not ready");
+        post({
+          protocolVersion: IPC_PROTOCOL_VERSION,
+          type: "models.config",
+          requestId: command.requestId,
+          config: await handle.removeCustomProvider(command.provider),
+        });
+        break;
+      }
       case "thinking.set": {
         if (!handle) throw new Error("Agent Host is not ready");
         const snapshot = handle.setThinkingLevel(command.level);
@@ -350,8 +519,22 @@ async function handleCommand(command: HostCommand): Promise<void> {
           protocolVersion: IPC_PROTOCOL_VERSION,
           type: "providers.list",
           requestId: command.requestId,
-          providers: handle.listProviders(),
+          providers: listProvidersForHost(),
         });
+        break;
+      }
+      case "providers.usage": {
+        if (!handle) throw new Error("Agent Host is not ready");
+        const fixture = testProviderUsageEvent(command.requestId);
+        if (fixture) post(fixture);
+        else {
+          post({
+            protocolVersion: IPC_PROTOCOL_VERSION,
+            type: "providers.usage",
+            requestId: command.requestId,
+            usage: await handle.listProviderUsage(),
+          });
+        }
         break;
       }
       case "providers.setApiKey": {
@@ -374,6 +557,34 @@ async function handleCommand(command: HostCommand): Promise<void> {
           requestId: command.requestId,
           providers,
         });
+        break;
+      }
+      case "providers.oauth.start": {
+        if (!handle) throw new Error("Agent Host is not ready");
+        await providerOAuth.start(
+          command.requestId,
+          command.provider,
+          testOAuthRuntime(command.provider) ?? handle.runtime.services.modelRuntime,
+        );
+        post({
+          protocolVersion: IPC_PROTOCOL_VERSION,
+          type: "providers.list",
+          requestId: command.requestId,
+          providers: listProvidersForHost(),
+        });
+        break;
+      }
+      case "providers.oauth.respond": {
+        providerOAuth.respond(
+          command.operationId,
+          command.promptId,
+          command.value,
+          command.cancelled ?? false,
+        );
+        break;
+      }
+      case "providers.oauth.cancel": {
+        providerOAuth.cancel(command.operationId);
         break;
       }
       case "settings.get": {
@@ -561,6 +772,7 @@ async function handleCommand(command: HostCommand): Promise<void> {
         break;
       }
       case "host.shutdown": {
+        providerOAuth.cancel();
         unsubscribe?.();
         unsubscribe = undefined;
         await handle?.dispose();

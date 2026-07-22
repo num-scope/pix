@@ -1,65 +1,70 @@
-/**
- * Auth / OAuth plan limit hints (not live session token accounting).
- * Mirrors common product messaging: ChatGPT weekly caps, Copilot quotas, etc.
- * Actual remaining quota is only known from the provider when rate-limited.
- */
+import type { ProviderUsageLimit } from "@pix/contracts";
+import type { Locale } from "./i18n.ts";
 
-export type UsageLimitPeriod = "weekly" | "daily" | "monthly" | "unknown";
+export type UsageTone = "healthy" | "warning" | "danger";
 
-export type ProviderUsageLimitInfo = {
-  provider: string;
-  period: UsageLimitPeriod;
-  /** Short product-facing note (i18n key or plain; UI will prefer i18n when present). */
-  noteKey?: string;
-  noteFallback?: string;
-};
-
-/** Known OAuth / subscription-style providers and their typical limit windows. */
-const KNOWN_LIMITS: Record<string, Omit<ProviderUsageLimitInfo, "provider">> = {
-  "openai-codex": {
-    period: "weekly",
-    noteFallback: "ChatGPT / Codex 订阅额度通常按周重置，具体以 OpenAI 账号页为准。",
-  },
-  openai: {
-    period: "unknown",
-    noteFallback: "OpenAI API 按用量计费；ChatGPT 订阅模型可能另有周限额。",
-  },
-  "github-copilot": {
-    period: "monthly",
-    noteFallback: "GitHub Copilot 套餐按席位与月额度计费。",
-  },
-  anthropic: {
-    period: "unknown",
-    noteFallback: "Anthropic API 按用量计费；Claude 订阅可能有消息频率限制。",
-  },
-  "google-gemini-cli": {
-    period: "daily",
-    noteFallback: "Gemini CLI / 订阅类额度常按日或项目配额限制。",
-  },
-  google: {
-    period: "unknown",
-    noteFallback: "Google AI 额度取决于项目与套餐。",
-  },
-  openrouter: {
-    period: "unknown",
-    noteFallback: "OpenRouter 按账户余额与速率限制。",
-  },
-};
-
-export function resolveProviderUsageLimit(provider: string): ProviderUsageLimitInfo {
-  const known = KNOWN_LIMITS[provider];
-  if (known) {
-    return { provider, ...known };
-  }
-  return {
-    provider,
-    period: "unknown",
-  };
+function clampPercent(value: number): number {
+  return Math.min(100, Math.max(0, value));
 }
 
-export function periodMessageKey(period: UsageLimitPeriod): string {
-  if (period === "weekly") return "usage.periodWeekly";
-  if (period === "daily") return "usage.periodDaily";
-  if (period === "monthly") return "usage.periodMonthly";
-  return "usage.periodUnknown";
+export function remainingPercent(limit: Pick<ProviderUsageLimit, "usedPercent">): number {
+  return clampPercent(100 - limit.usedPercent);
+}
+
+export function usageTone(limit: Pick<ProviderUsageLimit, "usedPercent">): UsageTone {
+  const remaining = remainingPercent(limit);
+  if (remaining <= 10) return "danger";
+  if (remaining <= 30) return "warning";
+  return "healthy";
+}
+
+function compactDuration(milliseconds: number, locale: Locale): string {
+  const totalMinutes = Math.max(1, Math.ceil(milliseconds / 60_000));
+  const days = Math.floor(totalMinutes / 1_440);
+  const hours = Math.floor((totalMinutes % 1_440) / 60);
+  const minutes = totalMinutes % 60;
+  const parts: string[] = [];
+  const suffix = locale === "zh" ? { day: "天", hour: "小时", minute: "分钟" } : undefined;
+
+  if (days > 0) parts.push(suffix ? `${days}${suffix.day}` : `${days}d`);
+  if (hours > 0 && parts.length < 2) {
+    parts.push(suffix ? `${hours}${suffix.hour}` : `${hours}h`);
+  }
+  if (minutes > 0 && parts.length < 2) {
+    parts.push(suffix ? `${minutes}${suffix.minute}` : `${minutes}m`);
+  }
+  return parts.join(" ");
+}
+
+export function formatResetCountdown(
+  resetsAt: string | undefined,
+  locale: Locale,
+  nowMs = Date.now(),
+): string | undefined {
+  if (!resetsAt) return undefined;
+  const resetMs = Date.parse(resetsAt);
+  if (!Number.isFinite(resetMs)) return undefined;
+  if (resetMs <= nowMs) return locale === "zh" ? "即将重置" : "Resetting soon";
+  const duration = compactDuration(resetMs - nowMs, locale);
+  return locale === "zh" ? `${duration}后重置` : `Resets in ${duration}`;
+}
+
+export function formatWindowDuration(
+  durationMins: number | undefined,
+  locale: Locale,
+): string | undefined {
+  if (durationMins === undefined || !Number.isFinite(durationMins) || durationMins <= 0) {
+    return undefined;
+  }
+  const duration = compactDuration(durationMins * 60_000, locale);
+  return locale === "zh" ? `${duration}窗口` : `${duration} window`;
+}
+
+export function formatUsageUpdatedAt(value: string, locale: Locale): string | undefined {
+  const timestamp = Date.parse(value);
+  if (!Number.isFinite(timestamp)) return undefined;
+  return new Intl.DateTimeFormat(locale, {
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(timestamp);
 }

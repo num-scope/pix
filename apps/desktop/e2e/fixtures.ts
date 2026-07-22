@@ -16,6 +16,7 @@ interface LaunchedPix {
   page: Page;
   root: string;
   workspace: string;
+  attachmentPaths: string[];
   fakeModel: FakeOpenAiServer;
 }
 
@@ -30,13 +31,50 @@ async function launchPixApp(): Promise<LaunchedPix> {
   const agentDir = join(home, ".pi", "agent");
   const workspace = join(root, "workspace");
   const toolPath = join(workspace, "fixture.txt");
+  const attachmentPaths = [
+    "report.xlsx",
+    "photo.png",
+    "brief.pdf",
+    "deck.pptx",
+    "proposal.docx",
+    "bundle.zip",
+    "notes.txt",
+    "README.md",
+    "Main.java",
+    "app.js",
+    "worker.py",
+  ].map((name) => join(workspace, name));
 
   await Promise.all([
     mkdir(agentDir, { recursive: true }),
+    mkdir(join(agentDir, "prompts"), { recursive: true }),
+    mkdir(join(agentDir, "skills", "e2e-skill"), { recursive: true }),
     mkdir(join(home, ".agents"), { recursive: true }),
     mkdir(workspace, { recursive: true }),
   ]);
-  await writeFile(toolPath, "Pix Playwright E2E fixture\n");
+  await Promise.all([
+    writeFile(toolPath, "Pix Playwright E2E fixture\n"),
+    ...attachmentPaths.map((path) =>
+      path.endsWith("photo.png")
+        ? writeFile(
+            path,
+            Buffer.from(
+              "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+              "base64",
+            ),
+          )
+        : writeFile(path, `E2E attachment fixture: ${path}\n`),
+    ),
+    writeFile(join(workspace, "demo.mp4"), ""),
+    writeFile(
+      join(agentDir, "prompts", "e2e-review.md"),
+      "---\ndescription: Review the active workspace\n---\nReview the active workspace.\n",
+    ),
+    writeFile(
+      join(agentDir, "skills", "e2e-skill", "SKILL.md"),
+      "---\nname: e2e-skill\ndescription: E2E-only skill fixture\n---\n\nExercise the E2E skill.\n",
+    ),
+  ]);
 
   // Local package fixture for install E2E (absolute path source).
   const localPackage = join(workspace, "e2e-local-package");
@@ -95,6 +133,31 @@ async function launchPixApp(): Promise<LaunchedPix> {
     PIX_MODEL_ID: "pix-fake",
     PIX_TOOLS: "read",
     PIX_ENABLE_TEST_COMMANDS: "1",
+    PIX_TEST_PROVIDER_OAUTH: "openai-codex",
+    PIX_TEST_PROVIDER_USAGE: JSON.stringify([
+      {
+        provider: "zai",
+        displayName: "Z.AI",
+        updatedAt: new Date().toISOString(),
+        status: "ok",
+        planName: "GLM Coding Max",
+        limits: [
+          {
+            label: "Session",
+            usedPercent: 26,
+            resetsAt: new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString(),
+            windowDurationMins: 300,
+          },
+          {
+            label: "Weekly",
+            usedPercent: 63,
+            resetsAt: new Date(Date.now() + 4 * 24 * 60 * 60 * 1000).toISOString(),
+            windowDurationMins: 10_080,
+          },
+        ],
+        usageLines: [{ label: "Web searches", value: "37 / 100" }],
+      },
+    ]),
     PIX_PERSIST_SESSION: "1",
     // Product cold-start auto-resume is off so each test drives Host start via UI.
     PIX_NO_AUTO_RESUME: "1",
@@ -128,7 +191,7 @@ async function launchPixApp(): Promise<LaunchedPix> {
   // Let cold-start bootstrap (packages/resources refresh) settle before UI clicks.
   await page.waitForTimeout(800);
 
-  return { app, page, root, workspace, fakeModel };
+  return { app, page, root, workspace, attachmentPaths, fakeModel };
 }
 
 export const test = base.extend<PixE2EFixtures>({
@@ -155,9 +218,24 @@ export async function startHost(page: Page): Promise<void> {
   await page.getByTestId("pix-app").waitFor({ state: "visible" });
   const btn = page.getByTestId("start-host");
   await btn.waitFor({ state: "visible", timeout: 15_000 });
+  const snapshot = page.getByTestId("runtime-snapshot").first();
+  await expect(snapshot).toContainText("runtimeId", { timeout: 30_000 });
+  const before = await snapshot.textContent().catch(() => "");
+  const previousRuntimeId = /"runtimeId":\s*"([^"]+)"/.exec(before ?? "")?.[1];
   // Bootstrap may remount the rail briefly — force click after short settle.
   await page.waitForTimeout(300);
   await btn.click({ force: true });
+  // Cold bootstrap may already say "ready" while New conversation is replacing that host.
+  // Wait for the replacement runtime so the next UI action cannot race clearActive().
+  await expect
+    .poll(
+      async () => {
+        const text = await snapshot.textContent().catch(() => "");
+        return /"runtimeId":\s*"([^"]+)"/.exec(text ?? "")?.[1];
+      },
+      { timeout: 45_000 },
+    )
+    .not.toBe(previousRuntimeId);
   await expect(page.getByTestId("host-status").first()).toContainText(
     /Agent Host ready|Agent Host restarted|Agent Host ready|就绪/,
     { timeout: 45_000 },

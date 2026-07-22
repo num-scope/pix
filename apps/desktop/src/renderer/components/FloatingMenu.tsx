@@ -59,7 +59,7 @@ export function FloatingMenu(props: {
   closeOnOutside?: boolean;
 }) {
   const ref = useRef<HTMLDivElement | null>(null);
-  const [pos, setPos] = useState({ top: 0, left: 0, ready: false });
+  const [pos, setPos] = useState({ top: 0, left: 0, maxHeight: 0, ready: false });
   const minWidth = props.minWidth ?? 200;
   const placement = props.placement ?? "bottom";
   const zIndex = props.zIndex ?? 10_000;
@@ -72,57 +72,94 @@ export function FloatingMenu(props: {
     }
     const anchor = props.anchor;
     const el = ref.current;
-    const menuW = Math.max(minWidth, el?.offsetWidth ?? minWidth);
-    const menuH = el?.offsetHeight ?? 160;
     const pad = 8;
+    const gap = 4;
+    const topGap = 6;
+    const minMenuH = 120;
+    const spaceAbove = Math.max(0, anchor.top - pad - topGap);
+    const spaceBelow = Math.max(0, window.innerHeight - anchor.bottom - pad - gap);
+    const spaceSide = Math.max(minMenuH, window.innerHeight - pad * 2);
+
+    // Clamp height to available viewport before measuring, so long lists
+    // (e.g. model picker) never paint taller than the window.
+    let maxHeight: number;
+    if (placement === "top") {
+      maxHeight = Math.max(minMenuH, spaceAbove > minMenuH ? spaceAbove : spaceBelow);
+    } else if (placement === "bottom") {
+      maxHeight = Math.max(minMenuH, spaceBelow > minMenuH ? spaceBelow : spaceAbove);
+    } else {
+      maxHeight = spaceSide;
+    }
+    if (el) {
+      el.style.maxHeight = `${maxHeight}px`;
+    }
+
+    const menuW = Math.max(minWidth, el?.offsetWidth ?? minWidth);
+    const menuH = el?.offsetHeight ?? Math.min(160, maxHeight);
 
     let top: number;
     let left: number;
 
     if (placement === "right") {
-      left = anchor.right + 4;
+      left = anchor.right + gap;
       top = anchor.top;
       if (left + menuW > window.innerWidth - pad) {
-        left = Math.max(pad, anchor.left - menuW - 4);
+        left = Math.max(pad, anchor.left - menuW - gap);
       }
       if (top + menuH > window.innerHeight - pad) {
         top = Math.max(pad, window.innerHeight - menuH - pad);
       }
       top = Math.max(pad, top);
     } else if (placement === "left") {
-      left = anchor.left - menuW - 4;
+      left = anchor.left - menuW - gap;
       top = anchor.top;
       if (left < pad) {
-        left = Math.min(anchor.right + 4, window.innerWidth - menuW - pad);
+        left = Math.min(anchor.right + gap, window.innerWidth - menuW - pad);
       }
       if (top + menuH > window.innerHeight - pad) {
         top = Math.max(pad, window.innerHeight - menuH - pad);
       }
       top = Math.max(pad, top);
     } else if (placement === "top") {
-      // Open above the trigger (composer project picker).
-      top = anchor.top - menuH - 6;
-      left = anchor.left;
+      // Open above the trigger (composer controls). Prefer room above; else below.
+      if (spaceAbove >= menuH || spaceAbove >= spaceBelow) {
+        maxHeight = Math.max(minMenuH, spaceAbove);
+        if (el) el.style.maxHeight = `${maxHeight}px`;
+        const h = el?.offsetHeight ?? Math.min(menuH, maxHeight);
+        top = anchor.top - h - topGap;
+        left = anchor.left;
+      } else {
+        maxHeight = Math.max(minMenuH, spaceBelow);
+        if (el) el.style.maxHeight = `${maxHeight}px`;
+        top = anchor.bottom + gap;
+        left = anchor.left;
+      }
       if (left + menuW > window.innerWidth - pad) {
         left = Math.max(pad, window.innerWidth - menuW - pad);
       }
       left = Math.max(pad, left);
-      if (top < pad) {
-        // Not enough room above — fall back below.
-        top = Math.min(anchor.bottom + 4, window.innerHeight - menuH - pad);
-      }
+      top = Math.max(pad, Math.min(top, window.innerHeight - (el?.offsetHeight ?? menuH) - pad));
     } else {
-      top = anchor.bottom + 4;
-      left = anchor.left;
+      // bottom (default)
+      if (spaceBelow >= menuH || spaceBelow >= spaceAbove) {
+        maxHeight = Math.max(minMenuH, spaceBelow);
+        if (el) el.style.maxHeight = `${maxHeight}px`;
+        top = anchor.bottom + gap;
+        left = anchor.left;
+      } else {
+        maxHeight = Math.max(minMenuH, spaceAbove);
+        if (el) el.style.maxHeight = `${maxHeight}px`;
+        const h = el?.offsetHeight ?? Math.min(menuH, maxHeight);
+        top = anchor.top - h - topGap;
+        left = anchor.left;
+      }
       if (left + menuW > window.innerWidth - pad) {
         left = Math.max(pad, window.innerWidth - menuW - pad);
       }
       left = Math.max(pad, left);
-      if (top + menuH > window.innerHeight - pad) {
-        top = Math.max(pad, anchor.top - menuH - 4);
-      }
+      top = Math.max(pad, Math.min(top, window.innerHeight - (el?.offsetHeight ?? menuH) - pad));
     }
-    setPos({ top, left, ready: true });
+    setPos({ top, left, maxHeight, ready: true });
   }, [props.open, props.anchor, minWidth, placement]);
 
   useEffect(() => {
@@ -173,7 +210,7 @@ export function FloatingMenu(props: {
       data-testid={props.testId}
       data-floating-menu=""
       className={cn(
-        "project-context-menu surface-panel fixed overflow-hidden py-1 shadow-2xl",
+        "project-context-menu surface-panel fixed overflow-x-hidden overflow-y-auto py-1 shadow-2xl",
         !pos.ready && "invisible",
         props.className,
       )}
@@ -181,6 +218,7 @@ export function FloatingMenu(props: {
         top: pos.top,
         left: pos.left,
         minWidth,
+        ...(pos.maxHeight > 0 ? { maxHeight: pos.maxHeight } : {}),
         zIndex,
       }}
       onMouseDown={(e) => e.stopPropagation()}

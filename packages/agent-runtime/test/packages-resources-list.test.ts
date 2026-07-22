@@ -19,6 +19,8 @@ describe("packages and resources listing", () => {
     expect(packageKindFromSource("lodash@4")).toBe("npm");
     expect(packageKindFromSource("https://github.com/acme/pkg.git")).toBe("git");
     expect(packageKindFromSource("./vendor/pkg")).toBe("local");
+    expect(packageKindFromSource("C:\\vendor\\pkg")).toBe("local");
+    expect(packageKindFromSource("..\\vendor\\pkg")).toBe("local");
 
     const root = await mkdtemp(join(tmpdir(), "pix-pkg-list-"));
     temporaryDirectories.push(root);

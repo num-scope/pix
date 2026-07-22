@@ -20,6 +20,81 @@ export interface ModelSummary {
   source: "builtin" | "custom";
 }
 
+/** pi-supported streaming API types for custom providers in models.json. */
+export type CustomModelApi =
+  | "openai-completions"
+  | "openai-responses"
+  | "anthropic-messages"
+  | "google-generative-ai";
+
+/** Credential-blind projection of one model entry inside models.json. */
+export interface ModelsJsonModelView {
+  id: string;
+  name?: string;
+  reasoning?: boolean;
+  input?: "text" | "text-image";
+  contextWindow?: number;
+  maxTokens?: number;
+  costInput?: number;
+  costOutput?: number;
+  costCacheRead?: number;
+  costCacheWrite?: number;
+}
+
+/** Credential-blind projection of one provider block from models.json. */
+export interface ModelsJsonProviderView {
+  provider: string;
+  baseUrl?: string;
+  api?: string;
+  authHeader?: boolean;
+  models: ModelsJsonModelView[];
+  /** True when models.json declares an apiKey field (value is never exposed). */
+  hasApiKeyField: boolean;
+}
+
+/**
+ * Safe view of `~/.pi/agent/models.json` (or PI_CODING_AGENT_DIR).
+ * Never includes apiKey / header secret values.
+ */
+export interface ModelsJsonConfigView {
+  path: string;
+  exists: boolean;
+  providers: ModelsJsonProviderView[];
+  error?: string;
+}
+
+/**
+ * Upsert a custom provider/model into models.json (pi models.md shape).
+ * `apiKey` is applied via AuthStorage (never projected back to the renderer).
+ */
+export interface UpsertCustomProviderInput {
+  provider: string;
+  baseUrl: string;
+  api: CustomModelApi;
+  /** Optional; stored through setRuntimeApiKey, not echoed in config views. */
+  apiKey?: string;
+  /** When true, pi sends `Authorization: Bearer <apiKey>`. */
+  authHeader?: boolean;
+  modelId: string;
+  modelName?: string;
+  reasoning?: boolean;
+  /** pi model `input`: text only or text+image. Default text. */
+  input?: "text" | "text-image";
+  /** Default 128000 per pi models.md. */
+  contextWindow?: number;
+  /** Default 16384 per pi models.md. */
+  maxTokens?: number;
+  /** $/M tokens — default 0. */
+  costInput?: number;
+  costOutput?: number;
+  costCacheRead?: number;
+  costCacheWrite?: number;
+  /** Edit mode: previous provider id when renaming/moving a model. */
+  previousProvider?: string;
+  /** Edit mode: previous model id when renaming within or across providers. */
+  previousModelId?: string;
+}
+
 /** Non-secret provider credential status (never includes API keys or tokens). */
 export interface ProviderAuthSummary {
   provider: string;
@@ -34,7 +109,72 @@ export interface ProviderAuthSummary {
     | "models_json_command";
   label?: string;
   modelCount: number;
-  oauthAvailable: boolean;
+  /** Provider exposes an OAuth login flow. */
+  oauthSupported: boolean;
+  /** The currently stored credential is OAuth. */
+  oauthActive: boolean;
+}
+
+export type ProviderOAuthPrompt =
+  | {
+      type: "text" | "secret" | "manual_code";
+      message: string;
+      placeholder?: string;
+    }
+  | {
+      type: "select";
+      message: string;
+      options: Array<{ id: string; label: string; description?: string }>;
+    };
+
+export type ProviderOAuthUpdate =
+  | { stage: "prompt"; promptId: string; prompt: ProviderOAuthPrompt }
+  | { stage: "auth_url"; url: string; instructions?: string }
+  | {
+      stage: "device_code";
+      userCode: string;
+      verificationUri: string;
+      intervalSeconds?: number;
+      expiresInSeconds?: number;
+    }
+  | { stage: "info"; message: string; links?: Array<{ url: string; label?: string }> }
+  | { stage: "progress"; message: string }
+  | { stage: "complete" }
+  | { stage: "error"; message: string }
+  | { stage: "cancelled" };
+
+export interface ProviderOAuthEvent {
+  operationId: string;
+  provider: string;
+  update: ProviderOAuthUpdate;
+}
+
+export type ProviderUsageStatus = "ok" | "needs-auth" | "error";
+
+export interface ProviderUsageLimit {
+  label: string;
+  usedPercent: number;
+  resetsAt?: string;
+  windowDurationMins?: number;
+  detail?: string;
+}
+
+export interface ProviderUsageLine {
+  label: string;
+  value: string;
+  subtitle?: string;
+}
+
+/** Live account quota returned by a provider endpoint; never contains credentials. */
+export interface ProviderUsageSnapshot {
+  provider: string;
+  displayName: string;
+  updatedAt: string;
+  status: ProviderUsageStatus;
+  limits: ProviderUsageLimit[];
+  usageLines: ProviderUsageLine[];
+  planName?: string;
+  detail?: string;
 }
 
 export interface ProjectTrustSummary {
@@ -61,6 +201,19 @@ export interface SessionUsageSummary {
   };
 }
 
+/** Executable command exposed by the active pi session. */
+export interface SlashCommandSummary {
+  name: string;
+  description: string;
+  source: "extension" | "prompt" | "skill";
+  argumentHint?: string;
+}
+
+export interface QueuedMessages {
+  steering: string[];
+  followUp: string[];
+}
+
 export interface HostSnapshot {
   runtimeId: string;
   sequence: number;
@@ -75,6 +228,8 @@ export interface HostSnapshot {
   thinkingLevel?: string;
   availableThinkingLevels?: string[];
   usage?: SessionUsageSummary;
+  slashCommands: SlashCommandSummary[];
+  queuedMessages: QueuedMessages;
   activeTools: string[];
   projectTrusted: boolean;
   trust?: ProjectTrustSummary;
@@ -91,7 +246,10 @@ export interface HostSnapshot {
 
 export type RuntimeEvent =
   | { type: "agent.started" | "agent.settled" }
+  | { type: "user.message"; content: string }
+  | { type: "queue.updated"; steering: string[]; followUp: string[] }
   | { type: "message.delta"; delta: string }
+  | { type: "thinking.delta"; delta: string }
   | { type: "message.completed"; reason: "stop" | "length" | "toolUse" }
   | { type: "message.failed"; reason: "aborted" | "error"; message: string }
   | { type: "tool.started"; toolCallId: string; toolName: string; args: unknown }
@@ -158,7 +316,7 @@ export interface SessionThreadSummary {
 
 /** History used to rebuild the timeline after open/switch/new/fork. */
 export interface SessionHistoryMessage {
-  role: "user" | "assistant" | "tool" | "system";
+  role: "user" | "assistant" | "thinking" | "tool" | "system";
   text: string;
   toolName?: string;
   isError?: boolean;
@@ -312,6 +470,12 @@ export type HostCommand =
       type: "agent.prompt";
       requestId: string;
       message: string;
+      streamingBehavior?: "steer" | "followUp";
+    }
+  | {
+      protocolVersion: typeof IPC_PROTOCOL_VERSION;
+      type: "agent.queue.clear";
+      requestId: string;
     }
   | {
       protocolVersion: typeof IPC_PROTOCOL_VERSION;
@@ -361,6 +525,23 @@ export type HostCommand =
     }
   | {
       protocolVersion: typeof IPC_PROTOCOL_VERSION;
+      type: "models.config.get";
+      requestId: string;
+    }
+  | {
+      protocolVersion: typeof IPC_PROTOCOL_VERSION;
+      type: "models.config.upsert";
+      requestId: string;
+      input: UpsertCustomProviderInput;
+    }
+  | {
+      protocolVersion: typeof IPC_PROTOCOL_VERSION;
+      type: "models.config.remove";
+      requestId: string;
+      provider: string;
+    }
+  | {
+      protocolVersion: typeof IPC_PROTOCOL_VERSION;
       type: "thinking.set";
       requestId: string;
       level: string;
@@ -368,6 +549,11 @@ export type HostCommand =
   | {
       protocolVersion: typeof IPC_PROTOCOL_VERSION;
       type: "providers.list";
+      requestId: string;
+    }
+  | {
+      protocolVersion: typeof IPC_PROTOCOL_VERSION;
+      type: "providers.usage";
       requestId: string;
     }
   | {
@@ -382,6 +568,27 @@ export type HostCommand =
       type: "providers.clearAuth";
       requestId: string;
       provider: string;
+    }
+  | {
+      protocolVersion: typeof IPC_PROTOCOL_VERSION;
+      type: "providers.oauth.start";
+      requestId: string;
+      provider: string;
+    }
+  | {
+      protocolVersion: typeof IPC_PROTOCOL_VERSION;
+      type: "providers.oauth.respond";
+      requestId: string;
+      operationId: string;
+      promptId: string;
+      value?: string;
+      cancelled?: boolean;
+    }
+  | {
+      protocolVersion: typeof IPC_PROTOCOL_VERSION;
+      type: "providers.oauth.cancel";
+      requestId: string;
+      operationId: string;
     }
   | {
       protocolVersion: typeof IPC_PROTOCOL_VERSION;
@@ -571,9 +778,28 @@ export type HostEvent =
     }
   | {
       protocolVersion: typeof IPC_PROTOCOL_VERSION;
+      type: "models.config";
+      requestId?: string;
+      config: ModelsJsonConfigView;
+    }
+  | {
+      protocolVersion: typeof IPC_PROTOCOL_VERSION;
       type: "providers.list";
       requestId?: string;
       providers: ProviderAuthSummary[];
+    }
+  | {
+      protocolVersion: typeof IPC_PROTOCOL_VERSION;
+      type: "providers.usage";
+      requestId?: string;
+      usage: ProviderUsageSnapshot[];
+    }
+  | {
+      protocolVersion: typeof IPC_PROTOCOL_VERSION;
+      type: "providers.oauth";
+      requestId: string;
+      provider: string;
+      update: ProviderOAuthUpdate;
     }
   | {
       protocolVersion: typeof IPC_PROTOCOL_VERSION;
@@ -589,6 +815,10 @@ export type HostEvent =
     };
 
 export interface PixDesktopApi {
+  appearance: {
+    /** Keep native window materials aligned with the renderer theme. */
+    setThemeSource(source: "light" | "dark" | "system"): Promise<void>;
+  };
   host: {
     start(options?: {
       cwd?: string;
@@ -608,6 +838,8 @@ export interface PixDesktopApi {
       options?: { resumeRecent?: boolean; sessionFile?: string },
     ): Promise<HostSnapshot>;
     pickFolder(): Promise<string | undefined>;
+    /** Select readable files or folders to pass to pi as path context. */
+    pickAttachments(): Promise<string[]>;
     /**
      * Ensure a default project folder under Documents/Pix/YYYY-MM-DD
      * (reuse today's folder if it already exists). Returns absolute path.
@@ -622,6 +854,10 @@ export interface PixDesktopApi {
     removeRecent(cwd: string): Promise<string[]>;
     /** Reveal path in Finder / Explorer. */
     revealInFolder(cwd: string): Promise<void>;
+    /** Open a file referenced by rendered conversation content. */
+    openFile(path: string, location?: { line?: number; column?: number }): Promise<void>;
+    /** Open a safe external link outside the Electron renderer. */
+    openExternal(url: string): Promise<void>;
     /**
      * Detach from the active project (stop host, clear cwd).
      * Does not remove recent list. Next send may auto-create a default workspace.
@@ -723,15 +959,36 @@ export interface PixDesktopApi {
   models: {
     list(): Promise<ModelSummary[]>;
     set(provider: string, id: string): Promise<HostSnapshot>;
+    /** Credential-blind view of pi models.json. */
+    getConfig(): Promise<ModelsJsonConfigView>;
+    /** Upsert a custom provider/model into models.json (pi-native format). */
+    upsertCustomProvider(input: UpsertCustomProviderInput): Promise<ModelsJsonConfigView>;
+    /** Remove a provider block from models.json. */
+    removeCustomProvider(provider: string): Promise<ModelsJsonConfigView>;
+    /** Open models.json in the OS default editor (creates a template if missing). */
+    openConfig(): Promise<void>;
+    /** Reveal models.json in the file manager. */
+    revealConfig(): Promise<void>;
   };
   thinking: {
     set(level: string): Promise<HostSnapshot>;
   };
   providers: {
     list(): Promise<ProviderAuthSummary[]>;
+    /** Fetches live plan limits without exposing provider credentials. */
+    usage(): Promise<ProviderUsageSnapshot[]>;
     /** Stores API key via pi ModelRuntime; never returned by list(). */
     setApiKey(provider: string, apiKey: string): Promise<ProviderAuthSummary[]>;
     clearAuth(provider: string): Promise<ProviderAuthSummary[]>;
+    startOAuth(provider: string, operationId?: string): Promise<string>;
+    respondOAuth(
+      operationId: string,
+      promptId: string,
+      value?: string,
+      cancelled?: boolean,
+    ): Promise<void>;
+    cancelOAuth(operationId: string): Promise<void>;
+    onOAuthEvent(listener: (event: ProviderOAuthEvent) => void): () => void;
   };
   /** Visual editor for pi settings.json (global). */
   settings: {
@@ -739,7 +996,8 @@ export interface PixDesktopApi {
     patch(patch: PiSettingsPatch): Promise<PiSettingsView>;
   };
   agent: {
-    prompt(message: string): Promise<HostSnapshot>;
+    prompt(message: string, streamingBehavior?: "steer" | "followUp"): Promise<HostSnapshot>;
+    clearQueue(): Promise<HostSnapshot>;
     abort(): Promise<HostSnapshot>;
   };
   session: {
@@ -771,11 +1029,7 @@ export interface PixDesktopApi {
      * Search official pi packages from the npm registry (`keywords:pi-package`).
      * Used by the Discover tab for one-click install. Supports pagination via `from`.
      */
-    searchCatalog(
-      query?: string,
-      size?: number,
-      from?: number,
-    ): Promise<CatalogSearchResult>;
+    searchCatalog(query?: string, size?: number, from?: number): Promise<CatalogSearchResult>;
   };
   resources: {
     list(): Promise<ResourceSummary[]>;
@@ -851,6 +1105,82 @@ function isProjectTrustSummary(value: unknown): value is ProjectTrustSummary {
   );
 }
 
+const CUSTOM_MODEL_APIS: readonly CustomModelApi[] = [
+  "openai-completions",
+  "openai-responses",
+  "anthropic-messages",
+  "google-generative-ai",
+];
+
+function isCustomModelApi(value: unknown): value is CustomModelApi {
+  return typeof value === "string" && (CUSTOM_MODEL_APIS as readonly string[]).includes(value);
+}
+
+function isOptionalFiniteNumber(value: unknown): boolean {
+  return value === undefined || (typeof value === "number" && Number.isFinite(value));
+}
+
+function isUpsertCustomProviderInput(value: unknown): value is UpsertCustomProviderInput {
+  if (!isRecord(value)) return false;
+  if (typeof value.provider !== "string" || !value.provider.trim()) return false;
+  if (typeof value.baseUrl !== "string" || !value.baseUrl.trim()) return false;
+  if (!isCustomModelApi(value.api)) return false;
+  if (typeof value.modelId !== "string" || !value.modelId.trim()) return false;
+  if (value.apiKey !== undefined && typeof value.apiKey !== "string") return false;
+  if (value.authHeader !== undefined && typeof value.authHeader !== "boolean") return false;
+  if (value.modelName !== undefined && typeof value.modelName !== "string") return false;
+  if (value.reasoning !== undefined && typeof value.reasoning !== "boolean") return false;
+  if (value.input !== undefined && value.input !== "text" && value.input !== "text-image") {
+    return false;
+  }
+  if (!isOptionalFiniteNumber(value.contextWindow)) return false;
+  if (!isOptionalFiniteNumber(value.maxTokens)) return false;
+  if (!isOptionalFiniteNumber(value.costInput)) return false;
+  if (!isOptionalFiniteNumber(value.costOutput)) return false;
+  if (!isOptionalFiniteNumber(value.costCacheRead)) return false;
+  if (!isOptionalFiniteNumber(value.costCacheWrite)) return false;
+  if (value.previousProvider !== undefined && typeof value.previousProvider !== "string") {
+    return false;
+  }
+  if (value.previousModelId !== undefined && typeof value.previousModelId !== "string") {
+    return false;
+  }
+  return true;
+}
+
+function isModelsJsonModelView(value: unknown): value is ModelsJsonModelView {
+  if (!isRecord(value) || typeof value.id !== "string") return false;
+  if (value.name !== undefined && typeof value.name !== "string") return false;
+  if (value.reasoning !== undefined && typeof value.reasoning !== "boolean") return false;
+  if (value.input !== undefined && value.input !== "text" && value.input !== "text-image") {
+    return false;
+  }
+  if (!isOptionalFiniteNumber(value.contextWindow)) return false;
+  if (!isOptionalFiniteNumber(value.maxTokens)) return false;
+  if (!isOptionalFiniteNumber(value.costInput)) return false;
+  if (!isOptionalFiniteNumber(value.costOutput)) return false;
+  if (!isOptionalFiniteNumber(value.costCacheRead)) return false;
+  if (!isOptionalFiniteNumber(value.costCacheWrite)) return false;
+  return true;
+}
+
+function isModelsJsonConfigView(value: unknown): value is ModelsJsonConfigView {
+  if (!isRecord(value) || typeof value.path !== "string" || typeof value.exists !== "boolean") {
+    return false;
+  }
+  if (value.error !== undefined && typeof value.error !== "string") return false;
+  if (!Array.isArray(value.providers)) return false;
+  return value.providers.every((row) => {
+    if (!isRecord(row) || typeof row.provider !== "string") return false;
+    if (row.baseUrl !== undefined && typeof row.baseUrl !== "string") return false;
+    if (row.api !== undefined && typeof row.api !== "string") return false;
+    if (row.authHeader !== undefined && typeof row.authHeader !== "boolean") return false;
+    if (typeof row.hasApiKeyField !== "boolean") return false;
+    if (!Array.isArray(row.models)) return false;
+    return row.models.every(isModelsJsonModelView);
+  });
+}
+
 function isModelSummary(value: unknown): value is ModelSummary {
   return (
     isRecord(value) &&
@@ -866,7 +1196,9 @@ function isProviderAuthSummary(value: unknown): value is ProviderAuthSummary {
   if (!isRecord(value)) return false;
   if (typeof value.provider !== "string" || typeof value.displayName !== "string") return false;
   if (typeof value.configured !== "boolean" || typeof value.modelCount !== "number") return false;
-  if (typeof value.oauthAvailable !== "boolean") return false;
+  if (typeof value.oauthSupported !== "boolean" || typeof value.oauthActive !== "boolean") {
+    return false;
+  }
   if (value.label !== undefined && typeof value.label !== "string") return false;
   if (value.source !== undefined) {
     if (typeof value.source !== "string") return false;
@@ -886,6 +1218,126 @@ function isProviderAuthSummary(value: unknown): value is ProviderAuthSummary {
   // Reject accidental secret leakage in projection
   if ("key" in value || "apiKey" in value || "token" in value) return false;
   return true;
+}
+
+function isProviderOAuthPrompt(value: unknown): value is ProviderOAuthPrompt {
+  if (!isRecord(value) || typeof value.type !== "string" || typeof value.message !== "string") {
+    return false;
+  }
+  if (value.type === "select") {
+    return (
+      Array.isArray(value.options) &&
+      value.options.every(
+        (option) =>
+          isRecord(option) &&
+          typeof option.id === "string" &&
+          typeof option.label === "string" &&
+          (option.description === undefined || typeof option.description === "string"),
+      )
+    );
+  }
+  return (
+    (value.type === "text" || value.type === "secret" || value.type === "manual_code") &&
+    (value.placeholder === undefined || typeof value.placeholder === "string")
+  );
+}
+
+function isProviderOAuthUpdate(value: unknown): value is ProviderOAuthUpdate {
+  if (!isRecord(value) || typeof value.stage !== "string" || containsSecretField(value))
+    return false;
+  switch (value.stage) {
+    case "prompt":
+      return typeof value.promptId === "string" && isProviderOAuthPrompt(value.prompt);
+    case "auth_url":
+      return (
+        typeof value.url === "string" &&
+        (value.instructions === undefined || typeof value.instructions === "string")
+      );
+    case "device_code":
+      return (
+        typeof value.userCode === "string" &&
+        typeof value.verificationUri === "string" &&
+        (value.intervalSeconds === undefined || typeof value.intervalSeconds === "number") &&
+        (value.expiresInSeconds === undefined || typeof value.expiresInSeconds === "number")
+      );
+    case "info":
+      return (
+        typeof value.message === "string" &&
+        (value.links === undefined ||
+          (Array.isArray(value.links) &&
+            value.links.every(
+              (link) =>
+                isRecord(link) &&
+                typeof link.url === "string" &&
+                (link.label === undefined || typeof link.label === "string"),
+            )))
+      );
+    case "progress":
+    case "error":
+      return typeof value.message === "string";
+    case "complete":
+    case "cancelled":
+      return true;
+    default:
+      return false;
+  }
+}
+
+function isProviderUsageLimit(value: unknown): value is ProviderUsageLimit {
+  return (
+    isRecord(value) &&
+    typeof value.label === "string" &&
+    typeof value.usedPercent === "number" &&
+    Number.isFinite(value.usedPercent) &&
+    value.usedPercent >= 0 &&
+    value.usedPercent <= 100 &&
+    (value.resetsAt === undefined || typeof value.resetsAt === "string") &&
+    (value.windowDurationMins === undefined ||
+      (typeof value.windowDurationMins === "number" && value.windowDurationMins >= 0)) &&
+    (value.detail === undefined || typeof value.detail === "string")
+  );
+}
+
+function isProviderUsageLine(value: unknown): value is ProviderUsageLine {
+  return (
+    isRecord(value) &&
+    typeof value.label === "string" &&
+    typeof value.value === "string" &&
+    (value.subtitle === undefined || typeof value.subtitle === "string")
+  );
+}
+
+function containsSecretField(value: unknown): boolean {
+  if (Array.isArray(value)) return value.some(containsSecretField);
+  if (!isRecord(value)) return false;
+  for (const [key, nested] of Object.entries(value)) {
+    if (
+      /^(?:api[-_]?key|key|token|access[-_]?token|refresh[-_]?token|authorization|credentials?|secret)$/i.test(
+        key,
+      )
+    ) {
+      return true;
+    }
+    if (containsSecretField(nested)) return true;
+  }
+  return false;
+}
+
+function isProviderUsageSnapshot(value: unknown): value is ProviderUsageSnapshot {
+  return (
+    isRecord(value) &&
+    typeof value.provider === "string" &&
+    typeof value.displayName === "string" &&
+    typeof value.updatedAt === "string" &&
+    (value.status === "ok" || value.status === "needs-auth" || value.status === "error") &&
+    Array.isArray(value.limits) &&
+    value.limits.every(isProviderUsageLimit) &&
+    Array.isArray(value.usageLines) &&
+    value.usageLines.every(isProviderUsageLine) &&
+    (value.planName === undefined || typeof value.planName === "string") &&
+    (value.detail === undefined || typeof value.detail === "string") &&
+    !containsSecretField(value)
+  );
 }
 
 function isSessionUsageSummary(value: unknown): value is SessionUsageSummary {
@@ -915,6 +1367,20 @@ function isHostSnapshot(value: unknown): value is HostSnapshot {
     (value.thinkingLevel === undefined || typeof value.thinkingLevel === "string") &&
     (value.availableThinkingLevels === undefined || isStringArray(value.availableThinkingLevels)) &&
     (value.usage === undefined || isSessionUsageSummary(value.usage)) &&
+    Array.isArray(value.slashCommands) &&
+    value.slashCommands.every(
+      (command) =>
+        isRecord(command) &&
+        typeof command.name === "string" &&
+        typeof command.description === "string" &&
+        (command.source === "extension" ||
+          command.source === "prompt" ||
+          command.source === "skill") &&
+        (command.argumentHint === undefined || typeof command.argumentHint === "string"),
+    ) &&
+    isRecord(value.queuedMessages) &&
+    isStringArray(value.queuedMessages.steering) &&
+    isStringArray(value.queuedMessages.followUp) &&
     isStringArray(value.activeTools) &&
     typeof value.projectTrusted === "boolean" &&
     (value.trust === undefined || isProjectTrustSummary(value.trust)) &&
@@ -931,7 +1397,12 @@ function isRuntimeEvent(value: unknown): value is RuntimeEvent {
     case "agent.started":
     case "agent.settled":
       return true;
+    case "user.message":
+      return typeof value.content === "string";
+    case "queue.updated":
+      return isStringArray(value.steering) && isStringArray(value.followUp);
     case "message.delta":
+    case "thinking.delta":
       return typeof value.delta === "string";
     case "message.completed":
       return value.reason === "stop" || value.reason === "length" || value.reason === "toolUse";
@@ -973,7 +1444,14 @@ export function isHostCommand(value: unknown): value is HostCommand {
       (value.projectTrusted === undefined || typeof value.projectTrusted === "boolean")
     );
   }
-  if (value.type === "agent.prompt") return typeof value.message === "string";
+  if (value.type === "agent.prompt") {
+    return (
+      typeof value.message === "string" &&
+      (value.streamingBehavior === undefined ||
+        value.streamingBehavior === "steer" ||
+        value.streamingBehavior === "followUp")
+    );
+  }
   if (value.type === "util.complete-text") {
     return (
       typeof value.prompt === "string" &&
@@ -991,12 +1469,25 @@ export function isHostCommand(value: unknown): value is HostCommand {
   if (value.type === "model.set") {
     return typeof value.provider === "string" && typeof value.id === "string";
   }
+  if (value.type === "models.config.get") return true;
+  if (value.type === "models.config.upsert") return isUpsertCustomProviderInput(value.input);
+  if (value.type === "models.config.remove") return typeof value.provider === "string";
   if (value.type === "thinking.set") return typeof value.level === "string";
-  if (value.type === "providers.list") return true;
+  if (value.type === "providers.list" || value.type === "providers.usage") return true;
   if (value.type === "providers.setApiKey") {
     return typeof value.provider === "string" && typeof value.apiKey === "string";
   }
   if (value.type === "providers.clearAuth") return typeof value.provider === "string";
+  if (value.type === "providers.oauth.start") return typeof value.provider === "string";
+  if (value.type === "providers.oauth.respond") {
+    return (
+      typeof value.operationId === "string" &&
+      typeof value.promptId === "string" &&
+      (value.value === undefined || typeof value.value === "string") &&
+      (value.cancelled === undefined || typeof value.cancelled === "boolean")
+    );
+  }
+  if (value.type === "providers.oauth.cancel") return typeof value.operationId === "string";
   if (value.type === "settings.get") return true;
   if (value.type === "settings.patch") {
     return isRecord(value.patch);
@@ -1026,6 +1517,7 @@ export function isHostCommand(value: unknown): value is HostCommand {
     value.type === "host.snapshot" ||
     value.type === "host.shutdown" ||
     value.type === "agent.abort" ||
+    value.type === "agent.queue.clear" ||
     value.type === "test.sequenceGap"
   );
 }
@@ -1045,7 +1537,9 @@ function isSessionThreadSummary(value: unknown): value is SessionThreadSummary {
 
 function isSessionHistoryMessage(value: unknown): value is SessionHistoryMessage {
   if (!isRecord(value) || typeof value.text !== "string") return false;
-  if (!["user", "assistant", "tool", "system"].includes(String(value.role))) return false;
+  if (!["user", "assistant", "thinking", "tool", "system"].includes(String(value.role))) {
+    return false;
+  }
   if (value.toolName !== undefined && typeof value.toolName !== "string") return false;
   if (value.isError !== undefined && typeof value.isError !== "boolean") return false;
   if (value.entryId !== undefined && typeof value.entryId !== "string") return false;
@@ -1169,8 +1663,18 @@ export function isHostEvent(value: unknown): value is HostEvent {
       return isProjectTrustSummary(value.trust);
     case "model.list":
       return Array.isArray(value.models) && value.models.every(isModelSummary);
+    case "models.config":
+      return isModelsJsonConfigView(value.config);
     case "providers.list":
       return Array.isArray(value.providers) && value.providers.every(isProviderAuthSummary);
+    case "providers.usage":
+      return Array.isArray(value.usage) && value.usage.every(isProviderUsageSnapshot);
+    case "providers.oauth":
+      return (
+        typeof value.requestId === "string" &&
+        typeof value.provider === "string" &&
+        isProviderOAuthUpdate(value.update)
+      );
     case "settings.view":
       return isPiSettingsView(value.settings);
     case "util.text":

@@ -8,6 +8,7 @@ import type {
   HostEvent,
   HostSnapshot,
   PackageSummary,
+  QueuedMessages,
   ResourceSummary,
   SessionHistoryMessage,
   SessionThreadSummary,
@@ -52,6 +53,7 @@ export interface ShellState {
   threads: SessionThreadSummary[];
   prompt: string;
   sentPrompts: string[];
+  queuedMessages: QueuedMessages;
   running: boolean;
   reviewOpen: boolean;
   /** Session environment panel (right rail). */
@@ -86,6 +88,7 @@ export interface ShellState {
   setThreads: (threads: SessionThreadSummary[]) => void;
   setPrompt: (prompt: string) => void;
   setSentPrompts: (prompts: string[] | ((current: string[]) => string[])) => void;
+  setQueuedMessages: (messages: QueuedMessages) => void;
   setRunning: (running: boolean) => void;
   setReviewOpen: (open: boolean | ((current: boolean) => boolean)) => void;
   setEnvPanelOpen: (open: boolean | ((current: boolean) => boolean)) => void;
@@ -121,6 +124,30 @@ export interface ShellState {
   }) => void;
   resetAfterStop: () => void;
   resetAfterCrash: (message: string) => void;
+}
+
+type RuntimeHostEvent = Extract<HostEvent, { type: "runtime.event" }>;
+
+export type RuntimeEventDelivery = "accept" | "duplicate" | "gap" | "stale-runtime";
+
+/**
+ * Command snapshots can overtake streamed events across Electron IPC channels.
+ * Events covered by that snapshot are still valid unless they were already recorded.
+ */
+export function classifyRuntimeEventDelivery(
+  state: Pick<ShellState, "runtimeId" | "lastSequence" | "events">,
+  event: RuntimeHostEvent,
+): RuntimeEventDelivery {
+  if (event.runtimeId !== state.runtimeId) return "stale-runtime";
+  const duplicate = state.events.some(
+    (item) =>
+      item.type === "runtime.event" &&
+      item.runtimeId === event.runtimeId &&
+      item.sequence === event.sequence,
+  );
+  if (duplicate) return "duplicate";
+  if (event.sequence > state.lastSequence + 1) return "gap";
+  return "accept";
 }
 
 function loadPref<T>(key: string, parse: (raw: string) => T | undefined, fallback: T): T {
@@ -194,6 +221,7 @@ export const useShellStore = create<ShellState>((set, get) => ({
   threads: [],
   prompt: "",
   sentPrompts: [],
+  queuedMessages: { steering: [], followUp: [] },
   running: false,
   reviewOpen: false,
   envPanelOpen: false,
@@ -227,6 +255,7 @@ export const useShellStore = create<ShellState>((set, get) => ({
     set((state) => ({
       sentPrompts: typeof prompts === "function" ? prompts(state.sentPrompts) : prompts,
     })),
+  setQueuedMessages: (queuedMessages) => set({ queuedMessages }),
   setRunning: (running) => set({ running }),
   setReviewOpen: (open) =>
     set((state) => ({
@@ -297,6 +326,7 @@ export const useShellStore = create<ShellState>((set, get) => ({
   acceptSnapshot: (snapshot) =>
     set({
       snapshot,
+      queuedMessages: snapshot.queuedMessages,
       runtimeId: snapshot.runtimeId,
       lastSequence: snapshot.sequence,
     }),
@@ -317,6 +347,7 @@ export const useShellStore = create<ShellState>((set, get) => ({
       // Drop in-flight stream only; do not thrash sidebar via extra list fetches.
       events: [],
       sentPrompts: [],
+      queuedMessages: input.snapshot.queuedMessages,
       lastFailure: undefined,
       running: false,
       view: "thread",
@@ -327,6 +358,7 @@ export const useShellStore = create<ShellState>((set, get) => ({
       threads: [],
       history: [],
       events: [],
+      queuedMessages: { steering: [], followUp: [] },
       running: false,
       runtimeId: undefined,
       lastSequence: 0,
@@ -337,6 +369,7 @@ export const useShellStore = create<ShellState>((set, get) => ({
       runtimeId: undefined,
       lastSequence: 0,
       running: false,
+      queuedMessages: { steering: [], followUp: [] },
       snapshot: undefined,
       status: message,
     }),

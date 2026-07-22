@@ -2,10 +2,35 @@
  * Codex / ChatGPT–style settings content column.
  * Large left-aligned title · section labels · grouped cards with rows.
  */
-import type { HostSnapshot, ModelSummary, PiSettingsPatch, PiSettingsView } from "@pix/contracts";
-import { Folder, MoreHorizontal, Search, Trash2 } from "lucide-react";
+import type {
+  CustomModelApi,
+  HostSnapshot,
+  ModelSummary,
+  PiSettingsPatch,
+  PiSettingsView,
+  ProviderAuthSummary,
+  ProviderOAuthEvent,
+  ProviderOAuthPrompt,
+  ProviderOAuthUpdate,
+  ProviderUsageSnapshot,
+} from "@pix/contracts";
+import {
+  Check,
+  ChevronRight,
+  Copy,
+  ExternalLink,
+  Folder,
+  LoaderCircle,
+  LogIn,
+  MoreHorizontal,
+  RotateCcw,
+  Search,
+  Trash2,
+  X,
+} from "lucide-react";
 import type { FormEvent } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { t, type Locale, type MessageKey } from "../../lib/i18n.ts";
 import {
   deleteThreadLocal,
@@ -47,7 +72,13 @@ import {
   saveConfirmArchive,
   saveConfirmDelete,
 } from "../../lib/behavior-prefs.ts";
-import { periodMessageKey, resolveProviderUsageLimit } from "../../lib/auth-usage-limits.ts";
+import {
+  formatResetCountdown,
+  formatUsageUpdatedAt,
+  formatWindowDuration,
+  remainingPercent,
+  usageTone,
+} from "../../lib/auth-usage-limits.ts";
 // loadConfirmDelete also used by archived list bulk actions
 import {
   loadPreventSleep,
@@ -566,36 +597,7 @@ function ShortcutsSection(
                 <div className="settings-row-copy min-w-0 flex-1">
                   <div className="settings-row-title">{tr(def.labelKey as MessageKey)}</div>
                 </div>
-                <div className="flex shrink-0 items-center gap-2">
-                  {effective && !recording ? (
-                    <button
-                      type="button"
-                      className="text-[11px] text-[var(--muted-foreground)] hover:text-[var(--foreground)]"
-                      data-testid={`shortcut-clear-${def.id}`}
-                      title={tr("shortcuts.clear")}
-                      onClick={() => {
-                        setOverrides(setShortcutOverride(def.id, ""));
-                        setConflict(undefined);
-                        setRecordingId(null);
-                      }}
-                    >
-                      {tr("shortcuts.clear")}
-                    </button>
-                  ) : null}
-                  {isCustom ? (
-                    <button
-                      type="button"
-                      className="text-[11px] text-[var(--muted-foreground)] hover:text-[var(--foreground)]"
-                      data-testid={`shortcut-reset-${def.id}`}
-                      onClick={() => {
-                        setOverrides(setShortcutOverride(def.id, null));
-                        setConflict(undefined);
-                        setRecordingId(null);
-                      }}
-                    >
-                      {tr("shortcuts.reset")}
-                    </button>
-                  ) : null}
+                <div className="flex shrink-0 items-center gap-1">
                   <button
                     type="button"
                     data-testid={`shortcut-bind-${def.id}`}
@@ -632,6 +634,36 @@ function ShortcutsSection(
                         {unbound || isCustom ? tr("shortcuts.none") : tr("shortcuts.clickToBind")}
                       </span>
                     )}
+                  </button>
+                  <button
+                    type="button"
+                    className="shortcut-action-btn"
+                    data-testid={`shortcut-reset-${def.id}`}
+                    title={tr("shortcuts.reset")}
+                    aria-label={tr("shortcuts.reset")}
+                    disabled={!isCustom}
+                    onClick={() => {
+                      setOverrides(setShortcutOverride(def.id, null));
+                      setConflict(undefined);
+                      setRecordingId(null);
+                    }}
+                  >
+                    <RotateCcw className="size-3.5" strokeWidth={1.75} />
+                  </button>
+                  <button
+                    type="button"
+                    className="shortcut-action-btn shortcut-action-delete"
+                    data-testid={`shortcut-clear-${def.id}`}
+                    title={tr("shortcuts.clear")}
+                    aria-label={tr("shortcuts.clear")}
+                    disabled={!effective}
+                    onClick={() => {
+                      setOverrides(setShortcutOverride(def.id, ""));
+                      setConflict(undefined);
+                      setRecordingId(null);
+                    }}
+                  >
+                    <Trash2 className="size-3.5" strokeWidth={1.75} />
                   </button>
                 </div>
               </div>
@@ -770,7 +802,10 @@ function NotificationsSection(
           onClick={() => void sendTest()}
         />
         {testNote ? (
-          <p className="m-0 text-[12px] text-[var(--muted-foreground)]" data-testid="settings-notify-test-note">
+          <p
+            className="m-0 text-[12px] text-[var(--muted-foreground)]"
+            data-testid="settings-notify-test-note"
+          >
             {testNote}
           </p>
         ) : null}
@@ -1231,39 +1266,78 @@ function BehaviorSection(
   );
 }
 
+const USAGE_LABEL_KEYS: Record<string, MessageKey> = {
+  "5h": "usage.metricSession5h",
+  Weekly: "usage.metricWeekly",
+  Session: "usage.metricSession",
+  Sonnet: "usage.metricSonnet",
+  Opus: "usage.metricOpus",
+  Credits: "usage.metricCredits",
+  "Key limit": "usage.metricKeyLimit",
+  Chat: "usage.metricChat",
+  Completions: "usage.metricCompletions",
+  "Web searches": "usage.metricWebSearches",
+  Balance: "usage.metricBalance",
+  Today: "usage.metricToday",
+  "This week": "usage.metricThisWeek",
+  "This month": "usage.metricThisMonth",
+  "Extra usage": "usage.metricExtraUsage",
+};
+
+function usageMetricLabel(
+  label: string,
+  tr: (key: MessageKey, vars?: Record<string, string>) => string,
+): string {
+  const key = USAGE_LABEL_KEYS[label];
+  return key ? tr(key) : label;
+}
+
+function usagePercent(value: number, locale: Locale): string {
+  return new Intl.NumberFormat(locale, { maximumFractionDigits: 1 }).format(value);
+}
+
+function usageProviderDetail(
+  provider: ProviderUsageSnapshot,
+  tr: (key: MessageKey, vars?: Record<string, string>) => string,
+): string | undefined {
+  if (provider.status === "needs-auth") return tr("usage.needsAuthHint");
+  if (provider.status !== "error") return provider.detail;
+  const status = provider.detail?.match(/HTTP (\d{3})/)?.[1];
+  return status ? tr("usage.requestFailed", { status }) : tr("usage.endpointUnavailable");
+}
+
 function UsageLimitsSection(
   props: SettingsPageProps & { tr: (key: MessageKey, vars?: Record<string, string>) => string },
 ) {
   const { tr } = props;
-  const [providers, setProviders] = useState<
-    Array<{ provider: string; displayName: string; configured: boolean; oauthActive: boolean }>
-  >([]);
+  const [usage, setUsage] = useState<ProviderUsageSnapshot[] | undefined>();
   const [loading, setLoading] = useState(false);
+  const [loadFailed, setLoadFailed] = useState(false);
+  const requestIdRef = useRef(0);
 
   async function refresh() {
+    const requestId = ++requestIdRef.current;
     setLoading(true);
+    setLoadFailed(false);
     try {
       await props.onEnsureHost();
-      const list = await window.pix.providers.list();
-      setProviders(
-        list
-          .filter((p) => p.configured || p.oauthAvailable)
-          .map((p) => ({
-            provider: p.provider,
-            displayName: p.displayName,
-            configured: p.configured,
-            oauthActive: p.oauthAvailable,
-          })),
-      );
+      const snapshots = await window.pix.providers.usage();
+      if (requestId === requestIdRef.current) setUsage(snapshots);
     } catch {
-      setProviders([]);
+      if (requestId === requestIdRef.current) {
+        setUsage((current) => current ?? []);
+        setLoadFailed(true);
+      }
     } finally {
-      setLoading(false);
+      if (requestId === requestIdRef.current) setLoading(false);
     }
   }
 
   useEffect(() => {
     void refresh();
+    return () => {
+      requestIdRef.current += 1;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -1273,64 +1347,130 @@ function UsageLimitsSection(
       testId="settings-usage"
       titleAction={
         <SettingsPillButton
-          label={loading ? "…" : tr("usage.refresh")}
+          label={loading ? tr("usage.refreshing") : tr("usage.refresh")}
           testId="usage-refresh"
           disabled={loading}
           onClick={() => void refresh()}
         />
       }
     >
-      <p className="mb-3 px-0.5 text-[12px] text-[var(--muted-foreground)]">
-        {tr("usage.pageHint")}
-      </p>
-      {providers.length === 0 ? (
-        <p className="m-0 text-[13px] text-[var(--text-subtle)]" data-testid="usage-empty">
-          {tr("usage.emptyAuth")}
-        </p>
+      {usage === undefined ? (
+        <div className="usage-loading" data-testid="usage-loading" aria-label={tr("usage.loading")}>
+          <span />
+          <span />
+        </div>
+      ) : usage.length === 0 ? (
+        <div className="usage-empty" data-testid="usage-empty">
+          <div className="usage-empty-title">
+            {loadFailed ? tr("usage.loadFailed") : tr("usage.empty")}
+          </div>
+          <p>{loadFailed ? tr("usage.loadFailedHint") : tr("usage.emptyHint")}</p>
+        </div>
       ) : (
-        <SettingsSectionBlock label={tr("section.usage")} testId="usage-limits-list">
-          {providers.map((p, index) => {
-            const info = resolveProviderUsageLimit(p.provider);
+        <div className="usage-provider-list" data-testid="usage-limits-list">
+          {usage.map((provider) => {
+            const updated = formatUsageUpdatedAt(provider.updatedAt, props.locale);
+            const providerDetail = usageProviderDetail(provider, tr);
             return (
-              <div
-                key={p.provider}
-                className={cn(
-                  "settings-row !flex-col !items-stretch gap-1.5",
-                  index === providers.length - 1 && "settings-row-last",
-                )}
-                data-testid={`usage-row-${p.provider}`}
+              <section
+                key={provider.provider}
+                className="usage-provider-card"
+                data-status={provider.status}
+                data-testid={`usage-card-${provider.provider}`}
               >
-                <div className="flex items-center justify-between gap-2">
-                  <div className="settings-row-title">{p.displayName}</div>
-                  <span className="settings-status-chip">
-                    {p.oauthActive ? tr("auth.oauthActive") : tr("auth.configured")}
+                <header className="usage-provider-header">
+                  <div className="usage-provider-identity">
+                    <div className="usage-provider-name-row">
+                      <h3>{provider.displayName}</h3>
+                      {provider.planName ? (
+                        <span className="usage-plan-pill">{provider.planName}</span>
+                      ) : null}
+                    </div>
+                    <div className="usage-provider-meta">
+                      <span>{provider.provider}</span>
+                      {updated ? <span>{tr("usage.updated", { time: updated })}</span> : null}
+                    </div>
+                  </div>
+                  <span className="usage-status-pill" data-status={provider.status}>
+                    {provider.status === "ok"
+                      ? tr("usage.statusLive")
+                      : provider.status === "needs-auth"
+                        ? tr("usage.statusNeedsAuth")
+                        : tr("usage.statusError")}
                   </span>
-                </div>
-                <div className="settings-row-desc font-mono text-[11px]">{p.provider}</div>
-                <div className="mt-1 grid grid-cols-2 gap-2 text-[12px]">
-                  <div className="rounded-lg bg-[var(--accent)]/50 px-2.5 py-2">
-                    <div className="text-[var(--text-subtle)]">{tr("usage.period")}</div>
-                    <div className="mt-0.5 font-medium text-[var(--foreground)]">
-                      {tr(periodMessageKey(info.period) as MessageKey)}
-                    </div>
+                </header>
+
+                {provider.status === "ok" ? (
+                  <div className="usage-meter-list">
+                    {provider.limits.map((limit, index) => {
+                      const remaining = remainingPercent(limit);
+                      const tone = usageTone(limit);
+                      const cadence =
+                        formatResetCountdown(limit.resetsAt, props.locale) ??
+                        formatWindowDuration(limit.windowDurationMins, props.locale);
+                      return (
+                        <div
+                          className="usage-meter"
+                          data-tone={tone}
+                          data-testid={`usage-limit-${provider.provider}-${index}`}
+                          key={`${limit.label}-${index}`}
+                        >
+                          <div className="usage-meter-heading">
+                            <span>{usageMetricLabel(limit.label, tr)}</span>
+                            <strong>
+                              {tr("usage.remaining", {
+                                percent: usagePercent(remaining, props.locale),
+                              })}
+                            </strong>
+                          </div>
+                          <div
+                            className="usage-meter-track"
+                            role="progressbar"
+                            aria-label={usageMetricLabel(limit.label, tr)}
+                            aria-valuemin={0}
+                            aria-valuemax={100}
+                            aria-valuenow={remaining}
+                          >
+                            <span style={{ width: `${remaining}%` }} />
+                          </div>
+                          <div className="usage-meter-footnote">
+                            <span>
+                              {tr("usage.used", {
+                                percent: usagePercent(limit.usedPercent, props.locale),
+                              })}
+                              {limit.detail ? ` · ${limit.detail}` : ""}
+                            </span>
+                            {cadence ? <span>{cadence}</span> : null}
+                          </div>
+                        </div>
+                      );
+                    })}
                   </div>
-                  <div className="rounded-lg bg-[var(--accent)]/50 px-2.5 py-2">
-                    <div className="text-[var(--text-subtle)]">{tr("usage.status")}</div>
-                    <div className="mt-0.5 font-medium text-[var(--foreground)]">
-                      {p.oauthActive || p.configured ? tr("auth.configured") : tr("auth.missing")}
-                    </div>
-                  </div>
-                </div>
-                {info.noteFallback ? (
-                  <p className="m-0 text-[12px] leading-snug text-[var(--muted-foreground)]">
-                    <span className="text-[var(--text-subtle)]">{tr("usage.note")}: </span>
-                    {info.noteFallback}
-                  </p>
                 ) : null}
-              </div>
+
+                {provider.usageLines.length > 0 ? (
+                  <dl className="usage-line-grid">
+                    {provider.usageLines.map((line, index) => (
+                      <div key={`${line.label}-${index}`}>
+                        <dt>{usageMetricLabel(line.label, tr)}</dt>
+                        <dd>{line.value}</dd>
+                        {line.subtitle ? <small>{line.subtitle}</small> : null}
+                      </div>
+                    ))}
+                  </dl>
+                ) : null}
+
+                {provider.status === "ok" &&
+                provider.limits.length === 0 &&
+                provider.usageLines.length === 0 ? (
+                  <p className="usage-provider-detail">{tr("usage.noData")}</p>
+                ) : providerDetail ? (
+                  <p className="usage-provider-detail">{providerDetail}</p>
+                ) : null}
+              </section>
             );
           })}
-        </SettingsSectionBlock>
+        </div>
       )}
     </SettingsPageShell>
   );
@@ -1544,26 +1684,77 @@ function AppearanceSection(
   );
 }
 
+type OAuthPromptUpdate = Extract<ProviderOAuthUpdate, { stage: "prompt" }>;
+type OAuthAuthUrlUpdate = Extract<ProviderOAuthUpdate, { stage: "auth_url" }>;
+type OAuthDeviceCodeUpdate = Extract<ProviderOAuthUpdate, { stage: "device_code" }>;
+
+interface OAuthDialogState {
+  operationId: string;
+  provider: string;
+  displayName: string;
+  prompt?: OAuthPromptUpdate;
+  authUrl?: OAuthAuthUrlUpdate;
+  deviceCode?: OAuthDeviceCodeUpdate;
+  message?: string;
+  links?: Array<{ url: string; label?: string }>;
+  terminal?: "complete" | "error" | "cancelled";
+}
+
+function applyOAuthEvent(state: OAuthDialogState, event: ProviderOAuthEvent): OAuthDialogState {
+  if (event.operationId !== state.operationId) return state;
+  const { update } = event;
+  switch (update.stage) {
+    case "prompt": {
+      const next = { ...state, prompt: update };
+      delete next.message;
+      return next;
+    }
+    case "auth_url":
+      return { ...state, authUrl: update };
+    case "device_code":
+      return { ...state, deviceCode: update };
+    case "info":
+      return {
+        ...state,
+        message: update.message,
+        ...(update.links ? { links: update.links } : {}),
+      };
+    case "progress":
+      return { ...state, message: update.message };
+    case "complete": {
+      const next: OAuthDialogState = { ...state, terminal: "complete" };
+      delete next.prompt;
+      delete next.message;
+      return next;
+    }
+    case "error": {
+      const next: OAuthDialogState = { ...state, terminal: "error", message: update.message };
+      delete next.prompt;
+      return next;
+    }
+    case "cancelled": {
+      const next: OAuthDialogState = { ...state, terminal: "cancelled" };
+      delete next.prompt;
+      delete next.message;
+      return next;
+    }
+  }
+}
+
 function ProvidersSection(
   props: SettingsPageProps & { tr: (key: MessageKey, vars?: Record<string, string>) => string },
 ) {
   const { tr } = props;
-  const [providers, setProviders] = useState<
-    Array<{
-      provider: string;
-      displayName: string;
-      configured: boolean;
-      source?: string;
-      label?: string;
-      modelCount: number;
-      oauthAvailable: boolean;
-    }>
-  >([]);
+  const [providers, setProviders] = useState<ProviderAuthSummary[]>([]);
   const [query, setQuery] = useState("");
   const [loading, setLoading] = useState(false);
   const [keyProvider, setKeyProvider] = useState("");
   const [apiKey, setApiKey] = useState("");
-  const [formNote, setFormNote] = useState<string>();
+  const [oauthDialog, setOAuthDialog] = useState<OAuthDialogState>();
+  const [oauthValue, setOAuthValue] = useState("");
+  const [oauthBusy, setOAuthBusy] = useState(false);
+  const oauthOperationId = useRef<string | undefined>(undefined);
+  const openedOAuthUrls = useRef(new Set<string>());
   const showAppError = useShellStore((s) => s.showAppError);
 
   async function refreshProviders() {
@@ -1590,6 +1781,35 @@ function ProvidersSection(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  useEffect(() => {
+    return window.pix.providers.onOAuthEvent((event) => {
+      if (event.operationId !== oauthOperationId.current) return;
+      setOAuthBusy(false);
+      setOAuthDialog((current) => (current ? applyOAuthEvent(current, event) : current));
+      if (event.update.stage === "prompt") setOAuthValue("");
+      const url =
+        event.update.stage === "auth_url"
+          ? event.update.url
+          : event.update.stage === "device_code"
+            ? event.update.verificationUri
+            : undefined;
+      if (url && !openedOAuthUrls.current.has(url)) {
+        openedOAuthUrls.current.add(url);
+        void window.pix.workspace.openExternal(url).catch((error: unknown) => {
+          showAppError(error instanceof Error ? error.message : "Failed to open OAuth URL");
+        });
+      }
+      if (event.update.stage === "complete") {
+        void window.pix.providers
+          .list()
+          .then(setProviders)
+          .catch((error: unknown) => {
+            showAppError(error instanceof Error ? error.message : "Failed to refresh providers");
+          });
+      }
+    });
+  }, [showAppError]);
+
   const filteredProviders = useMemo(() => {
     const q = query.trim().toLowerCase();
     if (!q) return providers;
@@ -1602,7 +1822,6 @@ function ProvidersSection(
 
   async function saveApiKey(event: FormEvent) {
     event.preventDefault();
-    setFormNote(undefined);
     if (!keyProvider.trim() || !apiKey.trim()) {
       showAppError(tr("auth.apiKeyRequired"));
       return;
@@ -1612,7 +1831,6 @@ function ProvidersSection(
       const list = await window.pix.providers.setApiKey(keyProvider.trim(), apiKey.trim());
       setProviders(list);
       setApiKey("");
-      setFormNote(`Saved key for ${keyProvider}`);
     } catch (error) {
       showAppError(error instanceof Error ? error.message : "Failed to save API key");
     } finally {
@@ -1624,13 +1842,68 @@ function ProvidersSection(
     setLoading(true);
     try {
       setProviders(await window.pix.providers.clearAuth(provider));
-      setFormNote(`Cleared ${provider}`);
     } catch (error) {
       showAppError(error instanceof Error ? error.message : "Failed to clear auth");
     } finally {
       setLoading(false);
     }
   }
+
+  async function startOAuth(provider: ProviderAuthSummary) {
+    const operationId = crypto.randomUUID();
+    oauthOperationId.current = operationId;
+    openedOAuthUrls.current.clear();
+    setOAuthValue("");
+    setOAuthBusy(true);
+    setOAuthDialog({
+      operationId,
+      provider: provider.provider,
+      displayName: provider.displayName,
+    });
+    try {
+      await window.pix.providers.startOAuth(provider.provider, operationId);
+    } catch (error) {
+      setOAuthBusy(false);
+      setOAuthDialog((current) =>
+        current?.operationId === operationId
+          ? {
+              ...current,
+              terminal: "error",
+              message: error instanceof Error ? error.message : "Failed to start OAuth login",
+            }
+          : current,
+      );
+    }
+  }
+
+  async function respondOAuth(prompt: OAuthPromptUpdate, value: string, cancelled = false) {
+    if (!oauthDialog) return;
+    setOAuthBusy(true);
+    try {
+      await window.pix.providers.respondOAuth(
+        oauthDialog.operationId,
+        prompt.promptId,
+        value,
+        cancelled,
+      );
+    } catch (error) {
+      setOAuthBusy(false);
+      showAppError(error instanceof Error ? error.message : "Failed to continue OAuth login");
+    }
+  }
+
+  function closeOAuthDialog() {
+    const dialog = oauthDialog;
+    oauthOperationId.current = undefined;
+    setOAuthDialog(undefined);
+    setOAuthBusy(false);
+    setOAuthValue("");
+    if (dialog && !dialog.terminal) {
+      void window.pix.providers.cancelOAuth(dialog.operationId).catch(() => undefined);
+    }
+  }
+
+  const oauthPrompt: ProviderOAuthPrompt | undefined = oauthDialog?.prompt?.prompt;
 
   return (
     <SettingsPageShell title={tr("section.auth")} testId="settings-providers">
@@ -1700,12 +1973,6 @@ function ProvidersSection(
             </div>
           </label>
         </form>
-
-        {formNote ? (
-          <p className="settings-form-note px-4 pb-3" data-testid="provider-form-note">
-            {formNote}
-          </p>
-        ) : null}
       </SettingsSectionBlock>
 
       <SettingsSectionBlock label={tr("section.auth")}>
@@ -1724,7 +1991,7 @@ function ProvidersSection(
                 <div className="settings-row-desc">
                   {provider.provider} · {provider.modelCount}
                   {provider.source ? ` · ${provider.source}` : ""}
-                  {provider.oauthAvailable ? ` · ${tr("auth.oauthActive")}` : ""}
+                  {provider.oauthActive ? ` · ${tr("auth.oauthActive")}` : ""}
                 </div>
               </div>
               <div className="flex shrink-0 items-center gap-2">
@@ -1732,10 +1999,16 @@ function ProvidersSection(
                   className="settings-status-chip"
                   data-testid={`provider-configured-${provider.provider}`}
                 >
-                  {provider.configured || provider.oauthAvailable
-                    ? tr("auth.configured")
-                    : tr("auth.missing")}
+                  {provider.configured ? tr("auth.configured") : tr("auth.missing")}
                 </span>
+                {provider.oauthSupported ? (
+                  <SettingsPillButton
+                    label={provider.oauthActive ? tr("auth.oauthRelogin") : tr("auth.oauthSignIn")}
+                    testId={`provider-oauth-${provider.provider}`}
+                    disabled={loading || Boolean(oauthDialog)}
+                    onClick={() => void startOAuth(provider)}
+                  />
+                ) : null}
                 <SettingsPillButton
                   label={tr("auth.clear")}
                   danger
@@ -1759,9 +2032,239 @@ function ProvidersSection(
           ) : null}
         </div>
       </SettingsSectionBlock>
+
+      {oauthDialog && typeof document !== "undefined"
+        ? createPortal(
+            <div
+              className="fixed inset-0 z-[11000] flex items-center justify-center bg-black/50 p-4"
+              data-testid="provider-oauth-dialog"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="provider-oauth-dialog-title"
+              onMouseDown={(event) => {
+                if (event.target === event.currentTarget) closeOAuthDialog();
+              }}
+            >
+              <div
+                className="provider-oauth-dialog surface-panel w-full max-w-[32rem] overflow-hidden shadow-2xl"
+                onMouseDown={(event) => event.stopPropagation()}
+              >
+                <div className="provider-oauth-header">
+                  <div className="provider-oauth-heading">
+                    <span className="provider-oauth-icon" aria-hidden>
+                      <LogIn size={17} strokeWidth={1.8} />
+                    </span>
+                    <div>
+                      <h2 id="provider-oauth-dialog-title" className="provider-oauth-title">
+                        {tr("auth.oauthTitle", { provider: oauthDialog.displayName })}
+                      </h2>
+                      <p>{tr("auth.oauthHint")}</p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    className="provider-oauth-close"
+                    aria-label={tr("auth.oauthClose")}
+                    onClick={closeOAuthDialog}
+                  >
+                    <X size={16} />
+                  </button>
+                </div>
+
+                <div className="provider-oauth-body">
+                  {!oauthDialog.terminal && oauthDialog.authUrl ? (
+                    <div className="provider-oauth-step" data-testid="provider-oauth-browser-step">
+                      <div className="provider-oauth-step-copy">
+                        <strong>{tr("auth.oauthBrowser")}</strong>
+                        <span>
+                          {oauthDialog.authUrl.instructions || tr("auth.oauthBrowserHint")}
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        className="settings-pill-btn"
+                        onClick={() =>
+                          void window.pix.workspace.openExternal(oauthDialog.authUrl?.url ?? "")
+                        }
+                      >
+                        <ExternalLink size={13} />
+                        {tr("auth.oauthOpenBrowser")}
+                      </button>
+                    </div>
+                  ) : null}
+
+                  {!oauthDialog.terminal && oauthDialog.deviceCode ? (
+                    <div className="provider-oauth-device" data-testid="provider-oauth-device-step">
+                      <span>{tr("auth.oauthDeviceCode")}</span>
+                      <button
+                        type="button"
+                        className="provider-oauth-code"
+                        data-testid="provider-oauth-device-code"
+                        onClick={() =>
+                          void navigator.clipboard.writeText(oauthDialog.deviceCode?.userCode ?? "")
+                        }
+                      >
+                        {oauthDialog.deviceCode.userCode}
+                        <Copy size={14} />
+                      </button>
+                      <button
+                        type="button"
+                        className="provider-oauth-link"
+                        onClick={() =>
+                          void window.pix.workspace.openExternal(
+                            oauthDialog.deviceCode?.verificationUri ?? "",
+                          )
+                        }
+                      >
+                        {oauthDialog.deviceCode.verificationUri}
+                        <ExternalLink size={12} />
+                      </button>
+                    </div>
+                  ) : null}
+
+                  {oauthDialog.message ? (
+                    <div
+                      className={cn(
+                        "provider-oauth-message",
+                        oauthDialog.terminal === "error" && "provider-oauth-message-error",
+                      )}
+                      data-testid="provider-oauth-message"
+                    >
+                      <p className="m-0">{oauthDialog.message}</p>
+                      {oauthDialog.terminal === "error" &&
+                      /fetch failed|ENOTFOUND|ECONNRESET|ECONNREFUSED|ETIMEDOUT|network|proxy/i.test(
+                        oauthDialog.message,
+                      ) ? (
+                        <p className="m-0 mt-2 opacity-90" data-testid="provider-oauth-network-hint">
+                          {tr("auth.oauthNetworkHint")}
+                          {oauthDialog.provider === "xai"
+                            ? ` ${tr("auth.oauthNetworkHintXai")}`
+                            : ""}
+                        </p>
+                      ) : null}
+                    </div>
+                  ) : null}
+                  {!oauthDialog.terminal && oauthDialog.links?.length ? (
+                    <div className="provider-oauth-links">
+                      {oauthDialog.links.map((link) => (
+                        <button
+                          key={link.url}
+                          type="button"
+                          onClick={() => void window.pix.workspace.openExternal(link.url)}
+                        >
+                          {link.label || link.url}
+                          <ExternalLink size={12} />
+                        </button>
+                      ))}
+                    </div>
+                  ) : null}
+
+                  {oauthDialog.terminal === "complete" ? (
+                    <div className="provider-oauth-result" data-testid="provider-oauth-complete">
+                      <span className="provider-oauth-result-icon provider-oauth-result-success">
+                        <Check size={19} strokeWidth={2} />
+                      </span>
+                      <div>
+                        <strong>{tr("auth.oauthSuccess")}</strong>
+                        <p>{tr("auth.oauthSuccessHint")}</p>
+                      </div>
+                    </div>
+                  ) : oauthDialog.terminal === "cancelled" ? (
+                    <div className="provider-oauth-result" data-testid="provider-oauth-cancelled">
+                      <span className="provider-oauth-result-icon">
+                        <X size={18} />
+                      </span>
+                      <div>
+                        <strong>{tr("auth.oauthCancelled")}</strong>
+                      </div>
+                    </div>
+                  ) : null}
+
+                  {!oauthDialog.terminal && oauthPrompt?.type === "select" ? (
+                    <div className="provider-oauth-prompt" data-testid="provider-oauth-select">
+                      <strong>{oauthPrompt.message}</strong>
+                      <div className="provider-oauth-options">
+                        {oauthPrompt.options.map((option) => (
+                          <button
+                            key={option.id}
+                            type="button"
+                            disabled={oauthBusy}
+                            onClick={() => void respondOAuth(oauthDialog.prompt!, option.id, false)}
+                          >
+                            <span>{option.label}</span>
+                            {option.description ? <small>{option.description}</small> : null}
+                            <ChevronRight size={15} />
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
+
+                  {!oauthDialog.terminal && oauthPrompt && oauthPrompt.type !== "select" ? (
+                    <form
+                      className="provider-oauth-prompt"
+                      data-testid="provider-oauth-prompt"
+                      onSubmit={(event) => {
+                        event.preventDefault();
+                        if (oauthDialog.prompt) {
+                          void respondOAuth(oauthDialog.prompt, oauthValue, false);
+                        }
+                      }}
+                    >
+                      <label htmlFor="provider-oauth-input">{oauthPrompt.message}</label>
+                      <div className="provider-oauth-input-row">
+                        <input
+                          id="provider-oauth-input"
+                          data-testid="provider-oauth-input"
+                          type={oauthPrompt.type === "secret" ? "password" : "text"}
+                          className="settings-input"
+                          value={oauthValue}
+                          placeholder={oauthPrompt.placeholder}
+                          autoComplete="off"
+                          autoFocus
+                          disabled={oauthBusy}
+                          onChange={(event) => setOAuthValue(event.target.value)}
+                        />
+                        <button
+                          type="submit"
+                          className="settings-primary-btn"
+                          data-testid="provider-oauth-continue"
+                          disabled={oauthBusy}
+                        >
+                          {tr("auth.oauthContinue")}
+                        </button>
+                      </div>
+                    </form>
+                  ) : null}
+
+                  {!oauthDialog.terminal && !oauthPrompt ? (
+                    <div className="provider-oauth-waiting" data-testid="provider-oauth-waiting">
+                      <LoaderCircle className="animate-spin" size={16} />
+                      <span>{tr("auth.oauthWaiting")}</span>
+                    </div>
+                  ) : null}
+                </div>
+
+                <div className="provider-oauth-footer">
+                  <button type="button" className="settings-pill-btn" onClick={closeOAuthDialog}>
+                    {oauthDialog.terminal ? tr("auth.oauthClose") : tr("common.cancel")}
+                  </button>
+                </div>
+              </div>
+            </div>,
+            document.body,
+          )
+        : null}
     </SettingsPageShell>
   );
 }
+
+const CUSTOM_MODEL_API_OPTIONS: Array<{ value: CustomModelApi; label: string }> = [
+  { value: "openai-completions", label: "openai-completions" },
+  { value: "openai-responses", label: "openai-responses" },
+  { value: "anthropic-messages", label: "anthropic-messages" },
+  { value: "google-generative-ai", label: "google-generative-ai" },
+];
 
 function ModelsSection(
   props: SettingsPageProps & { tr: (key: MessageKey, vars?: Record<string, string>) => string },
@@ -1771,6 +2274,29 @@ function ModelsSection(
   const [defaultKey, setDefaultKey] = useState("");
   const [query, setQuery] = useState("");
   const [loading, setLoading] = useState(false);
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const [dialogBusy, setDialogBusy] = useState(false);
+  /** When set, dialog is editing this models.json entry. */
+  const [editingOrigin, setEditingOrigin] = useState<{ provider: string; modelId: string } | null>(
+    null,
+  );
+  /** User-expanded built-in provider groups (search forces all matching groups open). */
+  const [expandedProviders, setExpandedProviders] = useState<Set<string>>(() => new Set());
+  const [providerId, setProviderId] = useState("");
+  const [baseUrl, setBaseUrl] = useState("");
+  const [api, setApi] = useState<CustomModelApi>("openai-completions");
+  const [apiKey, setApiKey] = useState("");
+  const [authHeader, setAuthHeader] = useState(false);
+  const [modelId, setModelId] = useState("");
+  const [modelName, setModelName] = useState("");
+  const [reasoning, setReasoning] = useState(false);
+  const [inputMode, setInputMode] = useState<"text" | "text-image">("text");
+  const [contextWindow, setContextWindow] = useState("128000");
+  const [maxTokens, setMaxTokens] = useState("16384");
+  const [costInput, setCostInput] = useState("0");
+  const [costOutput, setCostOutput] = useState("0");
+  const [costCacheRead, setCostCacheRead] = useState("0");
+  const [costCacheWrite, setCostCacheWrite] = useState("0");
   const sessionKey =
     props.snapshot?.model != null
       ? `${props.snapshot.model.provider}/${props.snapshot.model.id}`
@@ -1783,6 +2309,32 @@ function ModelsSection(
     const message =
       raw.replace(/^Error invoking remote method '[^']+':\s*(Error:\s*)?/i, "").trim() || fallback;
     showAppError(message);
+  }
+
+  function parseOptionalNumber(raw: string): number | undefined {
+    const t = raw.trim();
+    if (!t) return undefined;
+    const n = Number(t);
+    return Number.isFinite(n) ? n : undefined;
+  }
+
+  function resetCustomForm() {
+    setEditingOrigin(null);
+    setProviderId("");
+    setBaseUrl("");
+    setApi("openai-completions");
+    setApiKey("");
+    setAuthHeader(false);
+    setModelId("");
+    setModelName("");
+    setReasoning(false);
+    setInputMode("text");
+    setContextWindow("128000");
+    setMaxTokens("16384");
+    setCostInput("0");
+    setCostOutput("0");
+    setCostCacheRead("0");
+    setCostCacheWrite("0");
   }
 
   async function refresh() {
@@ -1811,6 +2363,75 @@ function ModelsSection(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  useEffect(() => {
+    if (!dialogOpen) return;
+    const onKey = (ev: KeyboardEvent) => {
+      if (ev.key === "Escape" && !dialogBusy) {
+        ev.preventDefault();
+        setDialogOpen(false);
+      }
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [dialogOpen, dialogBusy]);
+
+  function openCustomDialog() {
+    resetCustomForm();
+    setDialogOpen(true);
+  }
+
+  async function openEditCustomDialog(model: ModelSummary) {
+    resetCustomForm();
+    setEditingOrigin({ provider: model.provider, modelId: model.id });
+    setProviderId(model.provider);
+    setModelId(model.id);
+    setModelName(model.name || model.id);
+    setReasoning(Boolean(model.reasoning));
+    setDialogOpen(true);
+    setDialogBusy(true);
+    try {
+      await props.onEnsureHost();
+      const config = await window.pix.models.getConfig();
+      const provider = config.providers.find((row) => row.provider === model.provider);
+      if (!provider) {
+        showError(new Error("Model not found in models.json"), "Custom model missing");
+        return;
+      }
+      if (provider.baseUrl) setBaseUrl(provider.baseUrl);
+      if (
+        provider.api === "openai-completions" ||
+        provider.api === "openai-responses" ||
+        provider.api === "anthropic-messages" ||
+        provider.api === "google-generative-ai"
+      ) {
+        setApi(provider.api);
+      }
+      setAuthHeader(provider.authHeader === true);
+      const entry = provider.models.find((row) => row.id === model.id);
+      if (entry) {
+        if (entry.name) setModelName(entry.name);
+        if (typeof entry.reasoning === "boolean") setReasoning(entry.reasoning);
+        if (entry.input === "text" || entry.input === "text-image") setInputMode(entry.input);
+        if (entry.contextWindow != null) setContextWindow(String(entry.contextWindow));
+        if (entry.maxTokens != null) setMaxTokens(String(entry.maxTokens));
+        if (entry.costInput != null) setCostInput(String(entry.costInput));
+        if (entry.costOutput != null) setCostOutput(String(entry.costOutput));
+        if (entry.costCacheRead != null) setCostCacheRead(String(entry.costCacheRead));
+        if (entry.costCacheWrite != null) setCostCacheWrite(String(entry.costCacheWrite));
+      }
+    } catch (err) {
+      showError(err, "Failed to load custom model");
+    } finally {
+      setDialogBusy(false);
+    }
+  }
+
+  function closeCustomDialog() {
+    if (dialogBusy) return;
+    setDialogOpen(false);
+    setEditingOrigin(null);
+  }
+
   async function useInSession(model: ModelSummary) {
     setLoading(true);
     try {
@@ -1838,6 +2459,54 @@ function ModelsSection(
     }
   }
 
+  async function saveCustomProvider(event: FormEvent) {
+    event.preventDefault();
+    if (!providerId.trim() || !baseUrl.trim() || !modelId.trim()) {
+      showAppError(tr("models.customRequired"));
+      return;
+    }
+    setDialogBusy(true);
+    try {
+      await props.onEnsureHost();
+      const payload: Parameters<typeof window.pix.models.upsertCustomProvider>[0] = {
+        provider: providerId.trim(),
+        baseUrl: baseUrl.trim(),
+        api,
+        modelId: modelId.trim(),
+        input: inputMode,
+      };
+      if (modelName.trim()) payload.modelName = modelName.trim();
+      if (apiKey.trim()) payload.apiKey = apiKey.trim();
+      // Always persist authHeader when editing so unchecking clears models.json flag.
+      payload.authHeader = authHeader;
+      if (reasoning) payload.reasoning = true;
+      const ctx = parseOptionalNumber(contextWindow);
+      if (ctx != null) payload.contextWindow = ctx;
+      const maxOut = parseOptionalNumber(maxTokens);
+      if (maxOut != null) payload.maxTokens = maxOut;
+      const cIn = parseOptionalNumber(costInput);
+      if (cIn != null) payload.costInput = cIn;
+      const cOut = parseOptionalNumber(costOutput);
+      if (cOut != null) payload.costOutput = cOut;
+      const cRead = parseOptionalNumber(costCacheRead);
+      if (cRead != null) payload.costCacheRead = cRead;
+      const cWrite = parseOptionalNumber(costCacheWrite);
+      if (cWrite != null) payload.costCacheWrite = cWrite;
+      if (editingOrigin) {
+        payload.previousProvider = editingOrigin.provider;
+        payload.previousModelId = editingOrigin.modelId;
+      }
+      await window.pix.models.upsertCustomProvider(payload);
+      resetCustomForm();
+      setDialogOpen(false);
+      await refresh();
+    } catch (err) {
+      showError(err, "Failed to save custom model");
+    } finally {
+      setDialogBusy(false);
+    }
+  }
+
   const filteredModels = useMemo(() => {
     const q = query.trim().toLowerCase();
     if (!q) return models;
@@ -1856,7 +2525,91 @@ function ModelsSection(
     [filteredModels],
   );
 
-  function renderModelRows(list: ModelSummary[], emptyLabel: string) {
+  /** Group built-in models by provider for secondary headers (auth-style). */
+  const builtinByProvider = useMemo(() => {
+    const map = new Map<string, ModelSummary[]>();
+    for (const model of builtinModels) {
+      const list = map.get(model.provider) ?? [];
+      list.push(model);
+      map.set(model.provider, list);
+    }
+    return [...map.entries()]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([provider, list]) => ({
+        provider,
+        models: list.slice().sort((a, b) => (a.name || a.id).localeCompare(b.name || b.id)),
+      }));
+  }, [builtinModels]);
+
+  function renderModelRow(
+    model: ModelSummary,
+    options?: { last?: boolean; hideProviderPrefix?: boolean; allowEdit?: boolean },
+  ) {
+    const key = `${model.provider}/${model.id}`;
+    const isDefault = defaultKey === key;
+    const isSession = sessionKey === key;
+    return (
+      <div
+        key={key}
+        className={cn(
+          "settings-row",
+          options?.last && "settings-row-last",
+          (isDefault || isSession) && "bg-[color-mix(in_srgb,var(--ring,#0a84ff)_6%,transparent)]",
+        )}
+        data-testid={`model-row-${model.provider}-${model.id}`}
+        data-default={isDefault ? "true" : "false"}
+        data-session={isSession ? "true" : "false"}
+      >
+        <div className="settings-row-copy min-w-0 flex-1">
+          <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+            <span className="settings-row-title truncate">{model.name || model.id}</span>
+            {isDefault ? (
+              <span className="settings-model-badge settings-model-badge-default">
+                {tr("models.badgeDefault")}
+              </span>
+            ) : null}
+            {isSession ? (
+              <span className="settings-model-badge settings-model-badge-session">
+                {tr("models.badgeSession")}
+              </span>
+            ) : null}
+          </div>
+          <div className="settings-row-desc">
+            {options?.hideProviderPrefix ? model.id : `${model.provider}/${model.id}`}
+            {model.reasoning ? " · reasoning" : ""}
+          </div>
+        </div>
+        <div className="flex shrink-0 flex-wrap items-center justify-end gap-1.5">
+          {options?.allowEdit ? (
+            <SettingsPillButton
+              label={tr("models.customEdit")}
+              disabled={loading || dialogBusy}
+              onClick={() => void openEditCustomDialog(model)}
+              testId={`model-edit-${model.provider}-${model.id}`}
+            />
+          ) : null}
+          <SettingsPillButton
+            label={tr("models.useSession")}
+            disabled={loading || isSession}
+            onClick={() => void useInSession(model)}
+            testId={`model-use-${model.id}`}
+          />
+          <SettingsPillButton
+            label={tr("models.setDefault")}
+            disabled={loading || isDefault}
+            onClick={() => void setAsDefault(model)}
+            testId={`model-default-${model.id}`}
+          />
+        </div>
+      </div>
+    );
+  }
+
+  function renderModelRows(
+    list: ModelSummary[],
+    emptyLabel: string,
+    options?: { allowEdit?: boolean },
+  ) {
     if (list.length === 0) {
       return (
         <div className="settings-row settings-row-last">
@@ -1864,62 +2617,82 @@ function ModelsSection(
         </div>
       );
     }
-    return list.map((model, index) => {
-      const key = `${model.provider}/${model.id}`;
-      const isDefault = defaultKey === key;
-      const isSession = sessionKey === key;
-      return (
-        <div
-          key={key}
-          className={cn(
-            "settings-row",
-            index === list.length - 1 && "settings-row-last",
-            (isDefault || isSession) &&
-              "bg-[color-mix(in_srgb,var(--ring,#0a84ff)_6%,transparent)]",
-          )}
-          data-testid={`model-row-${model.provider}-${model.id}`}
-          data-default={isDefault ? "true" : "false"}
-          data-session={isSession ? "true" : "false"}
-        >
-          <div className="settings-row-copy min-w-0 flex-1">
-            <div className="flex min-w-0 flex-wrap items-center gap-1.5">
-              <span className="settings-row-title truncate">{model.name || model.id}</span>
-              {isDefault ? (
-                <span className="settings-model-badge settings-model-badge-default">
-                  {tr("models.badgeDefault")}
-                </span>
-              ) : null}
-              {isSession ? (
-                <span className="settings-model-badge settings-model-badge-session">
-                  {tr("models.badgeSession")}
-                </span>
-              ) : null}
-            </div>
-            <div className="settings-row-desc">
-              {model.provider}/{model.id}
-              {model.reasoning ? " · reasoning" : ""}
-            </div>
-          </div>
-          <div className="flex shrink-0 flex-wrap items-center justify-end gap-1.5">
-            <SettingsPillButton
-              label={tr("models.useSession")}
-              disabled={loading || isSession}
-              onClick={() => void useInSession(model)}
-              testId={`model-use-${model.id}`}
-            />
-            <SettingsPillButton
-              label={tr("models.setDefault")}
-              disabled={loading || isDefault}
-              onClick={() => void setAsDefault(model)}
-              testId={`model-default-${model.id}`}
-            />
-          </div>
-        </div>
-      );
-    });
+    return list.map((model, index) =>
+      renderModelRow(model, {
+        last: index === list.length - 1,
+        ...(options?.allowEdit ? { allowEdit: true } : {}),
+      }),
+    );
   }
 
   const searching = query.trim().length > 0;
+
+  function isBuiltinGroupOpen(provider: string): boolean {
+    // Search must always reveal matches — never leave groups collapsed while filtering.
+    if (searching) return true;
+    return expandedProviders.has(provider);
+  }
+
+  function toggleBuiltinGroup(provider: string) {
+    if (searching) return;
+    setExpandedProviders((prev) => {
+      const next = new Set(prev);
+      if (next.has(provider)) next.delete(provider);
+      else next.add(provider);
+      return next;
+    });
+  }
+
+  function renderBuiltinGrouped(emptyLabel: string) {
+    if (builtinByProvider.length === 0) {
+      return (
+        <div className="models-provider-empty">
+          <div className="settings-row-desc m-0">{emptyLabel}</div>
+        </div>
+      );
+    }
+    return (
+      <div className="models-provider-list" data-testid="models-list-builtin">
+        {builtinByProvider.map((group) => {
+          const open = isBuiltinGroupOpen(group.provider);
+          return (
+            <div
+              key={group.provider}
+              className="models-provider-group"
+              data-testid={`models-builtin-group-${group.provider}`}
+              data-open={open ? "true" : "false"}
+              data-searching={searching ? "true" : "false"}
+            >
+              <button
+                type="button"
+                className="models-provider-group-header"
+                data-testid={`models-builtin-group-toggle-${group.provider}`}
+                aria-expanded={open}
+                disabled={searching}
+                onClick={() => toggleBuiltinGroup(group.provider)}
+              >
+                <ChevronRight className="models-provider-group-chevron" strokeWidth={2} />
+                <span className="models-provider-group-name">{group.provider}</span>
+                <span className="models-provider-group-count">
+                  {tr("models.providerCount", { count: String(group.models.length) })}
+                </span>
+              </button>
+              {open ? (
+                <div className="models-provider-group-rows">
+                  {group.models.map((model, index) =>
+                    renderModelRow(model, {
+                      last: index === group.models.length - 1,
+                      hideProviderPrefix: true,
+                    }),
+                  )}
+                </div>
+              ) : null}
+            </div>
+          );
+        })}
+      </div>
+    );
+  }
 
   return (
     <SettingsPageShell title={tr("section.models")} testId="settings-models">
@@ -1935,6 +2708,12 @@ function ModelsSection(
           />
         </label>
         <SettingsPillButton
+          label={tr("models.customAdd")}
+          onClick={openCustomDialog}
+          disabled={loading}
+          testId="models-add-custom"
+        />
+        <SettingsPillButton
           label={loading ? "…" : tr("auth.refresh")}
           onClick={() => void refresh()}
           disabled={loading}
@@ -1947,18 +2726,287 @@ function ModelsSection(
           {renderModelRows(
             customModels,
             searching ? tr("models.searchEmpty") : tr("models.group.customEmpty"),
+            { allowEdit: true },
           )}
         </div>
       </SettingsSectionBlock>
 
-      <SettingsSectionBlock label={tr("models.group.builtin")} testId="models-builtin">
-        <div data-testid="models-list-builtin">
-          {renderModelRows(
-            builtinModels,
-            searching ? tr("models.searchEmpty") : tr("models.group.builtinEmpty"),
-          )}
-        </div>
-      </SettingsSectionBlock>
+      <section className="settings-section-block" data-testid="models-builtin">
+        <h2 className="settings-section-label">{tr("models.group.builtin")}</h2>
+        {renderBuiltinGrouped(
+          searching ? tr("models.searchEmpty") : tr("models.group.builtinEmpty"),
+        )}
+      </section>
+
+      {dialogOpen && typeof document !== "undefined"
+        ? createPortal(
+            <div
+              className="fixed inset-0 z-[11000] flex items-center justify-center bg-black/50 p-4"
+              data-testid="models-custom-dialog"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="models-custom-dialog-title"
+              onMouseDown={(e) => {
+                if (e.target === e.currentTarget) closeCustomDialog();
+              }}
+            >
+              <div
+                className="models-custom-dialog surface-panel flex max-h-[min(88vh,720px)] w-full max-w-[40rem] flex-col overflow-hidden shadow-2xl"
+                onMouseDown={(e) => e.stopPropagation()}
+              >
+                <div className="models-custom-dialog-header">
+                  <h2 id="models-custom-dialog-title" className="models-custom-dialog-title">
+                    {editingOrigin ? tr("models.customEditTitle") : tr("models.customAdd")}
+                  </h2>
+                </div>
+
+                <form
+                  className="flex min-h-0 flex-1 flex-col"
+                  data-testid="models-custom-form"
+                  onSubmit={(e) => void saveCustomProvider(e)}
+                >
+                  <div className="models-custom-dialog-body pix-scroll">
+                    <div className="models-custom-form-grid">
+                      <label className="models-custom-field">
+                        <span>{tr("models.customProvider")}</span>
+                        <input
+                          data-testid="models-custom-provider"
+                          className="settings-input"
+                          value={providerId}
+                          onChange={(e) => setProviderId(e.target.value)}
+                          placeholder={tr("models.customProviderPh")}
+                          disabled={dialogBusy}
+                          autoComplete="off"
+                          autoFocus
+                        />
+                      </label>
+                      <label className="models-custom-field">
+                        <span>{tr("models.customApi")}</span>
+                        <select
+                          data-testid="models-custom-api"
+                          className="settings-select w-full max-w-none"
+                          value={api}
+                          onChange={(e) => setApi(e.target.value as CustomModelApi)}
+                          disabled={dialogBusy}
+                        >
+                          {CUSTOM_MODEL_API_OPTIONS.map((opt) => (
+                            <option key={opt.value} value={opt.value}>
+                              {opt.label}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label className="models-custom-field models-custom-field-span">
+                        <span>{tr("models.customBaseUrl")}</span>
+                        <input
+                          data-testid="models-custom-base-url"
+                          className="settings-input"
+                          value={baseUrl}
+                          onChange={(e) => setBaseUrl(e.target.value)}
+                          placeholder={tr("models.customBaseUrlPh")}
+                          disabled={dialogBusy}
+                          autoComplete="off"
+                        />
+                      </label>
+                      <label className="models-custom-field models-custom-field-span">
+                        <span>{tr("models.customApiKey")}</span>
+                        <input
+                          data-testid="models-custom-api-key"
+                          type="password"
+                          className="settings-input"
+                          value={apiKey}
+                          onChange={(e) => setApiKey(e.target.value)}
+                          placeholder={tr("models.customApiKeyPh")}
+                          disabled={dialogBusy}
+                          autoComplete="off"
+                        />
+                      </label>
+                      <label className="models-custom-field">
+                        <span>{tr("models.customModelId")}</span>
+                        <input
+                          data-testid="models-custom-model-id"
+                          className="settings-input"
+                          value={modelId}
+                          onChange={(e) => setModelId(e.target.value)}
+                          placeholder={tr("models.customModelIdPh")}
+                          disabled={dialogBusy}
+                          autoComplete="off"
+                        />
+                      </label>
+                      <label className="models-custom-field">
+                        <span>{tr("models.customModelName")}</span>
+                        <input
+                          data-testid="models-custom-model-name"
+                          className="settings-input"
+                          value={modelName}
+                          onChange={(e) => setModelName(e.target.value)}
+                          disabled={dialogBusy}
+                          autoComplete="off"
+                        />
+                      </label>
+                      <label className="models-custom-field">
+                        <span>{tr("models.customContextWindow")}</span>
+                        <input
+                          data-testid="models-custom-context-window"
+                          className="settings-input"
+                          inputMode="numeric"
+                          value={contextWindow}
+                          onChange={(e) => setContextWindow(e.target.value)}
+                          disabled={dialogBusy}
+                          autoComplete="off"
+                        />
+                      </label>
+                      <label className="models-custom-field">
+                        <span>{tr("models.customMaxTokens")}</span>
+                        <input
+                          data-testid="models-custom-max-tokens"
+                          className="settings-input"
+                          inputMode="numeric"
+                          value={maxTokens}
+                          onChange={(e) => setMaxTokens(e.target.value)}
+                          disabled={dialogBusy}
+                          autoComplete="off"
+                        />
+                      </label>
+
+                      <div className="models-custom-toolbar">
+                        <label
+                          className="models-custom-chip"
+                          data-active={inputMode === "text" ? "true" : "false"}
+                        >
+                          <input
+                            type="radio"
+                            name="models-custom-input"
+                            data-testid="models-custom-input-text"
+                            checked={inputMode === "text"}
+                            onChange={() => setInputMode("text")}
+                            disabled={dialogBusy}
+                          />
+                          {tr("models.customInputText")}
+                        </label>
+                        <label
+                          className="models-custom-chip"
+                          data-active={inputMode === "text-image" ? "true" : "false"}
+                        >
+                          <input
+                            type="radio"
+                            name="models-custom-input"
+                            data-testid="models-custom-input"
+                            checked={inputMode === "text-image"}
+                            onChange={() => setInputMode("text-image")}
+                            disabled={dialogBusy}
+                          />
+                          {tr("models.customInputTextImage")}
+                        </label>
+                        <label
+                          className="models-custom-check"
+                          data-on={reasoning ? "true" : "false"}
+                        >
+                          <input
+                            type="checkbox"
+                            data-testid="models-custom-reasoning"
+                            checked={reasoning}
+                            onChange={(e) => setReasoning(e.target.checked)}
+                            disabled={dialogBusy}
+                          />
+                          {tr("models.customReasoning")}
+                        </label>
+                        <label
+                          className="models-custom-check"
+                          data-on={authHeader ? "true" : "false"}
+                        >
+                          <input
+                            type="checkbox"
+                            data-testid="models-custom-auth-header"
+                            checked={authHeader}
+                            onChange={(e) => setAuthHeader(e.target.checked)}
+                            disabled={dialogBusy}
+                          />
+                          {tr("models.customAuthHeader")}
+                        </label>
+                      </div>
+
+                      <details className="models-custom-advanced">
+                        <summary>{tr("models.customSectionAdvanced")}</summary>
+                        <div className="models-custom-advanced-body">
+                          <label className="models-custom-field">
+                            <span>{tr("models.customCostInput")}</span>
+                            <input
+                              data-testid="models-custom-cost-input"
+                              className="settings-input"
+                              inputMode="decimal"
+                              value={costInput}
+                              onChange={(e) => setCostInput(e.target.value)}
+                              disabled={dialogBusy}
+                              autoComplete="off"
+                            />
+                          </label>
+                          <label className="models-custom-field">
+                            <span>{tr("models.customCostOutput")}</span>
+                            <input
+                              data-testid="models-custom-cost-output"
+                              className="settings-input"
+                              inputMode="decimal"
+                              value={costOutput}
+                              onChange={(e) => setCostOutput(e.target.value)}
+                              disabled={dialogBusy}
+                              autoComplete="off"
+                            />
+                          </label>
+                          <label className="models-custom-field">
+                            <span>{tr("models.customCostCacheRead")}</span>
+                            <input
+                              data-testid="models-custom-cost-cache-read"
+                              className="settings-input"
+                              inputMode="decimal"
+                              value={costCacheRead}
+                              onChange={(e) => setCostCacheRead(e.target.value)}
+                              disabled={dialogBusy}
+                              autoComplete="off"
+                            />
+                          </label>
+                          <label className="models-custom-field">
+                            <span>{tr("models.customCostCacheWrite")}</span>
+                            <input
+                              data-testid="models-custom-cost-cache-write"
+                              className="settings-input"
+                              inputMode="decimal"
+                              value={costCacheWrite}
+                              onChange={(e) => setCostCacheWrite(e.target.value)}
+                              disabled={dialogBusy}
+                              autoComplete="off"
+                            />
+                          </label>
+                        </div>
+                      </details>
+                    </div>
+                  </div>
+
+                  <div className="models-custom-dialog-footer">
+                    <button
+                      type="button"
+                      data-testid="models-custom-cancel"
+                      className="h-9 rounded-lg px-3.5 text-[13px] text-[var(--muted-foreground)] hover:bg-[var(--hover-fill)]"
+                      disabled={dialogBusy}
+                      onClick={closeCustomDialog}
+                    >
+                      {tr("common.cancel")}
+                    </button>
+                    <button
+                      type="submit"
+                      className="settings-primary-btn !h-9 !px-4"
+                      data-testid="models-custom-save"
+                      disabled={dialogBusy}
+                    >
+                      {dialogBusy ? tr("models.customSaving") : tr("models.customSave")}
+                    </button>
+                  </div>
+                </form>
+              </div>
+            </div>,
+            document.body,
+          )
+        : null}
     </SettingsPageShell>
   );
 }

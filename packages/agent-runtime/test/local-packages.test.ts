@@ -10,6 +10,10 @@ import { afterEach, describe, expect, it } from "vite-plus/test";
 
 const temporaryDirectories: string[] = [];
 
+function portablePath(path: string): string {
+  return path.replace(/\\/g, "/");
+}
+
 async function exists(path: string): Promise<boolean> {
   try {
     await stat(path);
@@ -100,8 +104,8 @@ describe("P04 local package transport", () => {
     const configured = manager.listConfiguredPackages();
     const projectSource = configured.find((entry) => entry.scope === "project")?.source;
     const globalSource = configured.find((entry) => entry.scope === "user")?.source;
-    expect(projectSource).toBe("../project-package");
-    expect(globalSource).toBe("../../../sources/global-package");
+    expect(portablePath(projectSource ?? "")).toBe("../project-package");
+    expect(portablePath(globalSource ?? "")).toBe("../../../sources/global-package");
     if (!projectSource || !globalSource)
       throw new Error("Local package sources were not persisted");
 

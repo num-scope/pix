@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmod, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -28,6 +28,15 @@ interface RegistryPackage {
   versions: PackedVersion[];
 }
 
+function npmInvocation(args: string[]): { command: string; args: string[] } {
+  return process.platform === "win32"
+    ? {
+        command: process.env.ComSpec ?? "cmd.exe",
+        args: ["/d", "/s", "/c", "npm.cmd", ...args],
+      }
+    : { command: "npm", args };
+}
+
 async function packVersion(root: string, name: string, version: string): Promise<PackedVersion> {
   const source = join(root, "pack", `${name}-${version}`);
   const destination = join(root, "tarballs");
@@ -47,11 +56,17 @@ async function packVersion(root: string, name: string, version: string): Promise
     ),
     writeFile(join(source, "prompts", "fixture.md"), `${name} ${version}\n`),
   ]);
-  const { stdout } = await execFileAsync(
-    "npm",
-    ["pack", "--ignore-scripts", "--pack-destination", destination, "--json"],
-    { cwd: source, timeout: 20_000 },
-  );
+  const npm = npmInvocation([
+    "pack",
+    "--ignore-scripts",
+    "--pack-destination",
+    destination,
+    "--json",
+  ]);
+  const { stdout } = await execFileAsync(npm.command, npm.args, {
+    cwd: source,
+    timeout: 20_000,
+  });
   const packed = JSON.parse(stdout) as Array<{ filename: string }>;
   const filename = packed[0]?.filename;
   if (!filename) throw new Error("npm pack did not return a tarball");
@@ -136,15 +151,18 @@ async function startRegistry(packages: RegistryPackage[]) {
   };
 }
 
-async function createNpmWrapper(root: string, registry: string): Promise<string> {
+async function createNpmCommand(root: string, registry: string): Promise<string[]> {
   const bin = join(root, "bin");
-  const wrapper = join(bin, "npm");
+  const wrapper = join(bin, "npm-wrapper.mjs");
   await mkdir(bin, { recursive: true });
   await writeFile(
     wrapper,
-    `#!/usr/bin/env node
-import { spawnSync } from "node:child_process";
-const result = spawnSync("npm", process.argv.slice(2), {
+    `import { spawnSync } from "node:child_process";
+const args = process.argv.slice(2);
+const npm = process.platform === "win32"
+  ? { command: process.env.ComSpec ?? "cmd.exe", args: ["/d", "/s", "/c", "npm.cmd", ...args] }
+  : { command: "npm", args };
+const result = spawnSync(npm.command, npm.args, {
   stdio: "inherit",
   env: {
     ...process.env,
@@ -158,8 +176,7 @@ const result = spawnSync("npm", process.argv.slice(2), {
 process.exit(result.status ?? 1);
 `,
   );
-  await chmod(wrapper, 0o755);
-  return wrapper;
+  return [process.execPath, wrapper];
 }
 
 async function packageVersion(path: string): Promise<string> {
@@ -208,10 +225,10 @@ describe("P01/P02/P08 npm package transport", () => {
       });
     }
     const registry = await startRegistry(packages);
-    const npmWrapper = await createNpmWrapper(root, registry.url);
+    const npmCommand = await createNpmCommand(root, registry.url);
 
     const settings = SettingsManager.create(cwd, agentDir, { projectTrusted: true });
-    settings.setNpmCommand([npmWrapper]);
+    settings.setNpmCommand(npmCommand);
     await settings.flush();
     const manager = new DefaultPackageManager({ cwd, agentDir, settingsManager: settings });
     const progress: ProgressEvent[] = [];

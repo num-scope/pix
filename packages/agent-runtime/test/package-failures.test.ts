@@ -6,6 +6,10 @@ import { afterEach, describe, expect, it } from "vite-plus/test";
 
 const temporaryDirectories: string[] = [];
 
+function portablePath(path: string): string {
+  return path.replace(/\\/g, "/");
+}
+
 async function createPromptPackage(root: string, text: string): Promise<void> {
   await mkdir(join(root, "prompts"), { recursive: true });
   await Promise.all([
@@ -126,7 +130,11 @@ describe("P06 package failure and recovery", () => {
     storage.failWrites = true;
     await manager.installAndPersist(added);
     await settings.flush();
-    expect(settings.getPackages()).toEqual([original, "../added-package"]);
+    expect(
+      settings
+        .getPackages()
+        .map((source) => portablePath(typeof source === "string" ? source : source.source)),
+    ).toEqual([portablePath(original), "../added-package"]);
     expect(settings.drainErrors()).toMatchObject([
       { scope: "global", error: { message: "Injected global persistence failure" } },
     ]);

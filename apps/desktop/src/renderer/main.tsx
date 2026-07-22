@@ -8,7 +8,6 @@ import type {
 } from "@pix/contracts";
 import {
   StrictMode,
-  memo,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -18,7 +17,7 @@ import {
   type KeyboardEvent,
 } from "react";
 import { createRoot } from "react-dom/client";
-import { ArrowDown, Check, Search, Terminal, X } from "lucide-react";
+import { ArrowDown, Search } from "lucide-react";
 import { AppSidebar } from "./components/AppSidebar.tsx";
 import { CommandPalette } from "./components/CommandPalette.tsx";
 import { Composer, type SpeedMode } from "./components/Composer.tsx";
@@ -29,10 +28,11 @@ import {
   envPanelLayoutForWidth,
   type EnvPanelLayoutMode,
 } from "./components/EnvPanel.tsx";
-import { MarkdownContent } from "./components/MarkdownContent.tsx";
 import { PixLogo } from "./components/PixLogo.tsx";
 import { ThreadHeader } from "./components/ThreadHeader.tsx";
+import { TimelineRow } from "./components/TimelineRow.tsx";
 import { buildShellCommands } from "./lib/commands.ts";
+import { promptWithAttachedPaths } from "./lib/composer-suggestions.ts";
 import { applyDocumentTheme, colorModeFromPiTheme, piThemeLabel } from "./lib/theme.ts";
 import { cn } from "./lib/utils.ts";
 import { t, type Locale } from "./lib/i18n.ts";
@@ -58,13 +58,8 @@ import {
   prependRecentPath,
   workspaceLabel,
 } from "./lib/workspace.ts";
-import {
-  deriveRunState,
-  historyToTimeline,
-  projectEventsToTimeline,
-  type TimelineItem,
-} from "./lib/timeline.ts";
-import { useShellStore } from "./store/shell-store.ts";
+import { deriveRunState, historyToTimeline, projectEventsToTimeline } from "./lib/timeline.ts";
+import { classifyRuntimeEventDelivery, useShellStore } from "./store/shell-store.ts";
 import "./styles.css";
 
 /** Surface app-level errors as a modal (agent timeline errors stay in-chat). */
@@ -152,6 +147,7 @@ function App() {
   const threads = useShellStore((s) => s.threads);
   const prompt = useShellStore((s) => s.prompt);
   const sentPrompts = useShellStore((s) => s.sentPrompts);
+  const queuedMessages = useShellStore((s) => s.queuedMessages);
   const running = useShellStore((s) => s.running);
   const reviewOpen = useShellStore((s) => s.reviewOpen);
   const envPanelOpen = useShellStore((s) => s.envPanelOpen);
@@ -159,6 +155,7 @@ function App() {
   const lastFailure = useShellStore((s) => s.lastFailure);
   const appError = useShellStore((s) => s.appError);
   const view = useShellStore((s) => s.view);
+  const runtimeId = useShellStore((s) => s.runtimeId);
   const packages = useShellStore((s) => s.packages);
   const resources = useShellStore((s) => s.resources);
   const ecoLoading = useShellStore((s) => s.ecoLoading);
@@ -182,9 +179,7 @@ function App() {
   /** Whether env panel can be shown at current thread-column width. */
   const [envPanelFits, setEnvPanelFits] = useState(true);
   /** float = overlay without squeeze; dock = flex squeeze. */
-  const [envPanelLayout, setEnvPanelLayout] = useState<Exclude<EnvPanelLayoutMode, "none">>(
-    "dock",
-  );
+  const [envPanelLayout, setEnvPanelLayout] = useState<Exclude<EnvPanelLayoutMode, "none">>("dock");
   const threadColumnRef = useRef<HTMLElement | null>(null);
   const setSidebarOpen = useShellStore((s) => s.setSidebarOpen);
   const setLastFailure = useShellStore((s) => s.setLastFailure);
@@ -326,8 +321,7 @@ function App() {
   const workspace = workspaceLabel(workspacePath);
   /** Host running under conversation home (not a user project), or about to. */
   const isPureConversation =
-    pendingPureConversation ||
-    Boolean(snapshot?.cwd && isNonProjectWorkspacePath(snapshot.cwd));
+    pendingPureConversation || Boolean(snapshot?.cwd && isNonProjectWorkspacePath(snapshot.cwd));
   /** Suppress snapshot→selection sync while switchThread / newBlankTask is in flight. */
   const switchingSessionRef = useRef(false);
 
@@ -342,10 +336,7 @@ function App() {
   /** Session identity — used to pin scroll + remount timeline rows on switch. */
   const sessionKey = snapshot?.sessionFile ?? snapshot?.sessionId ?? "";
   const timeline = useMemo(() => {
-    const items = [
-      ...historyToTimeline(history),
-      ...projectEventsToTimeline(events, sentPrompts),
-    ];
+    const items = [...historyToTimeline(history), ...projectEventsToTimeline(events, sentPrompts)];
     // Prefix ids with session so React does not reuse rows across switches.
     if (!sessionKey) return items;
     return items.map((item) => ({ ...item, id: `${sessionKey}:${item.id}` }));
@@ -362,12 +353,11 @@ function App() {
   const displayModel = snapshot?.model ?? lastComposerChromeRef.current.model;
   const displayThinkingLevel =
     snapshot?.thinkingLevel ?? lastComposerChromeRef.current.thinkingLevel ?? "off";
-  const displayThinkingLevels =
-    snapshot?.availableThinkingLevels?.length
-      ? snapshot.availableThinkingLevels
-      : lastComposerChromeRef.current.availableThinkingLevels?.length
-        ? lastComposerChromeRef.current.availableThinkingLevels
-        : [displayThinkingLevel];
+  const displayThinkingLevels = snapshot?.availableThinkingLevels?.length
+    ? snapshot.availableThinkingLevels
+    : lastComposerChromeRef.current.availableThinkingLevels?.length
+      ? lastComposerChromeRef.current.availableThinkingLevels
+      : [displayThinkingLevel];
 
   function normalizeCwdKey(path: string): string {
     return path.replace(/\\/g, "/").replace(/\/+$/, "");
@@ -409,6 +399,10 @@ function App() {
   useEffect(() => {
     applyDocumentTheme(colorMode);
   }, [colorMode]);
+
+  useEffect(() => {
+    void window.pix.appearance.setThemeSource(themePreference);
+  }, [themePreference]);
 
   // Overlay auto-hide scrollbars for main content panes (settings / packages / thread…).
   useEffect(() => installOverlayScroll(), []);
@@ -529,13 +523,19 @@ function App() {
             .then((list) => store.setResources(list))
             .catch(() => undefined);
         } else if (event.type === "runtime.event") {
-          if (event.runtimeId !== store.runtimeId) return;
-          if (event.sequence !== store.lastSequence + 1) {
+          const delivery = classifyRuntimeEventDelivery(store, event);
+          if (delivery === "stale-runtime" || delivery === "duplicate") return;
+          if (delivery === "gap") {
             void window.pix.host.snapshot().then(store.acceptSnapshot);
             return;
           }
-          store.setLastSequence(event.sequence);
-          if (event.event.type === "message.failed") {
+          if (event.sequence > store.lastSequence) store.setLastSequence(event.sequence);
+          if (event.event.type === "queue.updated") {
+            store.setQueuedMessages({
+              steering: event.event.steering,
+              followUp: event.event.followUp,
+            });
+          } else if (event.event.type === "message.failed") {
             store.setLastFailure(event.event.message);
             maybeNotify("error", event.event.message);
           } else if (event.event.type === "agent.settled") {
@@ -756,8 +756,7 @@ function App() {
     acceptSnapshot(value);
     setStatus("Agent Host ready");
     try {
-      const models = await window.pix.models.list();
-      setModelOptions(models.map((m) => ({ provider: m.provider, id: m.id, name: m.name })));
+      await refreshComposerModels();
     } catch {
       setModelOptions([]);
     }
@@ -765,6 +764,36 @@ function App() {
     await refreshRecentWorkspaces();
     return value;
   }
+
+  /**
+   * Composer model picker: only providers with stored/runtime/env auth or OAuth.
+   * Settings still lists every model for configuration.
+   */
+  async function refreshComposerModels(): Promise<void> {
+    const [models, providers] = await Promise.all([
+      window.pix.models.list(),
+      window.pix.providers.list(),
+    ]);
+    const readyProviders = new Set(
+      providers.filter((provider) => provider.configured).map((provider) => provider.provider),
+    );
+    setModelOptions(
+      models
+        .filter((model) => readyProviders.has(model.provider))
+        .map((model) => ({
+          provider: model.provider,
+          id: model.id,
+          name: model.name,
+        })),
+    );
+  }
+
+  // Re-filter when returning to the thread (e.g. after saving a provider API key).
+  useEffect(() => {
+    if (view !== "thread" || !runtimeId) return;
+    void refreshComposerModels().catch(() => undefined);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- only refresh on view/runtime changes
+  }, [view, runtimeId]);
 
   /**
    * Always pull pi-home status (packages + resources) when local pi/agent is available.
@@ -795,29 +824,60 @@ function App() {
     }
   }
 
-  async function sendPrompt(event?: FormEvent) {
+  async function sendPrompt(event?: FormEvent, streamingBehavior?: "steer" | "followUp") {
     event?.preventDefault();
-    const message = prompt.trim();
-    if (!message) return;
-    setRunning(true);
-    setLastFailure(undefined);
-    setStatus("Agent running...");
-    // Clear the box immediately — do not wait for the full agent turn.
-    setPrompt("");
-    setSentPrompts((current) => [...current, message]);
-    // If the user switches sessions mid-generation, ignore late host results.
+    const draft = prompt;
+    const attachedPaths = [...attachments];
+    const displayMessage =
+      draft.trim() || (attachedPaths.length > 0 ? t(locale, "composer.attach.defaultPrompt") : "");
+    if (!displayMessage) return;
+
+    const queueBehavior = running ? (streamingBehavior ?? "steer") : undefined;
+    const message = promptWithAttachedPaths(displayMessage, attachedPaths);
+    try {
+      if (!useShellStore.getState().snapshot) await ensureHost();
+    } catch (error) {
+      reportAppError(error, "无法启动 Agent");
+      return;
+    }
+
+    // If the user switches sessions mid-request, ignore late host results.
     const sessionAtStart =
       useShellStore.getState().snapshot?.sessionFile ??
       useShellStore.getState().snapshot?.sessionId ??
       "";
     const stillSameSession = () => {
-      const s = useShellStore.getState().snapshot;
-      const key = s?.sessionFile ?? s?.sessionId ?? "";
+      const current = useShellStore.getState().snapshot;
+      const key = current?.sessionFile ?? current?.sessionId ?? "";
       return key === sessionAtStart;
     };
+
+    setPrompt("");
+    setAttachments([]);
+    setSentPrompts((current) => [...current, displayMessage]);
+
+    if (queueBehavior) {
+      setStatus(queueBehavior === "followUp" ? "Follow-up queued" : "Guidance queued");
+      try {
+        const next = await window.pix.agent.prompt(message, queueBehavior);
+        if (stillSameSession()) acceptSnapshot(next);
+      } catch (error) {
+        if (!stillSameSession()) return;
+        setPrompt(draft);
+        setAttachments((current) => [...new Set([...attachedPaths, ...current])].slice(0, 12));
+        setSentPrompts((current) => {
+          const index = current.lastIndexOf(displayMessage);
+          return index < 0 ? current : [...current.slice(0, index), ...current.slice(index + 1)];
+        });
+        reportAppError(error, "排队失败");
+      }
+      return;
+    }
+
+    setRunning(true);
+    setLastFailure(undefined);
+    setStatus("Agent running...");
     try {
-      if (!useShellStore.getState().snapshot) await ensureHost();
-      if (!stillSameSession()) return;
       const next = await window.pix.agent.prompt(message);
       if (!stillSameSession()) return;
       acceptSnapshot(next);
@@ -827,15 +887,39 @@ function App() {
       // Switched away / aborted for navigation — do not restore draft into the new session.
       if (!stillSameSession()) return;
       // Host/workspace/IPC failures → modal + restore draft for retry.
-      setPrompt(message);
+      setPrompt(draft);
+      setAttachments((current) => [...new Set([...attachedPaths, ...current])].slice(0, 12));
       setSentPrompts((current) => {
-        const idx = current.lastIndexOf(message);
+        const idx = current.lastIndexOf(displayMessage);
         if (idx < 0) return current;
         return [...current.slice(0, idx), ...current.slice(idx + 1)];
       });
       reportAppError(error, "发送失败");
     } finally {
       if (stillSameSession()) setRunning(false);
+    }
+  }
+
+  async function clearQueuedMessages() {
+    const queuedCount = queuedMessages.steering.length + queuedMessages.followUp.length;
+    if (queuedCount === 0) return;
+    try {
+      const next = await window.pix.agent.clearQueue();
+      acceptSnapshot(next);
+      setSentPrompts((current) => current.slice(0, Math.max(0, current.length - queuedCount)));
+      setStatus("Queued messages cleared");
+    } catch (error) {
+      reportAppError(error, "清空队列失败");
+    }
+  }
+
+  async function pickComposerAttachments() {
+    try {
+      const paths = await window.pix.workspace.pickAttachments();
+      if (paths.length === 0) return;
+      setAttachments((current) => [...new Set([...current, ...paths])].slice(0, 12));
+    } catch (error) {
+      reportAppError(error, "添加文件失败");
     }
   }
 
@@ -1100,8 +1184,7 @@ function App() {
     useShellStore.getState().setHistory([]);
 
     const prevSnap = useShellStore.getState().snapshot;
-    const prevProject =
-      asProjectPath(selectedWorkspacePath) ?? asProjectPath(prevSnap?.cwd);
+    const prevProject = asProjectPath(selectedWorkspacePath) ?? asProjectPath(prevSnap?.cwd);
     // Project was listed only via workspacePath (excluded from recent while open).
     // Promote it into recent BEFORE clearing selection so the card never unmounts.
     if (prevProject) {
@@ -1137,8 +1220,7 @@ function App() {
         const value = await window.pix.host.start({ cwd: convCwd });
         acceptSnapshot(value);
         try {
-          const models = await window.pix.models.list();
-          setModelOptions(models.map((m) => ({ provider: m.provider, id: m.id, name: m.name })));
+          await refreshComposerModels();
         } catch {
           // keep previous modelOptions
         }
@@ -1378,7 +1460,7 @@ function App() {
   function onComposerKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
-      if (!running) void sendPrompt();
+      void sendPrompt(undefined, running && event.altKey ? "followUp" : undefined);
     }
   }
 
@@ -1492,7 +1574,7 @@ function App() {
   return (
     <div
       className={cn(
-        // Relative shell: sidebar is an overlay so frosted translucency can sample canvas/content.
+        // Relative shell: sidebar overlays the clear native window region.
         "app-shell relative h-full w-full overflow-hidden text-[var(--text)]",
         sidebarOpen && "sidebar-open",
       )}
@@ -1534,13 +1616,13 @@ function App() {
         resourceCount={
           resources.length > 0
             ? resources.length
-            : (snapshot?.resources
-                ? snapshot.resources.extensions +
-                  snapshot.resources.skills +
-                  snapshot.resources.prompts +
-                  snapshot.resources.themes +
-                  snapshot.resources.contextFiles
-                : 0)
+            : snapshot?.resources
+              ? snapshot.resources.extensions +
+                snapshot.resources.skills +
+                snapshot.resources.prompts +
+                snapshot.resources.themes +
+                snapshot.resources.contextFiles
+              : 0
         }
         canFork={timeline.some((item) => item.kind === "user")}
         onOpenPalette={() => setPaletteOpen(true)}
@@ -1568,11 +1650,9 @@ function App() {
       />
 
       {/*
-        True glass stack:
-        - .app-shell-ambient is full-bleed (behind the frosted rail for blur/vibrancy)
-        - .shell-content is opaque and inset by the rail (no solid paint under the glass)
+        .shell-content is opaque and inset by the rail, leaving the sidebar area clear
+        for the native window vibrancy behind it.
       */}
-      <div className="app-shell-ambient" aria-hidden />
       <div
         className="shell-content"
         style={{
@@ -1634,7 +1714,12 @@ function App() {
                       {hasActivity ? (
                         <>
                           {timeline.map((item) => (
-                            <TimelineRow key={item.id} item={item} />
+                            <TimelineRow
+                              key={item.id}
+                              item={item}
+                              locale={locale}
+                              workspacePath={workspacePath}
+                            />
                           ))}
                           <div ref={timelineEndRef} className="h-px w-full shrink-0" aria-hidden />
                         </>
@@ -1643,10 +1728,7 @@ function App() {
                           className="flex min-h-full flex-1 flex-col items-center justify-center px-4 text-center"
                           data-testid="empty-hero"
                         >
-                          <PixLogo
-                            className="mb-5 size-12"
-                            title={t(locale, "app.name")}
-                          />
+                          <PixLogo className="mb-5 size-12" title={t(locale, "app.name")} />
                           <h1 className="m-0 max-w-lg text-[26px] leading-snug font-semibold tracking-[-0.03em] text-[var(--text)]">
                             {workspacePath
                               ? t(locale, "empty.title", { name: workspace.name })
@@ -1728,9 +1810,7 @@ function App() {
                     onAccessMode={applyAccessMode}
                     accessVisibility={accessVisibility}
                     modelOptions={modelOptions}
-                    modelValue={
-                      displayModel ? `${displayModel.provider}/${displayModel.id}` : ""
-                    }
+                    modelValue={displayModel ? `${displayModel.provider}/${displayModel.id}` : ""}
                     onModelChange={(provider, id) => void changeModel(provider, id)}
                     thinkingLevel={displayThinkingLevel}
                     thinkingLevels={displayThinkingLevels}
@@ -1746,28 +1826,20 @@ function App() {
                     }}
                     contextPercent={snapshot?.usage?.context?.percent ?? undefined}
                     contextTokens={
-                      snapshot?.usage?.context?.tokens ??
-                      snapshot?.usage?.tokens.total ??
-                      undefined
+                      snapshot?.usage?.context?.tokens ?? snapshot?.usage?.tokens.total ?? undefined
                     }
                     showContextUsage={showContextUsage}
                     projectTrusted={snapshot?.projectTrusted}
                     runState={runState}
                     piThemeLabel={piThemeLabel(snapshot)}
                     attachments={attachments}
-                    onAttachFiles={(files) => {
-                      if (!files?.length) return;
-                      setAttachments((current) => {
-                        const next = [...current];
-                        for (const file of Array.from(files)) {
-                          if (!next.includes(file.name)) next.push(file.name);
-                        }
-                        return next.slice(0, 12);
-                      });
-                    }}
-                    onRemoveAttachment={(name) =>
-                      setAttachments((current) => current.filter((item) => item !== name))
+                    onPickAttachments={pickComposerAttachments}
+                    onRemoveAttachment={(path) =>
+                      setAttachments((current) => current.filter((item) => item !== path))
                     }
+                    slashCommands={snapshot?.slashCommands ?? []}
+                    queuedMessages={queuedMessages}
+                    onClearQueue={() => void clearQueuedMessages()}
                   />
                 </div>
               </div>
@@ -2391,79 +2463,6 @@ function ResourcesPage(props: {
     </section>
   );
 }
-
-const TimelineRow = memo(function TimelineRow({ item }: { item: TimelineItem }) {
-  if (item.kind === "user") {
-    return (
-      <article className="mb-7 mt-1 flex justify-end" data-kind="user">
-        {/*
-          Theme-aligned bubble: dark→dark surface + light text, light→light surface + dark text.
-          More margin from surrounding messages; tighter radius than assistant chrome.
-        */}
-        <div
-          className={cn(
-            "max-w-[min(72%,26rem)] px-3 py-1.5",
-            "bg-[var(--user-bubble)] text-[var(--user-bubble-fg)]",
-          )}
-          style={{ borderRadius: "var(--radius-field)" }}
-        >
-          <p className="m-0 text-[13px] leading-snug wrap-break-word whitespace-pre-wrap">
-            {item.text}
-          </p>
-        </div>
-      </article>
-    );
-  }
-  if (item.kind === "assistant") {
-    return (
-      <article className="mb-6 w-full" data-kind="assistant">
-        <div className="mb-1.5 flex items-center gap-2 text-[12px] text-[var(--muted-foreground)]">
-          <span className="inline-flex h-5 w-5 items-center justify-center rounded-full border border-violet-500/25 bg-violet-500/10 text-[10px] font-semibold text-violet-300">
-            π
-          </span>
-          <span className="font-medium">pi</span>
-        </div>
-        <MarkdownContent className="w-full text-[14px] leading-relaxed text-[var(--foreground)]">
-          {item.text}
-        </MarkdownContent>
-      </article>
-    );
-  }
-  if (item.kind === "tool") {
-    return (
-      <article className="mb-2.5 w-full" data-kind="tool">
-        <div
-          className={cn(
-            "group inline-flex max-w-full items-center gap-2 rounded-lg border px-2.5 py-1.5 text-[12px] transition-colors",
-            item.isError
-              ? "border-red-500/25 bg-red-500/[0.06] text-red-600"
-              : "border-[var(--border)] bg-[var(--muted)] text-[var(--muted-foreground)] hover:bg-[var(--hover-fill)]",
-          )}
-        >
-          <span
-            className={cn(
-              "inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full border bg-transparent",
-              item.isError
-                ? "border-red-500/35 text-red-600"
-                : "border-emerald-500/40 text-emerald-600",
-            )}
-            aria-hidden
-          >
-            {item.isError ? <X className="h-2.5 w-2.5" /> : <Check className="h-2.5 w-2.5" />}
-          </span>
-          <Terminal className="h-3 w-3 shrink-0 opacity-60" strokeWidth={1.75} />
-          <span className="font-medium text-[var(--foreground)]">{item.toolName}</span>
-          <span className="min-w-0 truncate opacity-70">{item.detail}</span>
-        </div>
-      </article>
-    );
-  }
-  return (
-    <article className="mb-4 w-full" data-kind="system">
-      <p className="m-0 text-[12.5px] text-[var(--muted-foreground)]">{item.text}</p>
-    </article>
-  );
-});
 
 const root = document.querySelector("#root");
 if (!root) throw new Error("Renderer root element is missing");

@@ -31,10 +31,7 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import { t, type Locale, type MessageKey } from "../lib/i18n.ts";
-import {
-  loadEnvPanelVisibility,
-  type EnvPanelVisibility,
-} from "../lib/env-panel-prefs.ts";
+import { loadEnvPanelVisibility, type EnvPanelVisibility } from "../lib/env-panel-prefs.ts";
 import { cn } from "../lib/utils.ts";
 import { useShellStore } from "../store/shell-store.ts";
 import { anchorFromEvent, FloatingMenu, type AnchorRect } from "./FloatingMenu.tsx";
@@ -299,9 +296,7 @@ export function EnvPanel(props: {
                 closeFlyout();
                 props.onOpenProject?.(result.path);
               } catch (error) {
-                showAppError(
-                  error instanceof Error ? error.message : tr("composer.local.failed"),
-                );
+                showAppError(error instanceof Error ? error.message : tr("composer.local.failed"));
               } finally {
                 setBusy(false);
               }
@@ -357,10 +352,7 @@ export function EnvPanel(props: {
                     if (!props.cwd || busy) return;
                     setBusy(true);
                     try {
-                      const next = await window.pix.workspace.checkoutGitBranch(
-                        b.name,
-                        props.cwd,
-                      );
+                      const next = await window.pix.workspace.checkoutGitBranch(b.name, props.cwd);
                       setGitContext(next);
                       closeFlyout();
                       void refresh();
@@ -480,7 +472,9 @@ export function EnvPanel(props: {
     ) : flyout === "openIn" ? (
       <div className="flex max-h-[min(50vh,280px)] flex-col gap-0.5 overflow-y-auto p-1">
         {apps.length === 0 ? (
-          <p className="m-0 px-2 py-1.5 text-[12px] text-[var(--text-subtle)]">{tr("env.noApps")}</p>
+          <p className="m-0 px-2 py-1.5 text-[12px] text-[var(--text-subtle)]">
+            {tr("env.noApps")}
+          </p>
         ) : (
           apps.map((app) => (
             <button
@@ -654,9 +648,7 @@ export function EnvPanel(props: {
               msg = (await window.pix.workspace.gitGenerateCommitMessage(props.cwd)).trim();
               setCommitMsg(msg);
             } catch (error) {
-              showAppError(
-                error instanceof Error ? error.message : tr("env.commitGenerateFailed"),
-              );
+              showAppError(error instanceof Error ? error.message : tr("env.commitGenerateFailed"));
               return;
             } finally {
               setCommitGenerating(false);

@@ -17,26 +17,42 @@ import {
   type RefObject,
 } from "react";
 import { createPortal } from "react-dom";
-import type { GitBranchInfo, GitContextInfo } from "@pix/contracts";
+import type {
+  GitBranchInfo,
+  GitContextInfo,
+  QueuedMessages,
+  SlashCommandSummary,
+} from "@pix/contracts";
 import {
+  AtSign,
   ArrowUp,
   Check,
   ChevronDown,
   ChevronRight,
-  FilePlus2,
+  Command,
+  File,
+  FileArchive,
+  FileCode2,
+  FileImage,
+  FileSpreadsheet,
+  FileText,
   Folder,
   FolderGit2,
+  FolderOpen,
   Gauge,
   GitBranch,
+  ListPlus,
   Monitor,
-  Paperclip,
   Plus,
+  Presentation,
   Search,
   Shield,
   ShieldAlert,
   ShieldCheck,
   Sparkles,
   Square,
+  Trash2,
+  X,
 } from "lucide-react";
 import {
   anchorFromElement,
@@ -47,6 +63,15 @@ import {
 import { Button } from "./ui/button.tsx";
 import { Textarea } from "./ui/textarea.tsx";
 import { t, type Locale } from "../lib/i18n.ts";
+import {
+  addResourceQuery,
+  attachmentLabel,
+  attachmentPresentation,
+  filterResourceCommands,
+  filterSlashCommands,
+  slashCommandQuery,
+  type AttachmentKind,
+} from "../lib/composer-suggestions.ts";
 import type { AccessMode, AccessVisibility } from "../lib/settings-prefs.ts";
 import { visibleAccessModes } from "../lib/settings-prefs.ts";
 import { cn } from "../lib/utils.ts";
@@ -94,10 +119,13 @@ export interface ComposerProps {
   projectTrusted: boolean | undefined;
   runState: string;
   piThemeLabel: string;
-  /** Optional files attached in UI (names only until agent supports uploads). */
+  /** Absolute file or directory paths passed to pi as readable context. */
   attachments: string[];
-  onAttachFiles: (files: FileList | null) => void;
-  onRemoveAttachment: (name: string) => void;
+  onPickAttachments: () => Promise<void>;
+  onRemoveAttachment: (path: string) => void;
+  slashCommands: SlashCommandSummary[];
+  queuedMessages: QueuedMessages;
+  onClearQueue: () => void;
   /**
    * Project / local / branch bar that protrudes above the input.
    * Hidden once the session already has conversation content.
@@ -258,17 +286,6 @@ function AccessOption(props: {
   );
 }
 
-function MenuSection(props: { title: string; children: ReactNode }) {
-  return (
-    <div className="py-1">
-      <div className="px-2.5 pb-1 pt-1 text-[11px] font-medium tracking-wide text-[var(--text-subtle)]">
-        {props.title}
-      </div>
-      {props.children}
-    </div>
-  );
-}
-
 /**
  * Hover-only row → right flyout.
  * Open/close timers are owned by the parent so sibling rows can switch without flicker.
@@ -373,6 +390,30 @@ function formatContext(percent: number | undefined, tokens: number | undefined):
   return "0%";
 }
 
+function commandSourceIcon(command: SlashCommandSummary) {
+  if (command.source === "skill") return <Sparkles className="size-4" strokeWidth={1.75} />;
+  if (command.source === "prompt") return <FileText className="size-4" strokeWidth={1.75} />;
+  return <Command className="size-4" strokeWidth={1.75} />;
+}
+
+function attachmentKindIcon(kind: AttachmentKind) {
+  const props = { className: "size-5", strokeWidth: 1.65 };
+  if (kind === "spreadsheet") return <FileSpreadsheet {...props} />;
+  if (kind === "image") return <FileImage {...props} />;
+  if (kind === "presentation") return <Presentation {...props} />;
+  if (kind === "archive") return <FileArchive {...props} />;
+  if (kind === "code") return <FileCode2 {...props} />;
+  if (kind === "folder") return <Folder {...props} />;
+  if (kind === "document" || kind === "pdf" || kind === "text") {
+    return <FileText {...props} />;
+  }
+  return <File {...props} />;
+}
+
+function queuedMessagePreview(message: string): string {
+  return message.split("\n\n<attached-paths>", 1)[0]?.trim() || message.trim();
+}
+
 export function Composer(props: ComposerProps) {
   const tr = (key: Parameters<typeof t>[1], vars?: Record<string, string>) =>
     t(props.locale, key, vars);
@@ -389,7 +430,10 @@ export function Composer(props: ComposerProps) {
   /** Which model-submenu flyout is open: thinking | speed */
   const [modelFlyout, setModelFlyout] = useState<"thinking" | "speed" | null>(null);
   const modelFlyoutCloseTimer = useRef<number | null>(null);
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  const [suggestionAnchor, setSuggestionAnchor] = useState<AnchorRect | null>(null);
+  const [suggestionIndex, setSuggestionIndex] = useState(0);
+  const [suggestionsDismissed, setSuggestionsDismissed] = useState(false);
   const workspace = workspaceLabel(props.workspacePath);
   const [gitContext, setGitContext] = useState<GitContextInfo>({});
 
@@ -510,6 +554,32 @@ export function Composer(props: ComposerProps) {
     return found?.name || id || tr("composer.model.none");
   }, [props.modelValue, props.modelOptions, props.locale]);
 
+  const slashQuery = slashCommandQuery(props.prompt);
+  const resourceQuery = addResourceQuery(props.prompt);
+  const slashSuggestions = useMemo(
+    () => filterSlashCommands(props.slashCommands, slashQuery ?? ""),
+    [props.slashCommands, slashQuery],
+  );
+  const resourceSuggestions = useMemo(
+    () => filterResourceCommands(props.slashCommands, resourceQuery ?? ""),
+    [props.slashCommands, resourceQuery],
+  );
+  const slashPanelOpen = menu === null && !suggestionsDismissed && slashQuery !== undefined;
+  const resourcePanelOpen =
+    menu === "attach" || (menu === null && !suggestionsDismissed && resourceQuery !== undefined);
+
+  useEffect(() => {
+    if (!slashPanelOpen && !resourcePanelOpen) {
+      setSuggestionAnchor(null);
+      return;
+    }
+    setSuggestionAnchor(anchorFromElement(rootRef.current));
+  }, [slashPanelOpen, resourcePanelOpen, props.prompt]);
+
+  useEffect(() => {
+    setSuggestionIndex(0);
+  }, [slashQuery, resourceQuery, menu]);
+
   function closeMenu() {
     clearModelFlyoutCloseTimer();
     setMenu(null);
@@ -528,7 +598,72 @@ export function Composer(props: ComposerProps) {
       return;
     }
     setMenu(kind);
-    setAnchor(anchorFromEvent(event.currentTarget));
+    setAnchor(
+      kind === "attach" ? anchorFromElement(rootRef.current) : anchorFromEvent(event.currentTarget),
+    );
+  }
+
+  function dismissSuggestions() {
+    if (menu === "attach") closeMenu();
+    else setSuggestionsDismissed(true);
+  }
+
+  function selectCommand(command: SlashCommandSummary) {
+    props.onPromptChange(`/${command.name} `);
+    setSuggestionsDismissed(true);
+    closeMenu();
+    requestAnimationFrame(() => props.composerRef.current?.focus());
+  }
+
+  async function selectAttachments() {
+    if (resourceQuery !== undefined) props.onPromptChange("");
+    setSuggestionsDismissed(true);
+    closeMenu();
+    await props.onPickAttachments();
+    requestAnimationFrame(() => props.composerRef.current?.focus());
+  }
+
+  function handlePromptChange(value: string) {
+    setSuggestionsDismissed(false);
+    if (slashCommandQuery(value) !== undefined || addResourceQuery(value) !== undefined) {
+      closeMenu();
+    }
+    props.onPromptChange(value);
+  }
+
+  function handleComposerKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
+    const panel = slashPanelOpen ? "slash" : resourcePanelOpen ? "resource" : undefined;
+    if (panel) {
+      const itemCount =
+        panel === "slash" ? slashSuggestions.length : resourceSuggestions.length + 1;
+      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+        event.preventDefault();
+        if (itemCount > 0) {
+          const delta = event.key === "ArrowDown" ? 1 : -1;
+          setSuggestionIndex((current) => (current + delta + itemCount) % itemCount);
+        }
+        return;
+      }
+      if (event.key === "Escape") {
+        event.preventDefault();
+        dismissSuggestions();
+        return;
+      }
+      if (event.key === "Enter" && !event.shiftKey && itemCount > 0) {
+        event.preventDefault();
+        if (panel === "resource" && suggestionIndex === 0) {
+          void selectAttachments();
+        } else {
+          const command =
+            panel === "slash"
+              ? slashSuggestions[suggestionIndex]
+              : resourceSuggestions[suggestionIndex - 1];
+          if (command) selectCommand(command);
+        }
+        return;
+      }
+    }
+    props.onKeyDown(event);
   }
 
   const filteredBranches = useMemo(() => {
@@ -641,13 +776,73 @@ export function Composer(props: ComposerProps) {
       : tr("composer.local.label");
 
   const showProjectBar = props.showProjectBar !== false;
+  const queuedItems = [
+    ...props.queuedMessages.steering.map((message) => ({
+      message,
+      kind: "steering" as const,
+    })),
+    ...props.queuedMessages.followUp.map((message) => ({
+      message,
+      kind: "followUp" as const,
+    })),
+  ];
 
   return (
     <div
+      ref={rootRef}
       // Default width is also the minimum — do not shrink below 630px.
       className="pointer-events-auto relative mx-auto w-[630px] min-w-[630px] max-w-full"
       data-testid="composer-root"
     >
+      {queuedItems.length > 0 ? (
+        <div className="composer-queue-card" data-testid="composer-queue-card">
+          <div className="min-w-0 flex-1">
+            {queuedItems.slice(0, 2).map((item, index) => (
+              <div
+                key={`${item.kind}:${index}:${item.message}`}
+                className="flex min-w-0 items-center gap-2 px-3 py-2"
+              >
+                <ListPlus
+                  className="size-3.5 shrink-0 text-[var(--text-subtle)]"
+                  strokeWidth={1.75}
+                />
+                <span
+                  className="min-w-0 flex-1 truncate text-[12px] font-medium"
+                  title={item.message}
+                >
+                  {queuedMessagePreview(item.message)}
+                </span>
+                <span className="shrink-0 rounded-full bg-[var(--hover-fill)] px-2 py-0.5 text-[10px] text-[var(--muted-foreground)]">
+                  {item.kind === "steering"
+                    ? tr("composer.queue.guidance")
+                    : tr("composer.queue.followUp")}
+                </span>
+              </div>
+            ))}
+            {queuedItems.length > 2 ? (
+              <div className="px-3 pb-2 text-[10px] text-[var(--text-subtle)]">
+                {tr("composer.queue.more", { count: String(queuedItems.length - 2) })}
+              </div>
+            ) : null}
+          </div>
+          <div className="flex shrink-0 items-center gap-1 pr-2">
+            <span className="hidden text-[10px] text-[var(--text-subtle)] sm:inline">
+              {tr("composer.queue.hint")}
+            </span>
+            <button
+              type="button"
+              className="inline-flex size-7 items-center justify-center rounded-full text-[var(--text-subtle)] transition-colors hover:bg-[var(--hover-fill)] hover:text-[var(--foreground)]"
+              title={tr("composer.queue.clear")}
+              aria-label={tr("composer.queue.clear")}
+              data-testid="composer-queue-clear"
+              onClick={props.onClearQueue}
+            >
+              <Trash2 className="size-3.5" strokeWidth={1.75} />
+            </button>
+          </div>
+        </div>
+      ) : null}
+
       {/*
         Protrusion: project / local / branch. Only for empty sessions —
         hide once the thread has conversation content.
@@ -704,31 +899,43 @@ export function Composer(props: ComposerProps) {
 
       {/* Full card border; joins the protrusion tab when present. */}
       <form
-        className={cn(
-          "composer-card",
-          showProjectBar && "composer-card-with-protrusion",
-        )}
+        className={cn("composer-card", showProjectBar && "composer-card-with-protrusion")}
         onSubmit={(event) => props.onSubmit(event)}
       >
         {props.attachments.length > 0 ? (
-          <div className="flex flex-wrap gap-1.5 px-3 pt-2.5" data-testid="composer-attachments">
-            {props.attachments.map((name) => (
-              <span
-                key={name}
-                className="inline-flex max-w-full items-center gap-1 rounded-md bg-[var(--accent)] px-1.5 py-0.5 text-[11px] text-[var(--muted-foreground)]"
-              >
-                <Paperclip className="size-3 opacity-60" strokeWidth={1.75} />
-                <span className="min-w-0 truncate">{name}</span>
-                <button
-                  type="button"
-                  className="rounded px-0.5 text-[var(--text-subtle)] hover:text-[var(--foreground)]"
-                  aria-label={tr("composer.attach.remove")}
-                  onClick={() => props.onRemoveAttachment(name)}
+          <div className="composer-attachment-grid" data-testid="composer-attachments">
+            {props.attachments.map((path) => {
+              const presentation = attachmentPresentation(path);
+              return (
+                <div
+                  key={path}
+                  className="composer-attachment-card"
+                  data-kind={presentation.kind}
+                  data-testid="composer-attachment-card"
+                  title={path}
                 >
-                  ×
-                </button>
-              </span>
-            ))}
+                  <span className="composer-attachment-icon">
+                    {attachmentKindIcon(presentation.kind)}
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-[12px] font-medium text-[var(--foreground)]">
+                      {attachmentLabel(path)}
+                    </span>
+                    <span className="mt-0.5 block truncate text-[10px] font-medium uppercase tracking-[0.04em] text-[var(--text-subtle)]">
+                      {presentation.typeLabel}
+                    </span>
+                  </span>
+                  <button
+                    type="button"
+                    className="composer-attachment-remove"
+                    aria-label={tr("composer.attach.remove")}
+                    onClick={() => props.onRemoveAttachment(path)}
+                  >
+                    <X className="size-3" strokeWidth={2} />
+                  </button>
+                </div>
+              );
+            })}
           </div>
         ) : null}
 
@@ -737,8 +944,8 @@ export function Composer(props: ComposerProps) {
           aria-label="Prompt"
           data-testid="prompt-input"
           value={props.prompt}
-          onChange={(event) => props.onPromptChange(event.target.value)}
-          onKeyDown={props.onKeyDown}
+          onChange={(event) => handlePromptChange(event.target.value)}
+          onKeyDown={handleComposerKeyDown}
           placeholder={tr("composer.placeholder")}
           rows={2}
           className="min-h-[52px] border-0 bg-transparent px-3.5 pt-3 pb-1 text-[14px] focus-visible:ring-0"
@@ -864,22 +1071,35 @@ export function Composer(props: ComposerProps) {
             </select>
 
             {props.running ? (
-              <Button
-                type="button"
-                size="icon"
-                data-testid="abort-prompt"
-                onClick={() => props.onAbort()}
-                aria-label={tr("composer.stop")}
-                className="h-7 w-7 rounded-full bg-red-500 text-white hover:bg-red-600"
-              >
-                <Square className="h-2.5 w-2.5 fill-current" />
-              </Button>
+              <>
+                <Button
+                  type="submit"
+                  size="icon"
+                  data-testid="queue-prompt"
+                  disabled={!props.prompt.trim() && props.attachments.length === 0}
+                  title={tr("composer.queue.steer")}
+                  aria-label={tr("composer.queue.steer")}
+                  className="h-7 w-7 rounded-full disabled:opacity-30"
+                >
+                  <ArrowUp className="h-3.5 w-3.5" strokeWidth={2.25} />
+                </Button>
+                <Button
+                  type="button"
+                  size="icon"
+                  data-testid="abort-prompt"
+                  onClick={() => props.onAbort()}
+                  aria-label={tr("composer.stop")}
+                  className="h-7 w-7 rounded-full bg-red-500 text-white hover:bg-red-600"
+                >
+                  <Square className="h-2.5 w-2.5 fill-current" />
+                </Button>
+              </>
             ) : (
               <Button
                 type="submit"
                 size="icon"
                 data-testid="send-prompt"
-                disabled={!props.prompt.trim()}
+                disabled={!props.prompt.trim() && props.attachments.length === 0}
                 aria-label={tr("composer.start")}
                 className="h-7 w-7 rounded-full disabled:opacity-30"
               >
@@ -890,18 +1110,140 @@ export function Composer(props: ComposerProps) {
         </div>
       </form>
 
-      <input
-        ref={fileInputRef}
-        type="file"
-        multiple
-        className="hidden"
-        data-testid="composer-file-input"
-        onChange={(e) => {
-          props.onAttachFiles(e.target.files);
-          e.target.value = "";
-          closeMenu();
-        }}
-      />
+      <FloatingMenu
+        open={slashPanelOpen && Boolean(suggestionAnchor)}
+        anchor={suggestionAnchor}
+        onClose={dismissSuggestions}
+        placement="top"
+        testId="composer-slash-menu"
+        minWidth={320}
+        className="w-[min(630px,calc(100vw-16px))] !rounded-[var(--radius-panel)] !border-[var(--border)] !bg-[var(--surface-panel)] !py-1 shadow-[var(--shadow-soft)]"
+      >
+        <div className="pix-scroll max-h-[360px] overscroll-contain px-1">
+          {slashSuggestions.length === 0 ? (
+            <p className="px-3 py-4 text-[12px] text-[var(--text-subtle)]">
+              {tr("composer.slash.empty")}
+            </p>
+          ) : (
+            slashSuggestions.map((command, index) => (
+              <button
+                key={`${command.source}:${command.name}`}
+                type="button"
+                role="menuitem"
+                data-testid="composer-slash-item"
+                className={cn(
+                  "flex w-full items-center gap-2.5 rounded-[var(--radius-control)] px-2.5 py-2 text-left transition-colors",
+                  index === suggestionIndex
+                    ? "bg-[var(--hover-fill)]"
+                    : "hover:bg-[var(--hover-fill)]",
+                )}
+                onMouseEnter={() => setSuggestionIndex(index)}
+                onClick={() => selectCommand(command)}
+              >
+                <span className="inline-flex size-4 shrink-0 text-[var(--muted-foreground)]">
+                  {commandSourceIcon(command)}
+                </span>
+                <span className="min-w-0 flex-1 truncate text-[13px] font-medium text-[var(--foreground)]">
+                  /{command.name}
+                  {command.argumentHint ? (
+                    <span className="ml-1 font-normal text-[var(--text-subtle)]">
+                      {command.argumentHint}
+                    </span>
+                  ) : null}
+                </span>
+                <span className="max-w-[46%] shrink truncate text-right text-[12px] text-[var(--text-subtle)]">
+                  {command.description}
+                </span>
+              </button>
+            ))
+          )}
+        </div>
+      </FloatingMenu>
+
+      <FloatingMenu
+        open={resourcePanelOpen && Boolean(menu === "attach" ? anchor : suggestionAnchor)}
+        anchor={menu === "attach" ? anchor : suggestionAnchor}
+        onClose={dismissSuggestions}
+        placement="top"
+        testId="composer-attach-menu"
+        minWidth={320}
+        className="w-[min(630px,calc(100vw-16px))] !rounded-[var(--radius-panel)] !border-[var(--border)] !bg-[var(--surface-panel)] !py-0 shadow-[var(--shadow-soft)]"
+      >
+        <div className="flex items-center gap-2 px-3 pb-1 pt-3 text-[12px] font-medium text-[var(--text-subtle)]">
+          <AtSign className="size-3.5" strokeWidth={1.75} />
+          {tr("composer.add.title")}
+        </div>
+        <div className="px-1 pb-1">
+          <button
+            type="button"
+            role="menuitem"
+            data-testid="composer-attach-files"
+            className={cn(
+              "flex w-full items-center gap-2.5 rounded-[var(--radius-control)] px-2.5 py-2.5 text-left transition-colors",
+              suggestionIndex === 0 ? "bg-[var(--hover-fill)]" : "hover:bg-[var(--hover-fill)]",
+            )}
+            onMouseEnter={() => setSuggestionIndex(0)}
+            onClick={() => void selectAttachments()}
+          >
+            <FolderOpen
+              className="size-4 shrink-0 text-[var(--muted-foreground)]"
+              strokeWidth={1.75}
+            />
+            <span className="min-w-0 flex-1 text-[13px] font-medium">
+              {tr("composer.attach.filesAndFolders")}
+            </span>
+          </button>
+        </div>
+        {resourceSuggestions.length > 0 ? (
+          <>
+            <div className="border-t border-[var(--border)] px-3 pb-1 pt-2 text-[11px] font-medium text-[var(--text-subtle)]">
+              {tr("composer.add.commands")}
+            </div>
+            <div className="pix-scroll max-h-[280px] overscroll-contain px-1 pb-1">
+              {resourceSuggestions.map((command, index) => {
+                const itemIndex = index + 1;
+                const sourceLabel =
+                  command.source === "skill"
+                    ? tr("composer.slash.skill")
+                    : command.source === "prompt"
+                      ? tr("composer.slash.prompt")
+                      : tr("composer.slash.extension");
+                return (
+                  <button
+                    key={`${command.source}:${command.name}`}
+                    type="button"
+                    role="menuitem"
+                    data-testid="composer-resource-command"
+                    className={cn(
+                      "flex w-full items-center gap-2.5 rounded-[var(--radius-control)] px-2.5 py-2 text-left transition-colors",
+                      suggestionIndex === itemIndex
+                        ? "bg-[var(--hover-fill)]"
+                        : "hover:bg-[var(--hover-fill)]",
+                    )}
+                    onMouseEnter={() => setSuggestionIndex(itemIndex)}
+                    onClick={() => selectCommand(command)}
+                  >
+                    <span className="inline-flex size-4 shrink-0 text-[var(--muted-foreground)]">
+                      {commandSourceIcon(command)}
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-[13px] font-medium">
+                        /{command.name}
+                      </span>
+                      <span className="block truncate text-[11px] text-[var(--text-subtle)]">
+                        {command.description}
+                      </span>
+                    </span>
+                    <span className="shrink-0 text-[10px] text-[var(--text-subtle)]">
+                      {sourceLabel}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </>
+        ) : null}
+      </FloatingMenu>
 
       {/* Project menu — simple list, opens upward above the pill (matches reference). */}
       <FloatingMenu
@@ -1136,22 +1478,6 @@ export function Composer(props: ComposerProps) {
         ) : null}
       </FloatingMenu>
 
-      {/* Attach menu */}
-      <FloatingMenu
-        open={menu === "attach" && Boolean(anchor)}
-        anchor={anchor}
-        onClose={closeMenu}
-        testId="composer-attach-menu"
-        minWidth={200}
-      >
-        <MenuRow
-          icon={<FilePlus2 className="size-3.5" strokeWidth={1.75} />}
-          label={tr("composer.attach.files")}
-          testId="composer-attach-files"
-          onClick={() => fileInputRef.current?.click()}
-        />
-      </FloatingMenu>
-
       {/* Access menu — only options enabled in General → Permissions */}
       <FloatingMenu
         open={menu === "access" && Boolean(anchor)}
@@ -1180,15 +1506,20 @@ export function Composer(props: ComposerProps) {
         </div>
       </FloatingMenu>
 
-      {/* Model menu: models + hover flyouts (thinking above speed, open right) */}
+      {/* Model menu: scrollable models + pinned thinking/speed flyouts */}
       <FloatingMenu
         open={menu === "model" && Boolean(anchor)}
         anchor={anchor}
         onClose={closeMenu}
+        placement="top"
         testId="composer-model-menu"
-        minWidth={240}
+        minWidth={220}
+        className="flex w-[min(15rem,calc(100vw-2rem))] flex-col !overflow-hidden !py-0"
       >
-        <MenuSection title={tr("composer.model.models")}>
+        <div className="shrink-0 px-2.5 pb-1 pt-2 text-[11px] font-medium tracking-wide text-[var(--text-subtle)]">
+          {tr("composer.model.models")}
+        </div>
+        <div className="pix-scroll min-h-0 flex-1 overscroll-contain max-h-[min(280px,calc(100vh-14rem))]">
           {props.modelOptions.length === 0 ? (
             <p className="px-2.5 py-1.5 text-[12px] text-[var(--text-subtle)]">
               {tr("composer.model.none")}
@@ -1210,73 +1541,73 @@ export function Composer(props: ComposerProps) {
               );
             })
           )}
-        </MenuSection>
-        <div className="mx-2 border-t border-[var(--border)]" />
+        </div>
+        <div className="shrink-0 border-t border-[var(--border)] py-1">
+          {/* 思考强度 above 速度; hover flyout; current value left of › */}
+          <FlyoutRow
+            icon={<Sparkles className="size-3.5" strokeWidth={1.75} />}
+            label={tr("composer.model.thinking")}
+            valueLabel={props.thinkingLevel}
+            open={modelFlyout === "thinking"}
+            onHoverOpen={() => openModelFlyout("thinking")}
+            onHoverLeave={scheduleCloseModelFlyout}
+            testId="composer-thinking-flyout-trigger"
+            flyoutTestId="composer-thinking-flyout"
+            minWidth={160}
+          >
+            {props.thinkingLevels.map((level) => (
+              <MenuRow
+                key={level}
+                label={level}
+                active={props.thinkingLevel === level}
+                testId={`composer-thinking-${level}`}
+                onClick={() => {
+                  props.onThinkingChange(level);
+                  clearModelFlyoutCloseTimer();
+                  setModelFlyout(null);
+                }}
+              />
+            ))}
+          </FlyoutRow>
 
-        {/* 思考强度 above 速度; hover flyout; current value left of › */}
-        <FlyoutRow
-          icon={<Sparkles className="size-3.5" strokeWidth={1.75} />}
-          label={tr("composer.model.thinking")}
-          valueLabel={props.thinkingLevel}
-          open={modelFlyout === "thinking"}
-          onHoverOpen={() => openModelFlyout("thinking")}
-          onHoverLeave={scheduleCloseModelFlyout}
-          testId="composer-thinking-flyout-trigger"
-          flyoutTestId="composer-thinking-flyout"
-          minWidth={160}
-        >
-          {props.thinkingLevels.map((level) => (
-            <MenuRow
-              key={level}
-              label={level}
-              active={props.thinkingLevel === level}
-              testId={`composer-thinking-${level}`}
-              onClick={() => {
-                props.onThinkingChange(level);
-                clearModelFlyoutCloseTimer();
-                setModelFlyout(null);
-              }}
-            />
-          ))}
-        </FlyoutRow>
-
-        <FlyoutRow
-          icon={<Gauge className="size-3.5" strokeWidth={1.75} />}
-          label={tr("composer.model.speed")}
-          valueLabel={
-            props.speedMode === "fast"
-              ? tr("composer.speed.fast")
-              : props.speedMode === "quality"
-                ? tr("composer.speed.quality")
-                : tr("composer.speed.balanced")
-          }
-          open={modelFlyout === "speed"}
-          onHoverOpen={() => openModelFlyout("speed")}
-          onHoverLeave={scheduleCloseModelFlyout}
-          testId="composer-speed-flyout-trigger"
-          flyoutTestId="composer-speed-flyout"
-          minWidth={160}
-        >
-          {(
-            [
-              ["fast", tr("composer.speed.fast")],
-              ["balanced", tr("composer.speed.balanced")],
-              ["quality", tr("composer.speed.quality")],
-            ] as const
-          ).map(([mode, label]) => (
-            <MenuRow
-              key={mode}
-              label={label}
-              active={props.speedMode === mode}
-              testId={`composer-speed-${mode}`}
-              onClick={() => {
-                props.onSpeedMode(mode);
-                clearModelFlyoutCloseTimer();
-                setModelFlyout(null);
-              }}
-            />
-          ))}
-        </FlyoutRow>
+          <FlyoutRow
+            icon={<Gauge className="size-3.5" strokeWidth={1.75} />}
+            label={tr("composer.model.speed")}
+            valueLabel={
+              props.speedMode === "fast"
+                ? tr("composer.speed.fast")
+                : props.speedMode === "quality"
+                  ? tr("composer.speed.quality")
+                  : tr("composer.speed.balanced")
+            }
+            open={modelFlyout === "speed"}
+            onHoverOpen={() => openModelFlyout("speed")}
+            onHoverLeave={scheduleCloseModelFlyout}
+            testId="composer-speed-flyout-trigger"
+            flyoutTestId="composer-speed-flyout"
+            minWidth={160}
+          >
+            {(
+              [
+                ["fast", tr("composer.speed.fast")],
+                ["balanced", tr("composer.speed.balanced")],
+                ["quality", tr("composer.speed.quality")],
+              ] as const
+            ).map(([mode, label]) => (
+              <MenuRow
+                key={mode}
+                label={label}
+                active={props.speedMode === mode}
+                testId={`composer-speed-${mode}`}
+                onClick={() => {
+                  props.onSpeedMode(mode);
+                  clearModelFlyoutCloseTimer();
+                  setModelFlyout(null);
+                }}
+              />
+            ))}
+          </FlyoutRow>
+        </div>
       </FloatingMenu>
     </div>
   );

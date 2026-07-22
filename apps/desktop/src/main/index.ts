@@ -12,15 +12,18 @@ import {
   type HostEvent,
   type HostSnapshot,
   type ModelSummary,
+  type ModelsJsonConfigView,
   type PhotonProbeResult,
   type PackageSummary,
   type PiSettingsPatch,
   type PiSettingsView,
   type ProjectTrustSummary,
   type ProviderAuthSummary,
+  type ProviderUsageSnapshot,
   type ResourceSummary,
   type SessionHistoryMessage,
   type SessionThreadSummary,
+  type UpsertCustomProviderInput,
   isHostEvent,
 } from "@pix/contracts";
 import {
@@ -29,6 +32,7 @@ import {
   dialog,
   ipcMain,
   nativeImage,
+  nativeTheme,
   Notification,
   screen,
   shell,
@@ -352,22 +356,6 @@ function applyBranchPrefix(name: string): string {
   return `${prefix}${raw}`;
 }
 
-async function runShellTemplate(
-  template: string,
-  vars: Record<string, string>,
-  cwd: string,
-): Promise<void> {
-  let cmd = template;
-  for (const [key, value] of Object.entries(vars)) {
-    cmd = cmd.split(`{{${key}}}`).join(value);
-  }
-  if (process.platform === "win32") {
-    await execFileAsync("cmd", ["/c", cmd], { cwd, windowsHide: true, maxBuffer: 4 * 1024 * 1024 });
-  } else {
-    await execFileAsync("sh", ["-c", cmd], { cwd, windowsHide: true, maxBuffer: 4 * 1024 * 1024 });
-  }
-}
-
 /** Remove oldest managed linked worktrees under root until count <= limit. Never removes main. */
 async function pruneManagedWorktrees(repoCwd: string): Promise<void> {
   const prefs = loadDesktopPrefs();
@@ -528,8 +516,9 @@ async function generateCommitMessage(cwd: string): Promise<string> {
       : "(no listed changes)";
   // Prefer unstaged+staged combined view; keep size bounded for the model.
   const diff =
-    (await runGit(cwd, ["diff", "HEAD"]).catch(async () => runGit(cwd, ["diff"]).catch(() => ""))) ||
-    "";
+    (await runGit(cwd, ["diff", "HEAD"]).catch(async () =>
+      runGit(cwd, ["diff"]).catch(() => ""),
+    )) || "";
   const truncatedDiff = diff.length > 14_000 ? `${diff.slice(0, 14_000)}\n…(truncated)` : diff;
   const prompt = [
     instruction,
@@ -685,11 +674,10 @@ async function fileIconDataUrl(filePath: string): Promise<string | undefined> {
 async function sipsIconDataUrl(iconPath: string): Promise<string | undefined> {
   const out = join(tmpdir(), `pix-icon-${randomUUID()}.png`);
   try {
-    await execFileAsync(
-      "sips",
-      ["-s", "format", "png", "-z", "64", "64", iconPath, "--out", out],
-      { windowsHide: true, timeout: 4_000 },
-    );
+    await execFileAsync("sips", ["-s", "format", "png", "-z", "64", "64", iconPath, "--out", out], {
+      windowsHide: true,
+      timeout: 4_000,
+    });
     if (!existsSync(out)) return undefined;
     const buf = readFileSync(out);
     if (!buf.length) return undefined;
@@ -712,11 +700,9 @@ async function macBundleIconBaseName(appPath: string): Promise<string | undefine
   if (!existsSync(plist)) return undefined;
   for (const key of ["CFBundleIconFile", "CFBundleIconName"] as const) {
     try {
-      const { stdout } = await execFileAsync(
-        "plutil",
-        ["-extract", key, "raw", "-o", "-", plist],
-        { windowsHide: true },
-      );
+      const { stdout } = await execFileAsync("plutil", ["-extract", key, "raw", "-o", "-", plist], {
+        windowsHide: true,
+      });
       const name = stdout.trim();
       if (name) return name;
     } catch {
@@ -873,8 +859,7 @@ async function listOpenTargets(cwd: string): Promise<DetectedApp[]> {
     };
     const pending: Cand[] = [];
 
-    const finderPath =
-      resolveMacAppPath("Finder") ?? "/System/Library/CoreServices/Finder.app";
+    const finderPath = resolveMacAppPath("Finder") ?? "/System/Library/CoreServices/Finder.app";
     if (existsSync(finderPath)) {
       pending.push({
         id: "finder",
@@ -1387,7 +1372,12 @@ function isFiniteNumber(value: unknown): value is number {
 function normalizeWindowBoundsPrefs(raw: unknown): WindowBoundsPrefs | undefined {
   if (!raw || typeof raw !== "object") return undefined;
   const o = raw as Record<string, unknown>;
-  if (!isFiniteNumber(o.x) || !isFiniteNumber(o.y) || !isFiniteNumber(o.width) || !isFiniteNumber(o.height)) {
+  if (
+    !isFiniteNumber(o.x) ||
+    !isFiniteNumber(o.y) ||
+    !isFiniteNumber(o.width) ||
+    !isFiniteNumber(o.height)
+  ) {
     return undefined;
   }
   const width = Math.max(WINDOW_MIN_WIDTH, Math.round(o.width));
@@ -1742,16 +1732,31 @@ class HostSupervisor {
     return event.snapshot;
   }
 
-  async prompt(message: string): Promise<HostSnapshot> {
+  async prompt(message: string, streamingBehavior?: "steer" | "followUp"): Promise<HostSnapshot> {
     if (!this.#host) await this.start();
-    const event = await this.#request({
+    const command: HostCommand = {
       protocolVersion: IPC_PROTOCOL_VERSION,
       type: "agent.prompt",
       requestId: randomUUID(),
       message,
-    });
+    };
+    if (streamingBehavior) command.streamingBehavior = streamingBehavior;
+    const event = await this.#request(command);
     if (event.type !== "runtime.snapshot")
       throw new Error("Agent Host returned an unexpected prompt response");
+    this.#acceptSnapshot(event.snapshot);
+    return event.snapshot;
+  }
+
+  async clearQueue(): Promise<HostSnapshot> {
+    if (!this.#host) throw new Error("Agent Host is not running");
+    const event = await this.#request({
+      protocolVersion: IPC_PROTOCOL_VERSION,
+      type: "agent.queue.clear",
+      requestId: randomUUID(),
+    });
+    if (event.type !== "runtime.snapshot")
+      throw new Error("Agent Host returned an unexpected queue response");
     this.#acceptSnapshot(event.snapshot);
     return event.snapshot;
   }
@@ -1994,6 +1999,66 @@ class HostSupervisor {
     return event.snapshot;
   }
 
+  async getModelsJsonConfig(): Promise<ModelsJsonConfigView> {
+    if (!this.#host) await this.start();
+    const event = await this.#request({
+      protocolVersion: IPC_PROTOCOL_VERSION,
+      type: "models.config.get",
+      requestId: randomUUID(),
+    });
+    if (event.type !== "models.config")
+      throw new Error("Agent Host returned an unexpected models.config.get response");
+    return event.config;
+  }
+
+  async upsertCustomProvider(input: UpsertCustomProviderInput): Promise<ModelsJsonConfigView> {
+    if (!this.#host) await this.start();
+    const event = await this.#request({
+      protocolVersion: IPC_PROTOCOL_VERSION,
+      type: "models.config.upsert",
+      requestId: randomUUID(),
+      input,
+    });
+    if (event.type !== "models.config")
+      throw new Error("Agent Host returned an unexpected models.config.upsert response");
+    return event.config;
+  }
+
+  async removeCustomProvider(provider: string): Promise<ModelsJsonConfigView> {
+    if (!this.#host) await this.start();
+    const event = await this.#request({
+      protocolVersion: IPC_PROTOCOL_VERSION,
+      type: "models.config.remove",
+      requestId: randomUUID(),
+      provider,
+    });
+    if (event.type !== "models.config")
+      throw new Error("Agent Host returned an unexpected models.config.remove response");
+    return event.config;
+  }
+
+  async #resolveAgentDir(): Promise<string> {
+    if (this.#snapshot?.agentDir) return this.#snapshot.agentDir;
+    if (process.env.PI_CODING_AGENT_DIR?.trim()) return process.env.PI_CODING_AGENT_DIR.trim();
+    return (await this.start()).agentDir;
+  }
+
+  /** Ensure models.json exists and open it with the OS default app. */
+  async openModelsJson(): Promise<void> {
+    const agentDir = await this.#resolveAgentDir();
+    const { ensureModelsJsonTemplate } = await import("@pix/agent-runtime");
+    const path = await ensureModelsJsonTemplate(agentDir);
+    const error = await shell.openPath(path);
+    if (error) throw new Error(error);
+  }
+
+  async revealModelsJson(): Promise<void> {
+    const agentDir = await this.#resolveAgentDir();
+    const { ensureModelsJsonTemplate } = await import("@pix/agent-runtime");
+    const path = await ensureModelsJsonTemplate(agentDir);
+    shell.showItemInFolder(path);
+  }
+
   async setThinkingLevel(level: string): Promise<HostSnapshot> {
     if (!this.#host) await this.start();
     const event = await this.#request({
@@ -2018,6 +2083,19 @@ class HostSupervisor {
     if (event.type !== "providers.list")
       throw new Error("Agent Host returned an unexpected providers.list response");
     return event.providers;
+  }
+
+  async listProviderUsage(): Promise<ProviderUsageSnapshot[]> {
+    if (!this.#host) await this.start();
+    const event = await this.#request({
+      protocolVersion: IPC_PROTOCOL_VERSION,
+      type: "providers.usage",
+      requestId: randomUUID(),
+    });
+    if (event.type !== "providers.usage") {
+      throw new Error("Agent Host returned an unexpected providers.usage response");
+    }
+    return event.usage;
   }
 
   async setProviderApiKey(provider: string, apiKey: string): Promise<ProviderAuthSummary[]> {
@@ -2045,6 +2123,55 @@ class HostSupervisor {
     if (event.type !== "providers.list")
       throw new Error("Agent Host returned an unexpected providers.clearAuth response");
     return event.providers;
+  }
+
+  async startProviderOAuth(provider: string, requestedOperationId?: string): Promise<string> {
+    if (!this.#host) await this.start();
+    const operationId = requestedOperationId || randomUUID();
+    void this.#request({
+      protocolVersion: IPC_PROTOCOL_VERSION,
+      type: "providers.oauth.start",
+      requestId: operationId,
+      provider,
+    }).catch((error: unknown) => {
+      this.#emit({
+        protocolVersion: IPC_PROTOCOL_VERSION,
+        type: "providers.oauth",
+        requestId: operationId,
+        provider,
+        update: {
+          stage: "error",
+          message: error instanceof Error ? error.message : "OAuth login failed",
+        },
+      });
+    });
+    return operationId;
+  }
+
+  async respondProviderOAuth(
+    operationId: string,
+    promptId: string,
+    value?: string,
+    cancelled?: boolean,
+  ): Promise<void> {
+    this.#send({
+      protocolVersion: IPC_PROTOCOL_VERSION,
+      type: "providers.oauth.respond",
+      requestId: randomUUID(),
+      operationId,
+      promptId,
+      ...(value !== undefined ? { value } : {}),
+      ...(cancelled !== undefined ? { cancelled } : {}),
+    });
+  }
+
+  async cancelProviderOAuth(operationId: string): Promise<void> {
+    this.#send({
+      protocolVersion: IPC_PROTOCOL_VERSION,
+      type: "providers.oauth.cancel",
+      requestId: randomUUID(),
+      operationId,
+    });
   }
 
   async getPiSettings(): Promise<PiSettingsView> {
@@ -2222,8 +2349,8 @@ class HostSupervisor {
         }
       }
       this.#emit(message, false);
-      // Progress events share the parent requestId but are not the final response.
-      if (message.type !== "packages.progress") {
+      // Streaming events share the parent requestId but are not the final response.
+      if (message.type !== "packages.progress" && message.type !== "providers.oauth") {
         this.#resolvePending(message);
       }
 
@@ -2281,11 +2408,15 @@ class HostSupervisor {
       const timeoutMs =
         command.type === "agent.prompt"
           ? 300_000
-          : command.type === "packages.install" ||
-              command.type === "packages.remove" ||
-              command.type === "packages.update"
-            ? 180_000
-            : 15_000;
+          : command.type === "providers.oauth.start"
+            ? 300_000
+            : command.type === "providers.usage"
+              ? 25_000
+              : command.type === "packages.install" ||
+                  command.type === "packages.remove" ||
+                  command.type === "packages.update"
+                ? 180_000
+                : 15_000;
       const timeout = setTimeout(() => {
         this.#pending.delete(command.requestId);
         reject(new Error(`Agent Host timed out handling ${command.type}`));
@@ -2293,6 +2424,12 @@ class HostSupervisor {
       this.#pending.set(command.requestId, { resolve, reject, timeout });
       host.child.postMessage(command);
     });
+  }
+
+  #send(command: HostCommand): void {
+    const host = this.#host;
+    if (!host || host.ignoreMessages) throw new Error("Agent Host is not running");
+    host.child.postMessage(command);
   }
 
   #resolvePending(message: HostEvent): void {
@@ -2512,11 +2649,7 @@ app.setName("Pix");
 /** Keep Notification instances alive until closed (GC otherwise drops them before show). */
 const liveOsNotifications = new Set<InstanceType<typeof Notification>>();
 
-function showOsNotification(payload: {
-  title: string;
-  body?: string;
-  silent?: boolean;
-}): boolean {
+function showOsNotification(payload: { title: string; body?: string; silent?: boolean }): boolean {
   try {
     if (!Notification.isSupported()) return false;
     const title = payload?.title?.trim();
@@ -2554,6 +2687,12 @@ void app
   .then(async () => {
     // Set Dock icon as early as possible (dev: Electron binary; packaged: .icns in bundle).
     applyDockIcon(resolveAppIconPath());
+    ipcMain.handle("pix:appearance:set-theme-source", (_event, source: unknown) => {
+      if (source !== "light" && source !== "dark" && source !== "system") {
+        throw new Error("Invalid native theme source");
+      }
+      nativeTheme.themeSource = source;
+    });
     await createWindow();
 
     ipcMain.handle(
@@ -2643,6 +2782,19 @@ void app
     ipcMain.handle("pix:workspace:reveal-in-folder", (_event, cwd: string) => {
       if (typeof cwd === "string" && cwd.trim()) shell.showItemInFolder(cwd);
     });
+    ipcMain.handle("pix:workspace:open-file", async (_event, path: string) => {
+      if (typeof path !== "string" || !path.trim()) throw new Error("Invalid file path");
+      const error = await shell.openPath(path);
+      if (error) throw new Error(error);
+    });
+    ipcMain.handle("pix:workspace:open-external", async (_event, url: string) => {
+      if (typeof url !== "string") throw new Error("Invalid external URL");
+      const protocol = new URL(url).protocol;
+      if (!new Set(["http:", "https:", "mailto:"]).has(protocol)) {
+        throw new Error(`Unsupported external URL protocol: ${protocol}`);
+      }
+      await shell.openExternal(url);
+    });
     ipcMain.handle("pix:workspace:ensure-default", () => ensureDefaultWorkspacePath());
     ipcMain.handle("pix:workspace:ensure-conversation", () => ensureConversationWorkspacePath());
     ipcMain.handle("pix:workspace:git-status", async (_event, cwd?: string) => {
@@ -2692,27 +2844,60 @@ void app
       if (result.canceled || !result.filePaths[0]) return undefined;
       return result.filePaths[0];
     });
+    ipcMain.handle("pix:workspace:pick-attachments", async () => {
+      if (!mainWindow) return [];
+      const result = await dialog.showOpenDialog(mainWindow, {
+        properties: ["openFile", "openDirectory", "multiSelections"],
+      });
+      return result.canceled ? [] : result.filePaths;
+    });
     ipcMain.handle("pix:trust:get", () => supervisor?.getTrust());
     ipcMain.handle("pix:trust:set", (_event, trusted: boolean) => supervisor?.setTrust(trusted));
     ipcMain.handle("pix:models:list", () => supervisor?.listModels());
     ipcMain.handle("pix:models:set", (_event, provider: string, id: string) =>
       supervisor?.setModel(provider, id),
     );
+    ipcMain.handle("pix:models:get-config", () => supervisor?.getModelsJsonConfig());
+    ipcMain.handle("pix:models:upsert-custom", (_event, input: UpsertCustomProviderInput) =>
+      supervisor?.upsertCustomProvider(input),
+    );
+    ipcMain.handle("pix:models:remove-custom", (_event, provider: string) =>
+      supervisor?.removeCustomProvider(provider),
+    );
+    ipcMain.handle("pix:models:open-config", () => supervisor?.openModelsJson());
+    ipcMain.handle("pix:models:reveal-config", () => supervisor?.revealModelsJson());
     ipcMain.handle("pix:thinking:set", (_event, level: string) =>
       supervisor?.setThinkingLevel(level),
     );
     ipcMain.handle("pix:providers:list", () => supervisor?.listProviders());
+    ipcMain.handle("pix:providers:usage", () => supervisor?.listProviderUsage());
     ipcMain.handle("pix:providers:set-api-key", (_event, provider: string, apiKey: string) =>
       supervisor?.setProviderApiKey(provider, apiKey),
     );
     ipcMain.handle("pix:providers:clear-auth", (_event, provider: string) =>
       supervisor?.clearProviderAuth(provider),
     );
+    ipcMain.handle("pix:providers:oauth-start", (_event, provider: string, operationId?: string) =>
+      supervisor?.startProviderOAuth(provider, operationId),
+    );
+    ipcMain.handle(
+      "pix:providers:oauth-respond",
+      (_event, operationId: string, promptId: string, value?: string, cancelled?: boolean) =>
+        supervisor?.respondProviderOAuth(operationId, promptId, value, cancelled),
+    );
+    ipcMain.handle("pix:providers:oauth-cancel", (_event, operationId: string) =>
+      supervisor?.cancelProviderOAuth(operationId),
+    );
     ipcMain.handle("pix:settings:get", () => supervisor?.getPiSettings());
     ipcMain.handle("pix:settings:patch", (_event, patch: PiSettingsPatch) =>
       supervisor?.patchPiSettings(patch),
     );
-    ipcMain.handle("pix:agent:prompt", (_event, message: string) => supervisor?.prompt(message));
+    ipcMain.handle(
+      "pix:agent:prompt",
+      (_event, message: string, streamingBehavior?: "steer" | "followUp") =>
+        supervisor?.prompt(message, streamingBehavior),
+    );
+    ipcMain.handle("pix:agent:queue-clear", () => supervisor?.clearQueue());
     ipcMain.handle("pix:agent:abort", () => supervisor?.abort());
     ipcMain.handle("pix:session:list", () => supervisor?.listSessions());
     ipcMain.handle("pix:session:list-for-cwd", async (_event, cwd: string) => {

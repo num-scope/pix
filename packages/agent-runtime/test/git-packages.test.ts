@@ -1,8 +1,8 @@
 import { execFile } from "node:child_process";
 import { createServer, type Server } from "node:http";
-import { chmod, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, normalize } from "node:path";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import {
   DefaultPackageManager,
@@ -71,15 +71,20 @@ async function publishV2(fixture: { work: string; bare: string }, name: string):
 }
 
 async function startGitServer(remoteRoot: string): Promise<number> {
-  const root = normalize(remoteRoot);
+  const root = resolve(remoteRoot);
   const server = createServer((request, response) => {
     void (async () => {
       try {
         const pathname = decodeURIComponent(
           new URL(request.url ?? "/", "http://localhost").pathname,
         );
-        const path = normalize(join(root, pathname));
-        if (!path.startsWith(`${root}/`)) {
+        const path = resolve(root, `.${pathname}`);
+        const relativePath = relative(root, path);
+        if (
+          isAbsolute(relativePath) ||
+          relativePath === ".." ||
+          relativePath.startsWith(`..${sep}`)
+        ) {
           response.writeHead(403).end();
           return;
         }
@@ -205,13 +210,12 @@ describe("P03 git package transport", () => {
     const source = `http://127.0.0.1:${port}/pix/dependency.git@v1`;
 
     const wrapperDirectory = join(root, "bin");
-    const wrapper = join(wrapperDirectory, "npm");
+    const wrapper = join(wrapperDirectory, "npm-wrapper.mjs");
     const failedMarker = join(root, "failed-once");
     await mkdir(wrapperDirectory, { recursive: true });
     await writeFile(
       wrapper,
-      `#!/usr/bin/env node
-import { existsSync, writeFileSync } from "node:fs";
+      `import { existsSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 const marker = ${JSON.stringify(failedMarker)};
 const args = process.argv.slice(2);
@@ -219,17 +223,19 @@ if (args.includes("install") && !existsSync(marker)) {
   writeFileSync(marker, "failed");
   process.exit(23);
 }
-const result = spawnSync("npm", args, {
+const npm = process.platform === "win32"
+  ? { command: process.env.ComSpec ?? "cmd.exe", args: ["/d", "/s", "/c", "npm.cmd", ...args] }
+  : { command: "npm", args };
+const result = spawnSync(npm.command, npm.args, {
   stdio: "inherit",
   env: { ...process.env, npm_config_audit: "false", npm_config_fund: "false" },
 });
 process.exit(result.status ?? 1);
 `,
     );
-    await chmod(wrapper, 0o755);
 
     const settings = SettingsManager.create(cwd, agentDir, { projectTrusted: true });
-    settings.setNpmCommand([wrapper]);
+    settings.setNpmCommand([process.execPath, wrapper]);
     await settings.flush();
     const manager = new DefaultPackageManager({ cwd, agentDir, settingsManager: settings });
     const progress: ProgressEvent[] = [];

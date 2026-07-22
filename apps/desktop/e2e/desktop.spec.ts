@@ -1,19 +1,133 @@
-import {
-  test,
-  expect,
-  startHost,
-  conversationSessionButtons,
-  sendPrompt,
-  waitSettled,
-} from "./fixtures.ts";
+import { test, expect, startHost, conversationSessionButtons, sendPrompt } from "./fixtures.ts";
 
 test.describe("Desktop shell Playwright E2E (macOS Electron)", () => {
+  test("conversation content renders safe interactive rich content", async ({ page, pix }) => {
+    await startHost(page);
+    await page.evaluate(() => {
+      Object.defineProperty(navigator, "clipboard", {
+        configurable: true,
+        value: {
+          writeText: async (value: string) => {
+            (window as Window & { __copiedCode?: string }).__copiedCode = value;
+          },
+        },
+      });
+    });
+    await pix.app.evaluate(({ shell }) => {
+      const state = globalThis as typeof globalThis & {
+        __openedFile?: string;
+        __openedExternal?: string;
+      };
+      Object.defineProperty(shell, "openPath", {
+        configurable: true,
+        value: async (path: string) => {
+          state.__openedFile = path;
+          return "";
+        },
+      });
+      Object.defineProperty(shell, "openExternal", {
+        configurable: true,
+        value: async (url: string) => {
+          state.__openedExternal = url;
+        },
+      });
+    });
+    await sendPrompt(page, "Render the rich content fixture.");
+
+    const timeline = page.getByTestId("timeline");
+    await expect(timeline).toContainText("Rich content");
+    await expect(timeline.locator('input[type="checkbox"]')).toHaveCount(2);
+    await expect(timeline.locator('input[type="checkbox"]').first()).toBeChecked();
+    await expect(timeline.locator("del")).toContainText("Removed text");
+    await expect(page.locator(".content-table-scroll")).toBeVisible();
+    await expect(page.locator(".katex").first()).toBeVisible();
+    await expect(page.locator(".katex-display")).toBeVisible();
+
+    const javascript = page.locator('.content-code-block[data-language="javascript"]');
+    await expect(javascript.locator(".hljs")).toBeVisible();
+    await javascript.getByRole("button").click();
+    await expect(javascript.getByRole("button")).toContainText(/Copied|已复制/i);
+    expect(
+      await page.evaluate(() => (window as Window & { __copiedCode?: string }).__copiedCode),
+    ).toBe("const answer = 42;");
+
+    await expect(page.locator('.content-code-block[data-language="diff"]')).toBeVisible();
+    await expect(page.getByTestId("mermaid-diagram")).toBeVisible({ timeout: 15_000 });
+
+    const fileLink = timeline.locator("a.content-file-link");
+    await expect(fileLink).toHaveAttribute("title", `${pix.workspace}/fixture.txt`);
+    await fileLink.click();
+    await expect
+      .poll(() =>
+        pix.app.evaluate(
+          () => (globalThis as typeof globalThis & { __openedFile?: string }).__openedFile,
+        ),
+      )
+      .toBe(`${pix.workspace}/fixture.txt`);
+
+    const externalLink = timeline.getByRole("link", { name: /External docs/ });
+    await expect(externalLink).toHaveAttribute("href", "https://example.com/docs");
+    await externalLink.click();
+    await expect
+      .poll(() =>
+        pix.app.evaluate(
+          () => (globalThis as typeof globalThis & { __openedExternal?: string }).__openedExternal,
+        ),
+      )
+      .toBe("https://example.com/docs");
+
+    const image = timeline.locator(".content-image-button");
+    await expect(image).toBeVisible();
+    await image.click();
+    await expect(page.locator('.content-image-preview[role="dialog"]')).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(page.locator('.content-image-preview[role="dialog"]')).toHaveCount(0);
+    await expect(timeline.locator("video.content-video")).toHaveAttribute("src", /demo\.mp4$/);
+    await expect(timeline.locator("video.content-video")).toHaveAttribute("controls", "");
+
+    await expect(timeline.locator("script, iframe, [data-unsafe-html]")).toHaveCount(0);
+    await expect(timeline.locator(".pix-md > style")).toHaveCount(0);
+    expect(
+      await page.evaluate(
+        () => (window as Window & { __pixUnsafeScript?: boolean }).__pixUnsafeScript,
+      ),
+    ).toBeUndefined();
+  });
+
+  test("structured thinking is separated from the assistant answer", async ({ page }) => {
+    await startHost(page);
+    await sendPrompt(page, "Render the structured timeline fixture.");
+
+    const thinking = page.locator('[data-kind="thinking"]');
+    await expect(thinking).toBeVisible();
+    await expect(thinking.locator("details")).not.toHaveAttribute("open", "");
+    await thinking.locator("summary").click();
+    await expect(thinking).toContainText("Check the structured timeline first.");
+    await expect(page.locator('[data-kind="assistant"]')).toContainText(
+      "Structured timeline ready.",
+    );
+    await expect(page.getByTestId("event-log").first()).toContainText("thinking.delta");
+  });
+
   test("Runtime: new thread, stream a tool turn, and abort a hanging response", async ({
     page,
   }) => {
     await startHost(page);
     await expect(page.getByTestId("sidebar")).toBeVisible();
     await expect(page.getByTestId("composer-dock")).toBeVisible();
+
+    await page.getByTestId("prompt-input").fill("/");
+    await expect(page.getByTestId("composer-slash-menu")).toBeVisible();
+    await expect(page.getByTestId("composer-slash-menu")).toContainText("/e2e-review");
+    await expect(page.getByTestId("composer-slash-menu")).toContainText("/skill:e2e-skill");
+    await page.getByTestId("composer-slash-item").filter({ hasText: "/e2e-review" }).click();
+    await expect(page.getByTestId("prompt-input")).toHaveValue("/e2e-review ");
+
+    await page.getByTestId("prompt-input").fill("@");
+    await expect(page.getByTestId("composer-attach-menu")).toBeVisible();
+    await expect(page.getByTestId("composer-attach-files")).toBeVisible();
+    await expect(page.getByTestId("composer-attach-menu")).toContainText("/e2e-review");
+    await expect(page.getByTestId("composer-attach-menu")).not.toContainText("/skill:e2e-skill");
 
     // Default prompt asks the fake model to use the read tool.
     await page.getByTestId("prompt-input").fill("Use the read tool for the fixture file.");
@@ -29,6 +143,11 @@ test.describe("Desktop shell Playwright E2E (macOS Electron)", () => {
     await expect(page.getByTestId("event-log").first()).toContainText("tool.");
     await expect(page.getByTestId("runtime-snapshot").first()).toContainText('"id": "pix-fake"');
     await expect(page.getByTestId("event-log").first()).toContainText("message.delta");
+    const toolCard = page.locator('[data-kind="tool"]');
+    await expect(toolCard).toHaveCount(1);
+    await expect(toolCard).toHaveAttribute("data-status", "completed");
+    await toolCard.locator("summary").click();
+    await expect(toolCard).toContainText("Pix Playwright E2E fixture");
 
     // Mid-stream abort: fake model hangs after the first abort delta.
     await page.getByTestId("prompt-input").fill("ABORT this response after its first delta.");
@@ -37,11 +156,81 @@ test.describe("Desktop shell Playwright E2E (macOS Electron)", () => {
     await expect
       .poll(async () => page.getByTestId("timeline").innerText(), { timeout: 30_000 })
       .toMatch(/Waiting for abort|abort/i);
+    await page.getByTestId("prompt-input").fill("Queued guidance while the model is running.");
+    await page.getByTestId("queue-prompt").click();
+    await expect(page.getByTestId("composer-queue-card")).toContainText("Queued guidance", {
+      timeout: 10_000,
+    });
+    await page.getByTestId("prompt-input").fill("Queued follow-up after the model settles.");
+    await page.getByTestId("prompt-input").press("Alt+Enter");
+    await expect(page.getByTestId("composer-queue-card")).toContainText("Queued follow-up", {
+      timeout: 10_000,
+    });
+    await expect(page.getByTestId("composer-queue-card")).toContainText(/Follow-up|后续/i);
+    await page.getByTestId("composer-queue-clear").click();
+    await expect(page.getByTestId("composer-queue-card")).toHaveCount(0);
     await page.getByTestId("abort-prompt").click();
     await expect(page.getByTestId("host-status").first()).toContainText(
       /Agent aborted|Agent settled/,
       { timeout: 30_000 },
     );
+    await expect(page.locator('[data-kind="system"].is-error')).toContainText("Response stopped");
+  });
+
+  test("attachments render typed cards from picker through the sent timeline", async ({
+    page,
+    pix,
+  }) => {
+    await startHost(page);
+    await pix.app.evaluate(({ dialog }, paths) => {
+      Object.defineProperty(dialog, "showOpenDialog", {
+        configurable: true,
+        value: async () => ({ canceled: false, filePaths: paths }),
+      });
+    }, pix.attachmentPaths);
+
+    await page.getByTestId("composer-attach").click();
+    await expect(page.getByTestId("composer-attach-menu")).toBeVisible();
+    await page.getByTestId("composer-attach-files").click();
+
+    const cards = page.getByTestId("composer-attachment-card");
+    await expect(cards).toHaveCount(11);
+    expect(await cards.evaluateAll((items) => items.map((item) => item.dataset.kind))).toEqual([
+      "spreadsheet",
+      "image",
+      "pdf",
+      "presentation",
+      "document",
+      "archive",
+      "text",
+      "text",
+      "code",
+      "code",
+      "code",
+    ]);
+    await expect(page.getByTestId("composer-attachments")).toContainText(
+      /Excel|PNG|PDF|PowerPoint|Word|ZIP|Markdown|JavaScript|Python/,
+    );
+
+    const imageCard = cards.filter({ hasText: "photo.png" });
+    await imageCard.getByRole("button").click();
+    await expect(cards).toHaveCount(10);
+    await page.getByTestId("composer-attach").click();
+    await page.getByTestId("composer-attach-files").click();
+    await expect(cards).toHaveCount(11);
+
+    await page.getByTestId("prompt-input").fill("Inspect every attachment card.");
+    await page.getByTestId("send-prompt").click();
+    await expect(page.getByTestId("host-status").first()).toContainText("Agent settled", {
+      timeout: 60_000,
+    });
+
+    const sentCards = page.getByTestId("timeline-attachments").locator("button");
+    await expect(sentCards).toHaveCount(11);
+    await expect(page.getByTestId("timeline")).toContainText("Inspect every attachment card.");
+    await expect(page.getByTestId("timeline")).not.toContainText("<attached-paths>");
+    const request = JSON.stringify(pix.fakeModel.requests.at(-1));
+    for (const path of pix.attachmentPaths) expect(request).toContain(path);
   });
 
   test("sessions: create a second conversation and switch back", async ({ page }) => {
@@ -70,7 +259,10 @@ test.describe("Desktop shell Playwright E2E (macOS Electron)", () => {
     await expect(conversationSessionButtons(page)).toHaveCount(2, { timeout: 15_000 });
 
     // Switch to the non-active conversation.
-    await conversationSessionButtons(page).filter({ hasNot: page.locator('[data-active="true"]') }).first().click();
+    await conversationSessionButtons(page)
+      .filter({ hasNot: page.locator('[data-active="true"]') })
+      .first()
+      .click();
     // Or click data-active=false
     const inactive = page
       .getByTestId("conversations-list")
@@ -147,17 +339,48 @@ test.describe("Desktop shell Playwright E2E (macOS Electron)", () => {
     await expect(page.getByTestId("resources-page")).toContainText(/Resources|资源/i);
   });
 
-  test("palette, theme toggle, and fork thread", async ({ page }) => {
+  test("palette, theme toggle, and fork thread", async ({ page, pix }) => {
     await startHost(page);
     await sendPrompt(page, "fork base message");
 
     // Theme control lives in appearance settings (not next to brand/search).
     await page.getByTestId("nav-settings").click();
     await page.getByTestId("settings-nav-appearance").click();
+    const sidebarMaterial = () =>
+      page.getByTestId("sidebar").evaluate((element) => {
+        const style = getComputedStyle(element);
+        const color = style.backgroundColor;
+        const slash = /\/\s*([\d.]+)(%)?\s*\)/.exec(color);
+        const rgba = /^rgba\([^,]+,[^,]+,[^,]+,\s*([\d.]+)\)$/.exec(color);
+        const alpha = slash ? Number(slash[1]) / (slash[2] ? 100 : 1) : rgba ? Number(rgba[1]) : 1;
+        return {
+          alpha,
+          backdrop: style.backdropFilter || style.getPropertyValue("-webkit-backdrop-filter"),
+        };
+      });
+
     await page.getByTestId("appearance-theme").selectOption("light");
     await expect(page.getByTestId("pix-app")).toHaveAttribute("data-theme", "light");
+    await expect
+      .poll(() => pix.app.evaluate(({ nativeTheme }) => nativeTheme.themeSource))
+      .toBe("light");
+    await expect.poll(async () => (await sidebarMaterial()).alpha).toBeLessThan(0.5);
+    await expect.poll(async () => (await sidebarMaterial()).backdrop).toContain("blur(");
+
+    await page.getByTestId("appearance-translucent").click();
+    await expect(page.getByTestId("sidebar")).toHaveAttribute("data-translucent", "false");
+    await expect.poll(async () => (await sidebarMaterial()).alpha).toBe(1);
+    await expect.poll(async () => (await sidebarMaterial()).backdrop).toBe("none");
+    await page.getByTestId("appearance-translucent").click();
+    await expect(page.getByTestId("sidebar")).toHaveAttribute("data-translucent", "true");
+
     await page.getByTestId("appearance-theme").selectOption("dark");
     await expect(page.getByTestId("pix-app")).toHaveAttribute("data-theme", "dark");
+    await expect
+      .poll(() => pix.app.evaluate(({ nativeTheme }) => nativeTheme.themeSource))
+      .toBe("dark");
+    await expect.poll(async () => (await sidebarMaterial()).alpha).toBeLessThan(0.5);
+    await expect.poll(async () => (await sidebarMaterial()).backdrop).toContain("blur(");
     await page.getByTestId("settings-back").click();
 
     await page.getByTestId("open-palette").click();
@@ -234,9 +457,7 @@ test.describe("Desktop shell Playwright E2E (macOS Electron)", () => {
         async () => {
           const snap = await page.evaluate(async () => window.pix.host.snapshot());
           return (
-            snap.sessionFile === sessionFile ||
-            snap.sessionId === sessionId ||
-            snap.cwd === cwd
+            snap.sessionFile === sessionFile || snap.sessionId === sessionId || snap.cwd === cwd
           );
         },
         { timeout: 20_000 },
@@ -264,10 +485,9 @@ test.describe("Desktop shell Playwright E2E (macOS Electron)", () => {
     // Trust toggle probe under Developer.
     await page.getByTestId("developer-summary").click();
     await page.getByTestId("trust-toggle").click();
-    await expect(page.getByTestId("trust-chip")).toContainText(
-      /trusted|untrusted|已信任|未信任/i,
-      { timeout: 15_000 },
-    );
+    await expect(page.getByTestId("trust-chip")).toContainText(/trusted|untrusted|已信任|未信任/i, {
+      timeout: 15_000,
+    });
   });
 
   test("m2: ephemeral openPath does not pollute recent workspaces UI", async ({ page }) => {
@@ -311,6 +531,67 @@ test.describe("Desktop shell Playwright E2E (macOS Electron)", () => {
     const body = await page.getByTestId("providers-list").innerText();
     expect(body.toLowerCase()).not.toContain("test-key");
     expect(body).not.toMatch(/sk-[a-z0-9]{8,}/i);
+
+    await page.getByTestId("settings-nav-usage").click();
+    await expect(page.getByTestId("settings-usage")).toBeVisible();
+    await expect(page.getByTestId("usage-limits-list")).toBeVisible();
+    await expect(page.getByTestId("usage-card-zai")).toContainText("GLM Coding Max");
+    await expect(page.getByTestId("usage-limit-zai-0")).toContainText(/26%|74%/);
+    await expect(page.getByTestId("usage-limit-zai-1")).toContainText(/63%|37%/);
+    await expect(page.getByTestId("usage-card-pix-fake")).toHaveCount(0);
+    await expect(page.getByTestId("settings-usage")).not.toContainText("test-key");
+    await expect(page.getByTestId("settings-usage")).not.toContainText(
+      /此处展示通过 Auth|Shows Auth\/OAuth plan limits/i,
+    );
+  });
+
+  test("settings: OAuth login completes in-app and refreshes auth status", async ({
+    page,
+    pix,
+  }) => {
+    await pix.app.evaluate(({ shell }) => {
+      const state = globalThis as typeof globalThis & { __oauthUrl?: string };
+      Object.defineProperty(shell, "openExternal", {
+        configurable: true,
+        value: async (url: string) => {
+          state.__oauthUrl = url;
+        },
+      });
+    });
+    await startHost(page);
+    await page.getByTestId("nav-settings").click();
+    await page.getByTestId("settings-nav-providers").click();
+    await page.getByTestId("providers-search").fill("openai-codex");
+
+    const row = page.getByTestId("provider-row-openai-codex");
+    await expect(row).toBeVisible({ timeout: 15_000 });
+    await row.getByTestId("provider-oauth-openai-codex").click();
+
+    const dialog = page.getByTestId("provider-oauth-dialog");
+    await expect(dialog).toBeVisible();
+    await dialog.getByRole("button", { name: "Device code login" }).click();
+    await expect(page.getByTestId("provider-oauth-device-code")).toContainText("PIX-E2E");
+    await expect
+      .poll(() =>
+        pix.app.evaluate(
+          () => (globalThis as typeof globalThis & { __oauthUrl?: string }).__oauthUrl,
+        ),
+      )
+      .toBe("https://example.com/device");
+
+    await page.getByTestId("provider-oauth-input").fill("complete");
+    await page.getByTestId("provider-oauth-continue").click();
+    await expect(page.getByTestId("provider-oauth-complete")).toBeVisible();
+    await dialog
+      .getByRole("button", { name: /Close|关闭/ })
+      .last()
+      .click();
+
+    await expect(row).toContainText(/OAuth 已登录|Signed in with OAuth/);
+    await expect(row.getByTestId("provider-oauth-openai-codex")).toContainText(
+      /重新登录|Sign in again/,
+    );
+    await expect(row).not.toContainText(/access.?token|refresh.?token/i);
   });
 
   test("settings: environment visibility toggles and shortcuts page", async ({ page }) => {
@@ -328,7 +609,35 @@ test.describe("Desktop shell Playwright E2E (macOS Electron)", () => {
     await page.getByTestId("settings-nav-shortcuts").click();
     await expect(page.getByTestId("settings-shortcuts")).toBeVisible();
     await expect(page.getByTestId("settings-shortcuts-list")).toBeVisible();
-    await expect(page.getByTestId("shortcut-bind-new-thread")).toBeVisible();
+    const shortcutRow = page.getByTestId("shortcut-row-new-thread");
+    const shortcutInput = page.getByTestId("shortcut-bind-new-thread");
+    const shortcutReset = page.getByTestId("shortcut-reset-new-thread");
+    const shortcutClear = page.getByTestId("shortcut-clear-new-thread");
+    await expect(shortcutInput).toBeVisible();
+    await expect(shortcutReset).toBeDisabled();
+    await expect(shortcutClear).toBeEnabled();
+    await expect(shortcutReset.locator("svg")).toHaveCount(1);
+    await expect(shortcutClear.locator("svg")).toHaveCount(1);
+    await expect(shortcutRow.locator("button")).toHaveCount(3);
+    expect(
+      await shortcutRow
+        .locator("button")
+        .evaluateAll((buttons) => buttons.map((button) => button.getAttribute("data-testid"))),
+    ).toEqual([
+      "shortcut-bind-new-thread",
+      "shortcut-reset-new-thread",
+      "shortcut-clear-new-thread",
+    ]);
+
+    await shortcutInput.click();
+    await page.keyboard.press("Meta+Shift+N");
+    await expect(shortcutReset).toBeEnabled();
+    await shortcutClear.click();
+    await expect(shortcutClear).toBeDisabled();
+    await expect(shortcutReset).toBeEnabled();
+    await shortcutReset.click();
+    await expect(shortcutReset).toBeDisabled();
+    await expect(shortcutClear).toBeEnabled();
 
     await page.getByTestId("settings-back").click();
     await expect(page.getByTestId("composer-dock")).toBeVisible();
@@ -359,14 +668,18 @@ test.describe("Desktop shell Playwright E2E (macOS Electron)", () => {
         const sidebar = await page.getByTestId("sidebar").boundingBox();
         const sidebarWidth = sidebar?.width ?? 0;
         expect(sidebarWidth).toBeLessThan(4);
-        expect(Number(await page.getByTestId("shell-main").getAttribute("data-rail-width"))).toBe(0);
+        expect(Number(await page.getByTestId("shell-main").getAttribute("data-rail-width"))).toBe(
+          0,
+        );
       } else {
         const sidebar = await page.getByTestId("sidebar").boundingBox();
         expect(sidebar).toBeTruthy();
         expect(sidebar!.width).toBeGreaterThan(200);
         // Content (composer) starts after the rail overlay.
         expect(dock!.x).toBeGreaterThanOrEqual(sidebar!.x + sidebar!.width - 4);
-        const railAttr = Number(await page.getByTestId("shell-main").getAttribute("data-rail-width"));
+        const railAttr = Number(
+          await page.getByTestId("shell-main").getAttribute("data-rail-width"),
+        );
         expect(railAttr).toBeGreaterThan(200);
       }
     }
@@ -386,10 +699,15 @@ test.describe("Desktop shell Playwright E2E (macOS Electron)", () => {
     const railW = sidebarBox!.width;
     expect(Math.abs(packagesBox!.width - (shellMain!.width - railW))).toBeLessThan(24);
     expect(packagesBox!.x).toBeGreaterThanOrEqual(sidebarBox!.x + railW - 4);
-    await page.getByTestId("settings-back").or(page.getByRole("button", { name: /Back|返回/i })).first().click().catch(async () => {
-      // Packages page back button
-      await page.getByRole("button", { name: /Back to thread|返回对话|返回应用/i }).click();
-    });
+    await page
+      .getByTestId("settings-back")
+      .or(page.getByRole("button", { name: /Back|返回/i }))
+      .first()
+      .click()
+      .catch(async () => {
+        // Packages page back button
+        await page.getByRole("button", { name: /Back to thread|返回对话|返回应用/i }).click();
+      });
     // Prefer packages back
     if (await page.getByTestId("packages-page").count()) {
       await page.getByRole("button", { name: /Back to thread|返回对话|返回应用|Back/i }).click();
@@ -431,6 +749,61 @@ test.describe("Desktop shell Playwright E2E (macOS Electron)", () => {
     await expect(page.getByTestId("settings-back")).toContainText(/Back to app|返回应用/);
     await page.getByTestId("settings-back").click();
     await expect(page.getByTestId("composer-dock")).toBeVisible();
+  });
+
+  test("overlay scrollbar highlights, stays visible on hover, and follows dragging", async ({
+    page,
+  }) => {
+    const scrollId = await page.evaluate(() => {
+      const host = document.createElement("div");
+      host.className = "pix-scroll";
+      host.dataset.testid = "overlay-scroll-probe";
+      Object.assign(host.style, {
+        position: "fixed",
+        top: "80px",
+        left: "400px",
+        width: "220px",
+        height: "240px",
+        zIndex: "9000",
+      });
+      const content = document.createElement("div");
+      content.style.height = "1200px";
+      host.appendChild(content);
+      document.body.appendChild(host);
+      host.scrollTop = 160;
+      host.dispatchEvent(new Event("scroll", { bubbles: true }));
+      return host.dataset.pixScrollId;
+    });
+    expect(scrollId).toBeTruthy();
+
+    const host = page.getByTestId("overlay-scroll-probe");
+    const thumb = page.locator(`.pix-scroll-thumb[data-for="${scrollId}"]`);
+    await expect(thumb).toHaveAttribute("data-visible", "true");
+    await expect
+      .poll(() => thumb.evaluate((el) => getComputedStyle(el, "::before").width))
+      .toBe("6px");
+
+    await thumb.hover();
+    await expect(thumb).toHaveAttribute("data-hovered", "true");
+    await expect
+      .poll(() => thumb.evaluate((el) => getComputedStyle(el, "::before").width))
+      .toBe("8px");
+    await page.waitForTimeout(1_100);
+    await expect(thumb).toHaveAttribute("data-visible", "true");
+
+    const before = await host.evaluate((el) => el.scrollTop);
+    const box = await thumb.boundingBox();
+    expect(box).toBeTruthy();
+    await page.mouse.move(box!.x + box!.width / 2, box!.y + box!.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(box!.x + box!.width / 2, box!.y + box!.height / 2 + 80, {
+      steps: 4,
+    });
+    await expect.poll(() => host.evaluate((el) => el.scrollTop)).toBeGreaterThan(before + 200);
+    await page.mouse.up();
+
+    await page.mouse.move(20, 20);
+    await expect(thumb).toHaveAttribute("data-visible", "false", { timeout: 2_000 });
   });
 
   test("Crash recovery: crash probe keeps the window alive and New thread recovers the host", async ({

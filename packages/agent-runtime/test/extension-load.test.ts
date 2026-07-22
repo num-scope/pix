@@ -63,6 +63,12 @@ describe("P06/U06 extension load failure", () => {
     expect(snapshot.runtimeId).toBeTruthy();
     expect(snapshot.resources.prompts).toBe(1);
     expect(snapshot.resources.extensions).toBe(0);
+    expect(snapshot.slashCommands).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ name: "still-available", source: "prompt" }),
+      ]),
+    );
+    expect(snapshot.queuedMessages).toEqual({ steering: [], followUp: [] });
     expect(snapshot.diagnostics).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ type: "error", message: expect.stringContaining("broken.ts") }),

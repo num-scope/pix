@@ -29,6 +29,7 @@ describe("host contract validation", () => {
         type: "agent.prompt",
         requestId: "request-2",
         message: "hello",
+        streamingBehavior: "steer",
       }),
     ).toBe(true);
     expect(
@@ -38,6 +39,31 @@ describe("host contract validation", () => {
         runtimeId: "runtime-1",
         sequence: 3,
         event: { type: "message.delta", delta: "hello" },
+      }),
+    ).toBe(true);
+    expect(
+      isHostEvent({
+        protocolVersion: IPC_PROTOCOL_VERSION,
+        type: "runtime.event",
+        runtimeId: "runtime-1",
+        sequence: 4,
+        event: { type: "thinking.delta", delta: "reasoning" },
+      }),
+    ).toBe(true);
+    expect(
+      isHostCommand({
+        protocolVersion: IPC_PROTOCOL_VERSION,
+        type: "agent.queue.clear",
+        requestId: "request-clear",
+      }),
+    ).toBe(true);
+    expect(
+      isHostEvent({
+        protocolVersion: IPC_PROTOCOL_VERSION,
+        type: "runtime.event",
+        runtimeId: "runtime-1",
+        sequence: 5,
+        event: { type: "queue.updated", steering: ["guide"], followUp: ["later"] },
       }),
     ).toBe(true);
   });
@@ -143,7 +169,8 @@ describe("host contract validation", () => {
             configured: true,
             source: "models_json_key",
             modelCount: 1,
-            oauthAvailable: false,
+            oauthSupported: false,
+            oauthActive: false,
           },
         ],
       }),
@@ -158,10 +185,106 @@ describe("host contract validation", () => {
             displayName: "x",
             configured: true,
             modelCount: 1,
-            oauthAvailable: false,
+            oauthSupported: false,
+            oauthActive: false,
             apiKey: "sk-leak",
           },
         ],
+      }),
+    ).toBe(false);
+  });
+
+  it("accepts live provider usage and rejects nested credential leakage", () => {
+    expect(
+      isHostCommand({
+        protocolVersion: IPC_PROTOCOL_VERSION,
+        type: "providers.usage",
+        requestId: "usage-1",
+      }),
+    ).toBe(true);
+    const usageEvent = {
+      protocolVersion: IPC_PROTOCOL_VERSION,
+      type: "providers.usage",
+      usage: [
+        {
+          provider: "zai",
+          displayName: "Z.AI",
+          updatedAt: "2026-07-22T00:00:00.000Z",
+          status: "ok",
+          planName: "GLM Coding Max",
+          limits: [
+            {
+              label: "Weekly",
+              usedPercent: 42,
+              resetsAt: "2026-07-29T00:00:00.000Z",
+              windowDurationMins: 10_080,
+            },
+          ],
+          usageLines: [{ label: "Balance", value: "$12.50 remaining" }],
+        },
+      ],
+    };
+    expect(isHostEvent(usageEvent)).toBe(true);
+    expect(
+      isHostEvent({
+        ...usageEvent,
+        usage: [
+          {
+            ...usageEvent.usage[0],
+            usageLines: [{ label: "Balance", value: "$12.50", token: "secret" }],
+          },
+        ],
+      }),
+    ).toBe(false);
+  });
+
+  it("validates provider OAuth commands and safe interaction events", () => {
+    expect(
+      isHostCommand({
+        protocolVersion: IPC_PROTOCOL_VERSION,
+        type: "providers.oauth.start",
+        requestId: "oauth-1",
+        provider: "openai-codex",
+      }),
+    ).toBe(true);
+    expect(
+      isHostCommand({
+        protocolVersion: IPC_PROTOCOL_VERSION,
+        type: "providers.oauth.respond",
+        requestId: "respond-1",
+        operationId: "oauth-1",
+        promptId: "prompt-1",
+        value: "device",
+      }),
+    ).toBe(true);
+    expect(
+      isHostEvent({
+        protocolVersion: IPC_PROTOCOL_VERSION,
+        type: "providers.oauth",
+        requestId: "oauth-1",
+        provider: "openai-codex",
+        update: {
+          stage: "prompt",
+          promptId: "prompt-1",
+          prompt: {
+            type: "select",
+            message: "Choose a login method",
+            options: [{ id: "device", label: "Device code" }],
+          },
+        },
+      }),
+    ).toBe(true);
+    expect(
+      isHostEvent({
+        protocolVersion: IPC_PROTOCOL_VERSION,
+        type: "providers.oauth",
+        requestId: "oauth-1",
+        provider: "openai-codex",
+        update: {
+          stage: "info",
+          message: "Continue in the browser",
+          token: "must-not-cross-ipc",
+        },
       }),
     ).toBe(false);
   });

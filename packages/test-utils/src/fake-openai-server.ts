@@ -1,5 +1,6 @@
 import { createServer, type Server, type ServerResponse } from "node:http";
 import { once } from "node:events";
+import { dirname, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 
 interface FakeOpenAiServerOptions {
@@ -58,11 +59,13 @@ export class FakeOpenAiServer {
   readonly requests: ChatRequest[] = [];
   #server: Server;
   #baseUrl: string | undefined;
+  #toolPath: string;
   #toolCall: { name: string; arguments: Record<string, unknown> };
   #remainingRateLimits: number;
   #streamDelayMs: number;
 
   constructor(options: FakeOpenAiServerOptions) {
+    this.#toolPath = options.toolPath;
     this.#toolCall = options.toolCall ?? {
       name: "read",
       arguments: { path: options.toolPath },
@@ -162,6 +165,17 @@ export class FakeOpenAiServer {
       return;
     }
 
+    if (prompt.includes("structured timeline fixture")) {
+      sendChunk(response, chunk({ reasoning_content: "Check the structured timeline first." }));
+      sendChunk(response, chunk({ content: "Structured timeline ready." }));
+      sendChunk(response, {
+        ...chunk({}, "stop"),
+        usage: { prompt_tokens: 12, completion_tokens: 8, total_tokens: 20 },
+      });
+      response.end("data: [DONE]\n\n");
+      return;
+    }
+
     if (prompt.includes("tool") && !hasToolResult) {
       sendChunk(
         response,
@@ -184,11 +198,57 @@ export class FakeOpenAiServer {
       return;
     }
 
+    const workspace = dirname(this.#toolPath);
+    const richContent = [
+      "## Rich content",
+      "",
+      "- [x] Completed task",
+      "- [ ] Pending task",
+      "",
+      "~~Removed text~~",
+      "",
+      "| Type | Status |",
+      "| --- | --- |",
+      "| Markdown | Ready |",
+      "",
+      "Inline math: $E = mc^2$",
+      "",
+      "$$",
+      "E = mc^2",
+      "$$",
+      "",
+      "```javascript",
+      "const answer = 42;",
+      "```",
+      "",
+      "```diff",
+      "-old",
+      "+new",
+      "```",
+      "",
+      "```mermaid",
+      "graph TD",
+      "  A --> B",
+      "```",
+      "",
+      `[Fixture file](${this.#toolPath}#L1C1)`,
+      "[External docs](https://example.com/docs)",
+      "",
+      `![Preview image](${join(workspace, "photo.png")})`,
+      `![Demo video](${join(workspace, "demo.mp4")})`,
+      "",
+      '<div data-unsafe-html="true">Unsafe HTML</div>',
+      '<iframe src="https://example.com"></iframe>',
+      "<style>body { display: none; }</style>",
+      "<script>window.__pixUnsafeScript = true;</script>",
+    ].join("\n");
     const text = isSummary
       ? "Compaction summary of the conversation."
       : hasToolResult
         ? "Tool result received."
-        : "Pix fake model response.";
+        : prompt.includes("rich content fixture")
+          ? richContent
+          : "Pix fake model response.";
     for (const part of text.split(" ")) {
       sendChunk(response, chunk({ content: `${part} ` }));
       if (this.#streamDelayMs > 0) await delay(this.#streamDelayMs);

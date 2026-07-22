@@ -2,6 +2,9 @@ import { contextBridge, ipcRenderer } from "electron";
 import type { HostEvent, PixDesktopApi } from "@pix/contracts";
 
 const api: PixDesktopApi = {
+  appearance: {
+    setThemeSource: (source) => ipcRenderer.invoke("pix:appearance:set-theme-source", source),
+  },
   host: {
     start: (options) => ipcRenderer.invoke("pix:host:start", options),
     stop: () => ipcRenderer.invoke("pix:host:stop"),
@@ -17,10 +20,13 @@ const api: PixDesktopApi = {
     listRecent: () => ipcRenderer.invoke("pix:workspace:list-recent"),
     openPath: (cwd, options) => ipcRenderer.invoke("pix:workspace:open-path", cwd, options),
     pickFolder: () => ipcRenderer.invoke("pix:workspace:pick-folder"),
+    pickAttachments: () => ipcRenderer.invoke("pix:workspace:pick-attachments"),
     ensureDefault: () => ipcRenderer.invoke("pix:workspace:ensure-default"),
     ensureConversation: () => ipcRenderer.invoke("pix:workspace:ensure-conversation"),
     removeRecent: (cwd) => ipcRenderer.invoke("pix:workspace:remove-recent", cwd),
     revealInFolder: (cwd) => ipcRenderer.invoke("pix:workspace:reveal-in-folder", cwd),
+    openFile: (path, location) => ipcRenderer.invoke("pix:workspace:open-file", path, location),
+    openExternal: (url) => ipcRenderer.invoke("pix:workspace:open-external", url),
     clearActive: () => ipcRenderer.invoke("pix:workspace:clear-active"),
     getGitContext: (cwd) => ipcRenderer.invoke("pix:workspace:get-git-context", cwd),
     listGitBranches: (cwd) => ipcRenderer.invoke("pix:workspace:list-git-branches", cwd),
@@ -54,22 +60,47 @@ const api: PixDesktopApi = {
   models: {
     list: () => ipcRenderer.invoke("pix:models:list"),
     set: (provider, id) => ipcRenderer.invoke("pix:models:set", provider, id),
+    getConfig: () => ipcRenderer.invoke("pix:models:get-config"),
+    upsertCustomProvider: (input) => ipcRenderer.invoke("pix:models:upsert-custom", input),
+    removeCustomProvider: (provider) => ipcRenderer.invoke("pix:models:remove-custom", provider),
+    openConfig: () => ipcRenderer.invoke("pix:models:open-config"),
+    revealConfig: () => ipcRenderer.invoke("pix:models:reveal-config"),
   },
   thinking: {
     set: (level) => ipcRenderer.invoke("pix:thinking:set", level),
   },
   providers: {
     list: () => ipcRenderer.invoke("pix:providers:list"),
+    usage: () => ipcRenderer.invoke("pix:providers:usage"),
     setApiKey: (provider, apiKey) =>
       ipcRenderer.invoke("pix:providers:set-api-key", provider, apiKey),
     clearAuth: (provider) => ipcRenderer.invoke("pix:providers:clear-auth", provider),
+    startOAuth: (provider, operationId) =>
+      ipcRenderer.invoke("pix:providers:oauth-start", provider, operationId),
+    respondOAuth: (operationId, promptId, value, cancelled) =>
+      ipcRenderer.invoke("pix:providers:oauth-respond", operationId, promptId, value, cancelled),
+    cancelOAuth: (operationId) => ipcRenderer.invoke("pix:providers:oauth-cancel", operationId),
+    onOAuthEvent(listener) {
+      const handler = (_event: Electron.IpcRendererEvent, value: HostEvent) => {
+        if (value.type !== "providers.oauth") return;
+        listener({
+          operationId: value.requestId,
+          provider: value.provider,
+          update: value.update,
+        });
+      };
+      ipcRenderer.on("pix:host:event", handler);
+      return () => ipcRenderer.removeListener("pix:host:event", handler);
+    },
   },
   settings: {
     get: () => ipcRenderer.invoke("pix:settings:get"),
     patch: (patch) => ipcRenderer.invoke("pix:settings:patch", patch),
   },
   agent: {
-    prompt: (message) => ipcRenderer.invoke("pix:agent:prompt", message),
+    prompt: (message, streamingBehavior) =>
+      ipcRenderer.invoke("pix:agent:prompt", message, streamingBehavior),
+    clearQueue: () => ipcRenderer.invoke("pix:agent:queue-clear"),
     abort: () => ipcRenderer.invoke("pix:agent:abort"),
   },
   session: {

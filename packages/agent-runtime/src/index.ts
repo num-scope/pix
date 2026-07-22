@@ -18,20 +18,29 @@ import type {
   ExtensionUiResponse,
   HostSnapshot,
   ModelSummary,
+  ModelsJsonConfigView,
   PackageSummary,
   PiSettingsPatch,
   PiSettingsView,
   ProjectTrustSummary,
   ProviderAuthSummary,
+  ProviderUsageSnapshot,
   ResourceSummary,
   SessionHistoryMessage,
   SessionThreadSummary,
+  UpsertCustomProviderInput,
 } from "@pix/contracts";
-import { basename } from "node:path";
+import { basename, isAbsolute, win32 } from "node:path";
 import {
   createPortableExtensionUiBridge,
   type ExtensionUiRequestEvent,
 } from "./extension-ui-bridge.ts";
+import {
+  readModelsJsonConfig,
+  removeCustomProviderFromModelsJson,
+  upsertCustomProviderInModelsJson,
+} from "./models-json.ts";
+import { listProviderUsage } from "./provider-usage.ts";
 import { resolvePixSessionDir } from "./session-dir.ts";
 
 export { createPortableExtensionUiBridge } from "./extension-ui-bridge.ts";
@@ -41,6 +50,13 @@ export {
   projectToolPresentation,
   sanitizeSerializable,
 } from "./generic-renderers.ts";
+export {
+  ensureModelsJsonTemplate,
+  modelsJsonPath,
+  readModelsJsonConfig,
+  removeCustomProviderFromModelsJson,
+  upsertCustomProviderInModelsJson,
+} from "./models-json.ts";
 export {
   PIX_SESSION_DIR_ENV,
   resolvePixSessionDir,
@@ -146,8 +162,12 @@ export interface PixRuntimeHandle {
   setModel(provider: string, id: string): Promise<HostSnapshot>;
   setThinkingLevel(level: string): HostSnapshot;
   listProviders(): ProviderAuthSummary[];
+  listProviderUsage(): Promise<ProviderUsageSnapshot[]>;
   setProviderApiKey(provider: string, apiKey: string): Promise<ProviderAuthSummary[]>;
   clearProviderAuth(provider: string): Promise<ProviderAuthSummary[]>;
+  getModelsJsonConfig(): Promise<ModelsJsonConfigView>;
+  upsertCustomProvider(input: UpsertCustomProviderInput): Promise<ModelsJsonConfigView>;
+  removeCustomProvider(provider: string): Promise<ModelsJsonConfigView>;
   getPiSettings(): PiSettingsView;
   patchPiSettings(patch: PiSettingsPatch): PiSettingsView;
   /** One-shot completion that does not write into the session transcript. */
@@ -262,6 +282,40 @@ function textFromMessageContent(content: unknown): string {
     .join("\n");
 }
 
+function assistantContentParts(
+  content: unknown,
+): Array<{ role: "assistant" | "thinking"; text: string }> {
+  if (typeof content === "string")
+    return content.trim() ? [{ role: "assistant", text: content }] : [];
+  if (!Array.isArray(content)) return [];
+  const parts: Array<{ role: "assistant" | "thinking"; text: string }> = [];
+  for (const part of content) {
+    let role: "assistant" | "thinking" | undefined;
+    let text = "";
+    if (typeof part === "string") {
+      role = "assistant";
+      text = part;
+    } else if (typeof part === "object" && part !== null && "type" in part) {
+      if (part.type === "text" && "text" in part && typeof part.text === "string") {
+        role = "assistant";
+        text = part.text;
+      } else if (
+        part.type === "thinking" &&
+        "thinking" in part &&
+        typeof part.thinking === "string"
+      ) {
+        role = "thinking";
+        text = part.thinking;
+      }
+    }
+    if (!role || !text.trim()) continue;
+    const previous = parts.at(-1);
+    if (previous?.role === role) previous.text += text;
+    else parts.push({ role, text });
+  }
+  return parts;
+}
+
 export function projectSessionHistory(
   messages: readonly unknown[],
   entryIds?: readonly (string | undefined)[],
@@ -287,9 +341,8 @@ export function projectSessionHistory(
         history.push(item);
       }
     } else if (row.role === "assistant") {
-      const text = textFromMessageContent(row.content).trim();
-      if (text) {
-        const item: SessionHistoryMessage = { role: "assistant", text };
+      for (const part of assistantContentParts(row.content)) {
+        const item: SessionHistoryMessage = { role: part.role, text: part.text.trim() };
         if (entryId) item.entryId = entryId;
         history.push(item);
       }
@@ -381,9 +434,12 @@ export function packageKindFromSource(source: string): PackageSummary["kind"] {
     return "git";
   }
   if (
-    source.startsWith("/") ||
+    isAbsolute(source) ||
+    win32.isAbsolute(source) ||
     source.startsWith("./") ||
     source.startsWith("../") ||
+    source.startsWith(".\\") ||
+    source.startsWith("..\\") ||
     source.startsWith("file:") ||
     source.startsWith("~")
   ) {
@@ -519,6 +575,39 @@ function createSnapshot(
   const globalSettings = services.settingsManager.getGlobalSettings();
   const projectSettings = services.settingsManager.getProjectSettings();
   const model = runtime.session.model;
+  const slashCommands: HostSnapshot["slashCommands"] = [];
+  const commandNames = new Set<string>();
+
+  for (const command of runtime.session.extensionRunner.getRegisteredCommands()) {
+    if (!command.invocationName || commandNames.has(command.invocationName)) continue;
+    commandNames.add(command.invocationName);
+    slashCommands.push({
+      name: command.invocationName,
+      description: command.description ?? "Extension command",
+      source: "extension",
+    });
+  }
+  for (const prompt of runtime.session.promptTemplates) {
+    if (!prompt.name || commandNames.has(prompt.name)) continue;
+    commandNames.add(prompt.name);
+    const command: HostSnapshot["slashCommands"][number] = {
+      name: prompt.name,
+      description: prompt.description,
+      source: "prompt",
+    };
+    if (prompt.argumentHint) command.argumentHint = prompt.argumentHint;
+    slashCommands.push(command);
+  }
+  for (const skill of skills.skills) {
+    const name = `skill:${skill.name}`;
+    if (commandNames.has(name)) continue;
+    commandNames.add(name);
+    slashCommands.push({
+      name,
+      description: skill.description,
+      source: "skill",
+    });
+  }
 
   const resourceDiagnostics = [
     ...extensions.errors.map(({ path, error }) => ({
@@ -539,6 +628,11 @@ function createSnapshot(
     cwd: services.cwd,
     agentDir: services.agentDir,
     sessionId: runtime.session.sessionId,
+    slashCommands,
+    queuedMessages: {
+      steering: [...runtime.session.getSteeringMessages()],
+      followUp: [...runtime.session.getFollowUpMessages()],
+    },
     activeTools: runtime.session.getActiveToolNames(),
     projectTrusted: services.settingsManager.isProjectTrusted(),
     resources: {
@@ -876,6 +970,9 @@ export async function createPixRuntime(
     listProviders() {
       return listProviderAuthSummaries(runtime.services);
     },
+    listProviderUsage() {
+      return listProviderUsage(runtime.services);
+    },
     async setProviderApiKey(provider, apiKey) {
       const trimmed = apiKey.trim();
       if (!provider.trim()) throw new Error("Provider is required");
@@ -893,6 +990,23 @@ export async function createPixRuntime(
       await runtime.services.modelRuntime.removeRuntimeApiKey(provider);
       return listProviderAuthSummaries(runtime.services);
     },
+    async getModelsJsonConfig() {
+      return readModelsJsonConfig(runtime.services.agentDir);
+    },
+    async upsertCustomProvider(input) {
+      const config = await upsertCustomProviderInModelsJson(runtime.services.agentDir, input);
+      await runtime.services.modelRuntime.reloadConfig();
+      const apiKey = input.apiKey?.trim();
+      if (apiKey) {
+        await runtime.services.modelRuntime.setRuntimeApiKey(input.provider.trim(), apiKey);
+      }
+      return config;
+    },
+    async removeCustomProvider(provider) {
+      const config = await removeCustomProviderFromModelsJson(runtime.services.agentDir, provider);
+      await runtime.services.modelRuntime.reloadConfig();
+      return config;
+    },
     getPiSettings() {
       return projectPiSettings(runtime.services, runtime.session);
     },
@@ -904,8 +1018,7 @@ export async function createPixRuntime(
       const modelRuntime = runtime.services.modelRuntime;
       let model = runtime.session.model;
       if (options?.model?.provider && options.model.id) {
-        model =
-          modelRuntime.getModel(options.model.provider, options.model.id) ?? model;
+        model = modelRuntime.getModel(options.model.provider, options.model.id) ?? model;
       }
       if (!model) {
         const models = modelRuntime.getModels();
@@ -1050,7 +1163,8 @@ export function listProviderAuthSummaries(services: AgentSessionServices): Provi
       displayName: meta?.name || provider,
       configured: status.configured,
       modelCount: byProvider.get(provider) ?? 0,
-      oauthAvailable: services.modelRuntime.isUsingOAuth(provider),
+      oauthSupported: Boolean(meta?.auth.oauth),
+      oauthActive: services.modelRuntime.isUsingOAuth(provider),
     };
     if (status.source) summary.source = status.source;
     if (status.label) summary.label = status.label;
