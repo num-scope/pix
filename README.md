@@ -68,14 +68,26 @@ Produces an unsigned platform app directory under `apps/desktop/release/app/` vi
 | **CI**      | `.github/workflows/ci.yml`      | PR + push to `main`       | install → lint/types → unit tests → `pnpm build` on Linux, Windows, macOS |
 | **Release** | `.github/workflows/release.yml` | push `v*` tag (or manual) | multi-platform `pnpm package` → zip → **GitHub Release** with assets      |
 
+### Versioning
+
+Product version lives only in `apps/desktop/package.json` (what electron-builder ships).
+Root and `packages/*` stay at `0.0.0` — they are private workspace packages.
+
+```bash
+pnpm version:set 0.1.0
+```
+
 ### Cut a release
 
 ```bash
+pnpm version:set 0.1.0
+git add apps/desktop/package.json
+git commit -m "chore: release v0.1.0"
 git tag v0.1.0
-git push origin v0.1.0
+git push origin main --tags
 ```
 
-That triggers packaging on Linux / Windows / macOS and publishes a GitHub Release named `v0.1.0` with one zip per platform. Manual **workflow_dispatch** only builds and uploads Actions artifacts (no Release). Format check runs only on Linux CI; lint and typecheck run on all three OSes. mac packaging sets `CSC_IDENTITY_AUTO_DISCOVERY=false` (unsigned).
+Tag must match desktop version (`v` + semver). That triggers packaging on Linux / Windows / macOS and publishes a GitHub Release with one zip per platform. Manual **workflow_dispatch** only builds and uploads Actions artifacts (no Release). Format check runs only on Linux CI; lint and typecheck run on all three OSes. mac packaging sets `CSC_IDENTITY_AUTO_DISCOVERY=false` (unsigned).
 
 ## Architecture
 

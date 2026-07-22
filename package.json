@@ -8,6 +8,7 @@
     "check:types": "vp check --no-fmt",
     "fmt": "vp check --fix",
     "ready": "pnpm check && pnpm test && pnpm build",
+    "version:set": "node scripts/set-version.mjs",
     "build": "vp run -r build",
     "test": "vp run --no-cache -r test",
     "dev": "vp run --no-cache @pix/desktop#dev",
