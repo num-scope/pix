@@ -29,7 +29,9 @@ export const TITLEBAR_CONTROL_SIZE_PX = 28;
 
 export function isMacDesktopChrome(
   platform: string | undefined = typeof navigator !== "undefined" ? navigator.platform : undefined,
-  userAgent: string | undefined = typeof navigator !== "undefined" ? navigator.userAgent : undefined,
+  userAgent: string | undefined = typeof navigator !== "undefined"
+    ? navigator.userAgent
+    : undefined,
 ): boolean {
   const p = platform ?? "";
   const ua = userAgent ?? "";
