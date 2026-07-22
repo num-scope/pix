@@ -27,13 +27,14 @@ import {
   BarChart3,
 } from "lucide-react";
 import type { PointerEvent as ReactPointerEvent, ReactNode } from "react";
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
-  MAC_TRAFFIC_LIGHT_GUTTER_PX,
   TITLEBAR_CONTROL_SIZE_PX,
   TITLEBAR_HEIGHT_PX,
+  isMacDesktopChrome,
   titlebarControlTopPx,
+  titlebarLeadingGutterPx,
 } from "../lib/desktop-chrome.ts";
 import { t, type Locale, type MessageKey } from "../lib/i18n.ts";
 import { SHELL_SIDEBAR } from "../lib/layout.ts";
@@ -95,6 +96,25 @@ export interface AppSidebarProps {
 export function AppSidebar(props: AppSidebarProps) {
   const tr = (key: MessageKey, vars?: Record<string, string>) => t(props.locale, key, vars);
   const dragRef = useRef<{ startX: number; startW: number } | null>(null);
+  const leadingGutterPx = titlebarLeadingGutterPx(isMacDesktopChrome());
+  const [showDeveloperChrome, setShowDeveloperChrome] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    void window.pix.app
+      .getRuntime()
+      .then((runtime) => {
+        if (cancelled) return;
+        // Packaged installs hide the developer drawer; e2e / local still get it via flag or unpackaged runs.
+        setShowDeveloperChrome(!runtime.isPackaged || runtime.enableTestCommands);
+      })
+      .catch(() => {
+        if (!cancelled) setShowDeveloperChrome(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const onResizePointerDown = useCallback(
     (event: ReactPointerEvent<HTMLDivElement>) => {
@@ -149,6 +169,7 @@ export function AppSidebar(props: AppSidebarProps) {
           <div className="flex h-full min-h-0 min-w-0 flex-col overflow-x-hidden">
             {/* Product: traffic lights + collapse. Settings: gutter only (Codex rail has no collapse). */}
             <TitlebarTrafficRow
+              leadingGutterPx={leadingGutterPx}
               showCollapse={!isSettings}
               onToggleCollapse={props.onToggleCollapse}
             />
@@ -162,7 +183,7 @@ export function AppSidebar(props: AppSidebarProps) {
                   onSection={props.onSettingsSection}
                 />
               ) : (
-                <ProductRail {...props} tr={tr} />
+                <ProductRail {...props} tr={tr} showDeveloperChrome={showDeveloperChrome} />
               )}
             </div>
 
@@ -201,7 +222,7 @@ export function AppSidebar(props: AppSidebarProps) {
               aria-label="Expand sidebar"
               className="sidebar-expand-btn no-drag"
               style={{
-                left: MAC_TRAFFIC_LIGHT_GUTTER_PX,
+                left: leadingGutterPx,
                 top: titlebarControlTopPx(),
                 width: TITLEBAR_CONTROL_SIZE_PX,
                 height: TITLEBAR_CONTROL_SIZE_PX,
@@ -225,7 +246,11 @@ export function AppSidebar(props: AppSidebarProps) {
   );
 }
 
-function TitlebarTrafficRow(props: { showCollapse?: boolean; onToggleCollapse: () => void }) {
+function TitlebarTrafficRow(props: {
+  leadingGutterPx: number;
+  showCollapse?: boolean;
+  onToggleCollapse: () => void;
+}) {
   const showCollapse = props.showCollapse !== false;
   return (
     <div
@@ -233,10 +258,9 @@ function TitlebarTrafficRow(props: { showCollapse?: boolean; onToggleCollapse: (
       style={{ height: TITLEBAR_HEIGHT_PX }}
       data-testid="sidebar-traffic-row"
     >
-      {/* 90px gutter then collapse (Synara MAC_DESKTOP_TOP_BAR_TRAFFIC_LIGHT_GUTTER). */}
       <div
         className="pointer-events-none shrink-0"
-        style={{ width: MAC_TRAFFIC_LIGHT_GUTTER_PX }}
+        style={{ width: props.leadingGutterPx }}
         aria-hidden
       />
       {showCollapse ? (
@@ -260,7 +284,10 @@ function TitlebarTrafficRow(props: { showCollapse?: boolean; onToggleCollapse: (
 }
 
 function ProductRail(
-  props: AppSidebarProps & { tr: (key: MessageKey, vars?: Record<string, string>) => string },
+  props: AppSidebarProps & {
+    tr: (key: MessageKey, vars?: Record<string, string>) => string;
+    showDeveloperChrome: boolean;
+  },
 ) {
   const { tr } = props;
   return (
@@ -349,69 +376,74 @@ function ProductRail(
           label={tr("nav.settings")}
           onClick={props.onOpenSettings}
         />
-        {/* Dev probes — not product chrome; stay collapsed under Developer. */}
-        <details
-          className="group rounded-lg border border-transparent open:border-[var(--sidebar-border)] open:bg-[var(--hover-fill)]/40"
-          data-testid="developer-details"
-        >
-          <summary
-            className="cursor-pointer list-none px-2.5 py-1.5 text-[11px] font-medium text-[var(--text-subtle)] hover:text-[var(--muted-foreground)] [&::-webkit-details-marker]:hidden"
-            data-testid="developer-summary"
+        {props.showDeveloperChrome ? (
+          <details
+            className="group rounded-lg border border-transparent open:border-[var(--sidebar-border)] open:bg-[var(--hover-fill)]/40"
+            data-testid="developer-details"
           >
-            {tr("dev.developer")}
-          </summary>
-          <div className="space-y-1 px-1.5 pb-2">
-            <span
-              className={cn(
-                "mb-1 block max-w-full truncate rounded-full px-2 py-0.5 text-[10px] font-medium",
-                hostPillClass(props.hostPillState),
-              )}
-              data-testid="host-status"
-              data-state={props.hostPillState}
-              title={props.status}
+            <summary
+              className="cursor-pointer list-none px-2.5 py-1.5 text-[11px] font-medium text-[var(--text-subtle)] hover:text-[var(--muted-foreground)] [&::-webkit-details-marker]:hidden"
+              data-testid="developer-summary"
             >
-              {props.status}
-            </span>
-            <div className="flex flex-wrap gap-0.5">
-              <QuietBtn
-                testId="workspace-resume"
-                label={tr("workspace.resume")}
-                onClick={props.onResumeWorkspace}
-                disabled={!props.workspacePath}
-              />
-              <QuietBtn
-                testId="trust-toggle"
-                label={`${tr("workspace.trust")}: ${props.snapshot?.projectTrusted ? tr("workspace.trustYes") : tr("workspace.trustNo")}`}
-                onClick={props.onToggleTrust}
-              />
-              <QuietBtn
-                testId="fork-thread"
-                label={tr("thread.fork")}
-                onClick={props.onForkThread}
-                disabled={!props.canFork || props.running}
-              />
-              <QuietBtn
-                testId="refresh-snapshot"
-                label={tr("dev.snapshot")}
-                onClick={props.onRefresh}
-                disabled={!props.snapshot}
-              />
-              <QuietBtn
-                testId="crash-host"
-                label={tr("dev.crash")}
-                onClick={props.onCrash}
-                disabled={!props.snapshot}
-                danger
-              />
-              <QuietBtn
-                testId="stop-host"
-                label={tr("dev.stop")}
-                onClick={props.onStop}
-                disabled={!props.snapshot}
-              />
+              {tr("dev.developer")}
+            </summary>
+            <div className="space-y-1 px-1.5 pb-2">
+              <span
+                className={cn(
+                  "mb-1 block max-w-full truncate rounded-full px-2 py-0.5 text-[10px] font-medium",
+                  hostPillClass(props.hostPillState),
+                )}
+                data-testid="host-status"
+                data-state={props.hostPillState}
+                title={props.status}
+              >
+                {props.status}
+              </span>
+              <div className="flex flex-wrap gap-0.5">
+                <QuietBtn
+                  testId="workspace-resume"
+                  label={tr("workspace.resume")}
+                  onClick={props.onResumeWorkspace}
+                  disabled={!props.workspacePath}
+                />
+                <QuietBtn
+                  testId="trust-toggle"
+                  label={`${tr("workspace.trust")}: ${props.snapshot?.projectTrusted ? tr("workspace.trustYes") : tr("workspace.trustNo")}`}
+                  onClick={props.onToggleTrust}
+                />
+                <QuietBtn
+                  testId="fork-thread"
+                  label={tr("thread.fork")}
+                  onClick={props.onForkThread}
+                  disabled={!props.canFork || props.running}
+                />
+                <QuietBtn
+                  testId="refresh-snapshot"
+                  label={tr("dev.snapshot")}
+                  onClick={props.onRefresh}
+                  disabled={!props.snapshot}
+                />
+                <QuietBtn
+                  testId="crash-host"
+                  label={tr("dev.crash")}
+                  onClick={props.onCrash}
+                  disabled={!props.snapshot}
+                  danger
+                />
+                <QuietBtn
+                  testId="stop-host"
+                  label={tr("dev.stop")}
+                  onClick={props.onStop}
+                  disabled={!props.snapshot}
+                />
+              </div>
             </div>
-          </div>
-        </details>
+          </details>
+        ) : (
+          <span className="sr-only" data-testid="host-status" data-state={props.hostPillState}>
+            {props.status}
+          </span>
+        )}
       </div>
     </>
   );

@@ -31,6 +31,7 @@ import {
   BrowserWindow,
   dialog,
   ipcMain,
+  Menu,
   nativeImage,
   nativeTheme,
   Notification,
@@ -2604,11 +2605,11 @@ async function createWindow(): Promise<void> {
     show: false,
     ...(iconPath ? { icon: iconPath } : {}),
     // macOS: traffic lights in the sidebar titlebar + real sidebar vibrancy (true glass).
+    // Windows/Linux: keep native frame (min/max/close); hide the default app menu bar.
     ...(process.platform === "darwin"
       ? {
           titleBarStyle: "hiddenInset" as const,
           trafficLightPosition,
-          // System material behind the frosted rail; content stays opaque in the renderer.
           vibrancy: "sidebar" as const,
           visualEffectState: "active" as const,
           transparent: true,
@@ -2616,6 +2617,7 @@ async function createWindow(): Promise<void> {
         }
       : {
           backgroundColor: "#191919",
+          autoHideMenuBar: true,
         }),
     webPreferences: {
       contextIsolation: true,
@@ -2687,6 +2689,32 @@ void app
   .then(async () => {
     // Set Dock icon as early as possible (dev: Electron binary; packaged: .icns in bundle).
     applyDockIcon(resolveAppIconPath());
+    // Default Electron File/Edit/View/Window menu is English-only and not product chrome.
+    // macOS keeps a minimal app menu (required for standard shortcuts / system UX).
+    if (process.platform === "darwin") {
+      Menu.setApplicationMenu(
+        Menu.buildFromTemplate([
+          {
+            role: "appMenu",
+          },
+          {
+            role: "editMenu",
+          },
+          {
+            role: "windowMenu",
+          },
+        ]),
+      );
+    } else {
+      Menu.setApplicationMenu(null);
+    }
+    ipcMain.handle("pix:app:get-runtime", () => ({
+      platform: process.platform,
+      isPackaged: app.isPackaged,
+      enableTestCommands:
+        process.env.PIX_ENABLE_TEST_COMMANDS === "1" ||
+        process.env.PIX_ENABLE_TEST_COMMANDS === "true",
+    }));
     ipcMain.handle("pix:appearance:set-theme-source", (_event, source: unknown) => {
       if (source !== "light" && source !== "dark" && source !== "system") {
         throw new Error("Invalid native theme source");

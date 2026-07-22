@@ -2,6 +2,9 @@ import { contextBridge, ipcRenderer } from "electron";
 import type { HostEvent, PixDesktopApi } from "@pix/contracts";
 
 const api: PixDesktopApi = {
+  app: {
+    getRuntime: () => ipcRenderer.invoke("pix:app:get-runtime"),
+  },
   appearance: {
     setThemeSource: (source) => ipcRenderer.invoke("pix:appearance:set-theme-source", source),
   },

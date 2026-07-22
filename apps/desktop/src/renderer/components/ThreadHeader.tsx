@@ -12,7 +12,11 @@ import {
   type ReactNode,
 } from "react";
 import { loadConfirmArchive } from "../lib/behavior-prefs.ts";
-import { MAC_TRAFFIC_LIGHT_GUTTER_PX, TITLEBAR_CONTROL_SIZE_PX } from "../lib/desktop-chrome.ts";
+import {
+  TITLEBAR_CONTROL_SIZE_PX,
+  isMacDesktopChrome,
+  titlebarLeadingGutterPx,
+} from "../lib/desktop-chrome.ts";
 import { t, type Locale } from "../lib/i18n.ts";
 import {
   archiveThread,
@@ -154,7 +158,7 @@ export function ThreadHeader(props: {
           <>
             <div
               className="pointer-events-none shrink-0"
-              style={{ width: MAC_TRAFFIC_LIGHT_GUTTER_PX }}
+              style={{ width: titlebarLeadingGutterPx(isMacDesktopChrome()) }}
               aria-hidden
             />
             <div

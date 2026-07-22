@@ -207,8 +207,8 @@ body {
   box-sizing: border-box;
 }
 
-/* macOS traffic lights (hiddenInset) sit in the 46px titlebar row.
-   Collapse control starts at --traffic-gutter (90px), matching Synara. */
+/* Titlebar drag regions. macOS reserves a traffic-light gutter in JS;
+   Windows/Linux use a small leading pad so the collapse control sits near the left edge. */
 .sidebar-traffic-row,
 .drag-region {
   -webkit-app-region: drag;

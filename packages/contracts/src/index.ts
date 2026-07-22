@@ -815,6 +815,14 @@ export type HostEvent =
     };
 
 export interface PixDesktopApi {
+  app: {
+    /** OS platform + packaging flags for chrome layout / dev tools. */
+    getRuntime(): Promise<{
+      platform: string;
+      isPackaged: boolean;
+      enableTestCommands: boolean;
+    }>;
+  };
   appearance: {
     /** Keep native window materials aligned with the renderer theme. */
     setThemeSource(source: "light" | "dark" | "system"): Promise<void>;

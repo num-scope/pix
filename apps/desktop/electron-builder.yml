@@ -25,12 +25,17 @@ win:
   icon: icon.ico
   target:
     - nsis
-  signAndEditExecutable: false
 nsis:
   oneClick: false
   allowToChangeInstallationDirectory: true
   perMachine: false
   deleteAppDataOnUninstall: false
+  installerIcon: icon.ico
+  uninstallerIcon: icon.ico
+  installerHeaderIcon: icon.ico
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: Pix
 linux:
   icon: icon.png
   executableName: Pix
