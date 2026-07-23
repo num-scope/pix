@@ -332,9 +332,18 @@ export interface SessionThreadSummary {
   path: string;
   cwd: string;
   title: string;
+  /** Base title before same-cwd duplicate disambiguation (` (2)`, …). */
+  titleBase?: string;
   modifiedAt: string;
+  /** Session header created time when known (stable fork/order key). */
+  createdAt?: string;
   messageCount: number;
   active: boolean;
+  /**
+   * Absolute path of the parent session JSONL when this session was forked
+   * (`header.parentSession` from pi). Omitted for root / non-fork sessions.
+   */
+  parentSessionPath?: string;
 }
 
 /** History used to rebuild the timeline after open/switch/new/fork. */
@@ -1143,6 +1152,34 @@ export type HostEvent =
       text: string;
     };
 
+/** Progress events while ensuring the global `pi` CLI is present. */
+export type PiCliProgressPhase =
+  | "checking"
+  | "installing"
+  | "progress"
+  | "complete"
+  | "error"
+  | "skipped";
+
+export interface PiCliProgressEvent {
+  phase: PiCliProgressPhase;
+  message: string;
+  path?: string;
+  version?: string;
+  installedNow?: boolean;
+}
+
+/** Result of detecting / auto-installing the global `pi` CLI. */
+export interface PiCliEnsureResult {
+  installed: boolean;
+  alreadyPresent: boolean;
+  installedNow: boolean;
+  skipped: boolean;
+  path?: string;
+  version?: string;
+  error?: string;
+}
+
 export interface PixDesktopApi {
   app: {
     /** OS platform + packaging flags for chrome layout / dev tools. */
@@ -1150,7 +1187,27 @@ export interface PixDesktopApi {
       platform: string;
       isPackaged: boolean;
       enableTestCommands: boolean;
+      /**
+       * When true, renderer should paint min/max/close (Linux custom titlebar).
+       * Windows uses native titleBarOverlay; macOS uses traffic lights.
+       */
+      customWindowControls: boolean;
     }>;
+  };
+  window: {
+    minimize(): Promise<void>;
+    toggleMaximize(): Promise<boolean>;
+    close(): Promise<void>;
+    isMaximized(): Promise<boolean>;
+    onStateChange(listener: (state: { isMaximized: boolean }) => void): () => void;
+  };
+  /**
+   * Global `pi` CLI (`@earendil-works/pi-coding-agent`).
+   * Product mode auto-installs the latest package when missing.
+   */
+  pi: {
+    ensure(): Promise<PiCliEnsureResult>;
+    onProgress(listener: (event: PiCliProgressEvent) => void): () => void;
   };
   appearance: {
     /** Keep native window materials aligned with the renderer theme. */
@@ -1365,6 +1422,15 @@ export interface PixDesktopApi {
     /** List sessions for any project cwd without switching the live host runtime. */
     listForCwd(cwd: string): Promise<SessionThreadSummary[]>;
     create(): Promise<{
+      snapshot: HostSnapshot;
+      threads: SessionThreadSummary[];
+      history: SessionHistoryMessage[];
+    }>;
+    /**
+     * Atomic global「新建会话」: ensure conversation host + create session.
+     * Serializes against concurrent host lifecycle (safe under rapid clicks).
+     */
+    createBlankConversation(): Promise<{
       snapshot: HostSnapshot;
       threads: SessionThreadSummary[];
       history: SessionHistoryMessage[];
@@ -2035,16 +2101,26 @@ export function isHostCommand(value: unknown): value is HostCommand {
 }
 
 function isSessionThreadSummary(value: unknown): value is SessionThreadSummary {
-  return (
-    isRecord(value) &&
-    typeof value.id === "string" &&
-    typeof value.path === "string" &&
-    typeof value.cwd === "string" &&
-    typeof value.title === "string" &&
-    typeof value.modifiedAt === "string" &&
-    typeof value.messageCount === "number" &&
-    typeof value.active === "boolean"
-  );
+  if (
+    !(
+      isRecord(value) &&
+      typeof value.id === "string" &&
+      typeof value.path === "string" &&
+      typeof value.cwd === "string" &&
+      typeof value.title === "string" &&
+      typeof value.modifiedAt === "string" &&
+      typeof value.messageCount === "number" &&
+      typeof value.active === "boolean"
+    )
+  ) {
+    return false;
+  }
+  if (value.titleBase !== undefined && typeof value.titleBase !== "string") return false;
+  if (value.createdAt !== undefined && typeof value.createdAt !== "string") return false;
+  if (value.parentSessionPath !== undefined && typeof value.parentSessionPath !== "string") {
+    return false;
+  }
+  return true;
 }
 
 function isSessionHistoryMessage(value: unknown): value is SessionHistoryMessage {

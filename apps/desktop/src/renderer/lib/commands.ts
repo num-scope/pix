@@ -1,4 +1,5 @@
 import type { ShellView } from "../store/shell-store.ts";
+import { t, type Locale, type MessageKey } from "./i18n.ts";
 import {
   formatComboDisplay,
   getEffectiveCombo,
@@ -32,61 +33,38 @@ function withShortcut(id: ShortcutId, base: Omit<ShellCommand, "shortcut">): She
   return { ...base, shortcut: formatComboDisplay(c) };
 }
 
-export function buildShellCommands(handlers: CommandHandlers): ShellCommand[] {
+function cmd(
+  locale: Locale,
+  id: string,
+  labelKey: MessageKey,
+  run: () => void | Promise<void>,
+  shortcutId?: ShortcutId,
+): ShellCommand {
+  const base = { id, label: t(locale, labelKey), run };
+  return shortcutId ? withShortcut(shortcutId, base) : base;
+}
+
+export function buildShellCommands(handlers: CommandHandlers, locale: Locale = "en"): ShellCommand[] {
   const list: ShellCommand[] = [
-    withShortcut("new-thread", {
-      id: "new-thread",
-      label: "New session",
-      run: handlers.newThread,
-    }),
-    withShortcut("packages", {
-      id: "packages",
-      label: "Open Packages",
-      run: handlers.openPackages,
-    }),
-    withShortcut("resources", {
-      id: "resources",
-      label: "Open Resources",
-      run: handlers.openResources,
-    }),
-    withShortcut("settings", {
-      id: "settings",
-      label: "Open Settings",
-      run: handlers.openSettings,
-    }),
-    withShortcut("thread", {
-      id: "thread",
-      label: "Back to thread",
-      run: handlers.openThread,
-    }),
-    withShortcut("focus-composer", {
-      id: "focus-composer",
-      label: "Focus composer",
-      run: handlers.focusComposer,
-    }),
-    withShortcut("fork-thread", {
-      id: "fork-thread",
-      label: "Fork thread from last user message",
-      run: handlers.forkThread,
-    }),
-    withShortcut("toggle-theme", {
-      id: "toggle-theme",
-      label: "Toggle light/dark theme",
-      run: handlers.toggleTheme,
-    }),
-    {
-      id: "toggle-review",
-      label: "Toggle review panel",
-      run: handlers.toggleReview,
-    },
+    cmd(locale, "new-thread", "shortcuts.newThread", handlers.newThread, "new-thread"),
+    cmd(locale, "packages", "shortcuts.packages", handlers.openPackages, "packages"),
+    cmd(locale, "resources", "shortcuts.resources", handlers.openResources, "resources"),
+    cmd(locale, "settings", "shortcuts.settings", handlers.openSettings, "settings"),
+    cmd(locale, "thread", "shortcuts.thread", handlers.openThread, "thread"),
+    cmd(locale, "focus-composer", "shortcuts.focusComposer", handlers.focusComposer, "focus-composer"),
+    cmd(locale, "fork-thread", "shortcuts.forkThread", handlers.forkThread, "fork-thread"),
+    cmd(locale, "toggle-theme", "shortcuts.toggleTheme", handlers.toggleTheme, "toggle-theme"),
+    cmd(locale, "toggle-review", "command.toggleReview", handlers.toggleReview),
   ];
   if (handlers.toggleEnvPanel) {
     list.push(
-      withShortcut("toggle-env-panel", {
-        id: "toggle-env-panel",
-        label: "Toggle environment panel",
-        run: handlers.toggleEnvPanel,
-      }),
+      cmd(
+        locale,
+        "toggle-env-panel",
+        "shortcuts.toggleEnvPanel",
+        handlers.toggleEnvPanel,
+        "toggle-env-panel",
+      ),
     );
   }
   return list;

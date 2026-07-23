@@ -94,7 +94,7 @@ import {
 } from "@/components/ui/attachment";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
-import { t, type Locale } from "../lib/i18n.ts";
+import { t, thinkingLevelLabel, type Locale } from "../lib/i18n.ts";
 import { groupModelsByProvider } from "../lib/model-groups.ts";
 import {
   addResourceQuery,
@@ -587,6 +587,37 @@ function queuedMessagePreview(message: string): string {
   return message.split("\n\n<attached-paths>", 1)[0]?.trim() || message.trim();
 }
 
+/** Composer prompt: fixed base of 2 lines, grow to 12, then scroll. */
+const COMPOSER_PROMPT_MIN_LINES = 2;
+const COMPOSER_PROMPT_MAX_LINES = 12;
+
+function fitComposerPromptHeight(el: HTMLTextAreaElement | null): void {
+  if (!el) return;
+  const styles = window.getComputedStyle(el);
+  const fontSize = Number.parseFloat(styles.fontSize) || 14;
+  let lineHeight = Number.parseFloat(styles.lineHeight);
+  // `normal` / non-px line-heights must not collapse min height below two real text rows.
+  if (!Number.isFinite(lineHeight) || lineHeight <= 0) {
+    lineHeight = fontSize * 1.5;
+  }
+  const padY =
+    (Number.parseFloat(styles.paddingTop) || 0) + (Number.parseFloat(styles.paddingBottom) || 0);
+  // +2px subpixel buffer so the 2nd visual line does not immediately force a resize.
+  const minH = Math.ceil(lineHeight * COMPOSER_PROMPT_MIN_LINES + padY + 2);
+  const maxH = Math.ceil(lineHeight * COMPOSER_PROMPT_MAX_LINES + padY + 2);
+
+  // Measure natural content height without fighting max-height.
+  el.style.height = "0px";
+  el.style.overflowY = "hidden";
+  // scrollHeight with height 0 gives content size including padding.
+  const contentH = el.scrollHeight;
+  const next = Math.min(Math.max(contentH, minH), maxH);
+  el.style.height = `${next}px`;
+  const overflows = contentH > maxH + 1;
+  el.style.overflowY = overflows ? "auto" : "hidden";
+  el.dataset.overflow = overflows ? "true" : "false";
+}
+
 export function Composer(props: ComposerProps) {
   const tr = (key: Parameters<typeof t>[1], vars?: Record<string, string>) =>
     t(props.locale, key, vars);
@@ -864,7 +895,14 @@ export function Composer(props: ComposerProps) {
       closeMenu();
     }
     props.onPromptChange(value);
+    // Fit on next paint so the controlled value is already in the DOM.
+    requestAnimationFrame(() => fitComposerPromptHeight(props.composerRef.current));
   }
+
+  // Keep height in sync for external prompt updates (slash insert, clear, etc.).
+  useLayoutEffect(() => {
+    fitComposerPromptHeight(props.composerRef.current);
+  }, [props.prompt, props.composerRef, props.attachments.length]);
 
   function clearAtTokenFromPrompt() {
     // Drop a trailing `@query` token after picking a resource.
@@ -1349,7 +1387,10 @@ export function Composer(props: ComposerProps) {
           value={props.prompt}
           onChange={(event) => handlePromptChange(event.target.value)}
           onKeyDown={handleComposerKeyDown}
-          onPaste={(event) => void handleComposerPaste(event)}
+          onPaste={(event) => {
+            void handleComposerPaste(event);
+            requestAnimationFrame(() => fitComposerPromptHeight(props.composerRef.current));
+          }}
           onDrop={handleComposerDrop}
           onDragOver={(event) => {
             if (event.dataTransfer?.types?.includes("Files")) {
@@ -1357,9 +1398,15 @@ export function Composer(props: ComposerProps) {
               event.dataTransfer.dropEffect = "copy";
             }
           }}
+          onInput={() => fitComposerPromptHeight(props.composerRef.current)}
           placeholder={tr("composer.placeholder")}
-          rows={2}
-          className="min-h-[52px] border-0 bg-transparent px-3.5 pt-3 pb-1 text-[14px] focus-visible:ring-0"
+          rows={COMPOSER_PROMPT_MIN_LINES}
+          className={cn(
+            "composer-prompt-scroll resize-none rounded-none border-0 bg-transparent px-3.5 pt-3 pb-1",
+            "text-[14px] leading-[1.5] shadow-none md:text-[14px]",
+            "focus-visible:border-0 focus-visible:ring-0 focus-visible:ring-offset-0",
+            "dark:bg-transparent",
+          )}
         />
 
         <div className="flex items-center justify-between gap-2 px-2 pb-2 pt-1">
@@ -1482,29 +1529,18 @@ export function Composer(props: ComposerProps) {
             </select>
 
             {props.running ? (
-              <>
-                <Button
-                  type="submit"
-                  size="icon"
-                  data-testid="queue-prompt"
-                  disabled={!props.prompt.trim() && props.attachments.length === 0}
-                  title={tr("composer.queue.steer")}
-                  aria-label={tr("composer.queue.steer")}
-                  className="h-7 w-7 rounded-full disabled:opacity-30"
-                >
-                  <ArrowUp className="h-3.5 w-3.5" strokeWidth={2.25} />
-                </Button>
-                <Button
-                  type="button"
-                  size="icon"
-                  data-testid="abort-prompt"
-                  onClick={() => props.onAbort()}
-                  aria-label={tr("composer.stop")}
-                  className="h-7 w-7 rounded-full bg-red-500 text-white hover:bg-red-600"
-                >
-                  <Square className="h-2.5 w-2.5 fill-current" />
-                </Button>
-              </>
+              // During AI reply: send becomes a single stop control (queue still via Enter).
+              <Button
+                type="button"
+                size="icon"
+                data-testid="abort-prompt"
+                onClick={() => props.onAbort()}
+                aria-label={tr("composer.stop")}
+                title={tr("composer.stop")}
+                className="h-7 w-7 rounded-full border-0 bg-foreground text-background shadow-none hover:bg-foreground/90"
+              >
+                <Square className="h-2.5 w-2.5 fill-current" />
+              </Button>
             ) : (
               <Button
                 type="submit"
@@ -1512,7 +1548,7 @@ export function Composer(props: ComposerProps) {
                 data-testid="send-prompt"
                 disabled={!props.prompt.trim() && props.attachments.length === 0}
                 aria-label={tr("composer.start")}
-                className="h-7 w-7 rounded-full disabled:opacity-30"
+                className="h-7 w-7 rounded-full border-0 bg-foreground text-background shadow-none hover:bg-foreground/90 disabled:opacity-30"
               >
                 <ArrowUp className="h-3.5 w-3.5" strokeWidth={2.25} />
               </Button>
@@ -1530,7 +1566,7 @@ export function Composer(props: ComposerProps) {
         minWidth={320}
         matchAnchorWidth
         elevated={false}
-        offsetPx={2}
+        offsetPx={8}
         className="!rounded-[var(--radius-panel)] !border-[var(--border)] !bg-[var(--surface-panel)] !py-0"
       >
         <div
@@ -1601,7 +1637,7 @@ export function Composer(props: ComposerProps) {
         minWidth={320}
         matchAnchorWidth
         elevated={false}
-        offsetPx={2}
+        offsetPx={8}
         className="!rounded-[var(--radius-panel)] !border-[var(--border)] !bg-[var(--surface-panel)] !py-0"
       >
         <div
@@ -1926,13 +1962,15 @@ export function Composer(props: ComposerProps) {
         ) : null}
       </FloatingMenu>
 
-      {/* Access menu — only options enabled in General → Permissions */}
+      {/* Access menu — only options enabled in General → Permissions; open above the chip. */}
       <FloatingMenu
         open={menu === "access" && Boolean(anchor)}
         anchor={anchor}
         onClose={closeMenu}
+        placement="top"
         testId="composer-access-menu"
         minWidth={288}
+        offsetPx={8}
         className="!py-0"
       >
         <div className="flex flex-col gap-1.5 p-2">
@@ -2001,7 +2039,7 @@ export function Composer(props: ComposerProps) {
           <FlyoutRow
             icon={<Sparkles className="size-3.5" strokeWidth={1.75} />}
             label={tr("composer.model.thinking")}
-            valueLabel={props.thinkingLevel}
+            valueLabel={thinkingLevelLabel(props.locale, props.thinkingLevel)}
             open={modelFlyout === "thinking"}
             onHoverOpen={() => openModelFlyout("thinking")}
             onHoverLeave={scheduleCloseModelFlyout}
@@ -2012,7 +2050,7 @@ export function Composer(props: ComposerProps) {
             {props.thinkingLevels.map((level) => (
               <MenuRow
                 key={level}
-                label={level}
+                label={thinkingLevelLabel(props.locale, level)}
                 active={props.thinkingLevel === level}
                 testId={`composer-thinking-${level}`}
                 onClick={() => {

@@ -24,14 +24,13 @@ import {
   LogIn,
   MoreHorizontal,
   RotateCcw,
-  Search,
   Trash2,
   X,
 } from "lucide-react";
 import type { FormEvent } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { t, type Locale, type MessageKey } from "../../lib/i18n.ts";
+import { t, thinkingLevelLabel, type Locale, type MessageKey } from "../../lib/i18n.ts";
 import { groupModelsByProvider } from "../../lib/model-groups.ts";
 import {
   deleteThreadLocal,
@@ -100,6 +99,7 @@ import {
   SettingsPageShell,
   SettingsPillButton,
   SettingsRow,
+  SettingsSearchField,
   SettingsSectionBlock,
   SettingsSelect,
   SettingsTextarea,
@@ -138,7 +138,11 @@ export function SettingsPage(props: SettingsPageProps) {
   return (
     <section className="page settings-page" data-testid="settings-page">
       {/* Solid top cap (titlebar-height): keeps scrolled content off the window edge — no divider. */}
-      <div className="settings-page-top-cap" aria-hidden data-testid="settings-top-cap" />
+      <div
+        className="settings-page-top-cap drag-region"
+        aria-hidden
+        data-testid="settings-top-cap"
+      />
       <div className="settings-page-body">
         {props.section === "general" ? (
           <GeneralSection {...props} tr={tr} />
@@ -361,36 +365,38 @@ function ArchivedSection(props: {
         ) : null
       }
     >
-      <div className="archived-toolbar" data-testid="archived-toolbar">
-        <label className="archived-search">
-          <Search className="size-3.5 shrink-0 text-[var(--text-subtle)]" strokeWidth={1.75} />
-          <SettingsInput
-            data-testid="archived-search"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder={tr("settings.archived.search")}
-            className="h-auto min-w-0 flex-1 border-0 bg-transparent px-0 shadow-none focus-visible:border-0 focus-visible:ring-0 dark:bg-transparent"
+      {/* Same pattern as models toolbar: search flex-1, trailing controls shrink-0. */}
+      <div className="archived-toolbar mb-3 flex items-center gap-2" data-testid="archived-toolbar">
+        <SettingsSearchField
+          testId="archived-search"
+          value={query}
+          onChange={setQuery}
+          placeholder={tr("settings.archived.search")}
+          className="min-w-0 flex-1"
+        />
+        <div className="archived-toolbar-filters">
+          <SettingsSelect
+            className="w-auto shrink-0"
+            size="md"
+            testId="archived-filter-sessions"
+            value="all"
+            onChange={() => {
+              /* reserved: all sessions only for now */
+            }}
+            options={[{ value: "all", label: tr("settings.archived.filterAll") }]}
           />
-        </label>
-        <SettingsSelect
-          className="w-auto"
-          testId="archived-filter-sessions"
-          value="all"
-          onChange={() => {
-            /* reserved: all sessions only for now */
-          }}
-          options={[{ value: "all", label: tr("settings.archived.filterAll") }]}
-        />
-        <SettingsSelect
-          className="w-auto"
-          testId="archived-filter-projects"
-          value={projectFilter}
-          onChange={setProjectFilter}
-          options={[
-            { value: "all", label: tr("settings.archived.filterAllProjects") },
-            ...projectOptions.map(([key, name]) => ({ value: key, label: name })),
-          ]}
-        />
+          <SettingsSelect
+            className="w-auto shrink-0"
+            size="md"
+            testId="archived-filter-projects"
+            value={projectFilter}
+            onChange={setProjectFilter}
+            options={[
+              { value: "all", label: tr("settings.archived.filterAllProjects") },
+              ...projectOptions.map(([key, name]) => ({ value: key, label: name })),
+            ]}
+          />
+        </div>
       </div>
 
       {groups.length === 0 ? (
@@ -560,16 +566,12 @@ function ShortcutsSection(
       }
     >
       <div className="mb-3 flex items-center gap-2">
-        <label className="settings-rail-search min-w-0 flex-1 !rounded-[12px]">
-          <Search className="size-3.5 shrink-0 opacity-60" strokeWidth={1.75} />
-          <SettingsInput
-            data-testid="shortcuts-search"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder={tr("shortcuts.search")}
-            className="h-auto min-w-0 flex-1 border-0 bg-transparent px-0 shadow-none focus-visible:border-0 focus-visible:ring-0 dark:bg-transparent"
-          />
-        </label>
+        <SettingsSearchField
+          testId="shortcuts-search"
+          value={query}
+          onChange={setQuery}
+          placeholder={tr("shortcuts.search")}
+        />
       </div>
       {conflict ? (
         <p className="mb-2 text-[12px] text-red-400" data-testid="shortcuts-conflict">
@@ -1902,16 +1904,12 @@ function ProvidersSection(
   return (
     <SettingsPageShell title={tr("section.auth")} testId="settings-providers">
       <div className="mb-3 flex items-center gap-2">
-        <label className="settings-rail-search min-w-0 flex-1 !rounded-[12px]">
-          <Search className="size-3.5 shrink-0 opacity-60" strokeWidth={1.75} />
-          <SettingsInput
-            data-testid="providers-search"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder={tr("auth.search")}
-            className="h-auto min-w-0 flex-1 border-0 bg-transparent px-0 shadow-none focus-visible:border-0 focus-visible:ring-0 dark:bg-transparent"
-          />
-        </label>
+        <SettingsSearchField
+          testId="providers-search"
+          value={query}
+          onChange={setQuery}
+          placeholder={tr("auth.search")}
+        />
         <SettingsPillButton
           label={loading ? "…" : tr("auth.refresh")}
           testId="providers-refresh"
@@ -1926,11 +1924,11 @@ function ProvidersSection(
           data-testid="provider-key-form"
           onSubmit={(e) => void saveApiKey(e)}
         >
-          <label className="settings-field">
+          <label className="settings-field settings-provider-field">
             <span>{tr("auth.provider")}</span>
             <SettingsSelect
               testId="provider-select"
-              fullWidth
+              className="settings-provider-select"
               value={keyProvider || (providers[0]?.provider ?? "")}
               onChange={setKeyProvider}
               disabled={loading}
@@ -1941,7 +1939,7 @@ function ProvidersSection(
               }
             />
           </label>
-          <label className="settings-field">
+          <label className="settings-field settings-provider-field settings-provider-field-key">
             <span>{tr("auth.apiKey")}</span>
             <div className="settings-key-row">
               <SettingsInput
@@ -2268,17 +2266,62 @@ const CUSTOM_MODEL_API_OPTIONS: Array<{ value: CustomModelApi; label: string }> 
   { value: "google-generative-ai", label: "google-generative-ai" },
 ];
 
+/** Split enabledModels into exact provider/id picks vs free-form globs (pi-style). */
+function splitEnabledModels(
+  patterns: string[],
+  catalog: ModelSummary[],
+): { exact: Set<string>; globs: string[] } {
+  const catalogKeys = new Set(catalog.map((m) => `${m.provider}/${m.id}`));
+  const exact = new Set<string>();
+  const globs: string[] = [];
+  for (const raw of patterns) {
+    const pattern = raw.trim();
+    if (!pattern) continue;
+    const bare = (pattern.split(":")[0] ?? pattern).trim();
+    const isGlob = bare.includes("*") || bare.includes("?") || bare.includes("[");
+    if (isGlob) {
+      globs.push(pattern);
+      continue;
+    }
+    if (bare.includes("/") && catalogKeys.has(bare)) {
+      exact.add(bare);
+      if (pattern.includes(":")) globs.push(pattern);
+      continue;
+    }
+    const idMatches = catalog.filter((m) => m.id === bare);
+    if (idMatches.length === 1) {
+      exact.add(`${idMatches[0]!.provider}/${idMatches[0]!.id}`);
+      if (pattern.includes(":")) globs.push(pattern);
+      continue;
+    }
+    globs.push(pattern);
+  }
+  return { exact, globs };
+}
+
+function buildEnabledModelsPatterns(selected: Set<string>, globText: string): string[] {
+  const globs = globText
+    .split(/[\n,]+/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const exact = [...selected].sort((a, b) => a.localeCompare(b));
+  const extra = globs.filter((line) => {
+    const bare = (line.split(":")[0] ?? line).trim();
+    if (selected.has(bare)) return line.includes(":");
+    return true;
+  });
+  return [...exact, ...extra];
+}
+
 function ModelsSection(
   props: SettingsPageProps & { tr: (key: MessageKey, vars?: Record<string, string>) => string },
 ) {
   const { tr } = props;
   const [models, setModels] = useState<ModelSummary[]>([]);
-  const [scopedModels, setScopedModels] = useState<
-    Array<{ provider: string; id: string; name?: string }>
-  >([]);
-  /** Editable enabledModels patterns (pi scope). */
-  const [scopedPatternsText, setScopedPatternsText] = useState("");
+  /** Exact provider/id picks for pi enabledModels (fast-switch scope). */
   const [scopedSelected, setScopedSelected] = useState<Set<string>>(() => new Set());
+  /** Free-form globs / bare ids / thinking suffixes (wildcard mode). */
+  const [scopedGlobText, setScopedGlobText] = useState("");
   const [scopedBusy, setScopedBusy] = useState(false);
   const [defaultKey, setDefaultKey] = useState("");
   const [query, setQuery] = useState("");
@@ -2349,27 +2392,15 @@ function ModelsSection(
     try {
       await props.onEnsureHost();
       // Prefer catalog reload so models.json / extension providers re-resolve (#16/#17).
-      const [list, settings, scoped] = await Promise.all([
+      const [list, settings] = await Promise.all([
         window.pix.models.refreshCatalog().catch(() => window.pix.models.list()),
         window.pix.settings.get(),
-        window.pix.models.listScoped().catch(() => []),
       ]);
       setModels(list);
-      setScopedModels(scoped);
       const patterns = settings.enabledModels ?? [];
-      setScopedPatternsText(patterns.join("\n"));
-      const selected = new Set<string>();
-      for (const pattern of patterns) {
-        // Exact provider/id pattern → tick matching checkbox.
-        if (pattern.includes("/") && !pattern.includes("*") && !pattern.includes("?")) {
-          const bare = pattern.split(":")[0] ?? pattern;
-          selected.add(bare);
-        }
-      }
-      for (const item of scoped) {
-        selected.add(`${item.provider}/${item.id}`);
-      }
-      setScopedSelected(selected);
+      const { exact, globs } = splitEnabledModels(patterns, list);
+      setScopedSelected(exact);
+      setScopedGlobText(globs.join("\n"));
       setDefaultKey(
         settings.defaultProvider && settings.defaultModel
           ? `${settings.defaultProvider}/${settings.defaultModel}`
@@ -2382,47 +2413,29 @@ function ModelsSection(
     }
   }
 
-  function toggleScopedModel(provider: string, id: string) {
-    const key = `${provider}/${id}`;
-    setScopedSelected((prev) => {
-      const next = new Set(prev);
-      if (next.has(key)) next.delete(key);
-      else next.add(key);
-      // Keep free-form patterns that are not exact model keys.
-      const freeform = scopedPatternsText
-        .split(/[\n,]+/)
-        .map((line) => line.trim())
-        .filter((line) => line.length > 0)
-        .filter((line) => {
-          if (line.includes("*") || line.includes("?")) return true;
-          const bare = (line.split(":")[0] ?? line).trim();
-          return !next.has(bare) && bare !== key && !bare.includes("/");
-        });
-      const exact = [...next];
-      setScopedPatternsText([...exact, ...freeform].join("\n"));
-      return next;
-    });
-  }
-
-  async function saveScopedModels(patterns: string[]) {
+  async function saveEnabledModels(selected: Set<string>, globText: string) {
     setScopedBusy(true);
     try {
       await props.onEnsureHost();
+      const patterns = buildEnabledModelsPatterns(selected, globText);
       await window.pix.settings.patch({ enabledModels: patterns });
-      await refresh();
+      setScopedSelected(selected);
+      setScopedGlobText(globText);
       useShellStore.getState().setStatus(tr("models.scopedSaved"));
     } catch (err) {
       showError(err, tr("models.scopedSaveFailed"));
+      await refresh();
     } finally {
       setScopedBusy(false);
     }
   }
 
-  function patternsFromEditor(): string[] {
-    return scopedPatternsText
-      .split(/[\n,]+/)
-      .map((line) => line.trim())
-      .filter((line) => line.length > 0);
+  async function setModelFastSwitch(provider: string, id: string, on: boolean) {
+    const key = `${provider}/${id}`;
+    const next = new Set(scopedSelected);
+    if (on) next.add(key);
+    else next.delete(key);
+    await saveEnabledModels(next, scopedGlobText);
   }
 
   useEffect(() => {
@@ -2608,11 +2621,7 @@ function ModelsSection(
     return (
       <div
         key={key}
-        className={cn(
-          "settings-row",
-          options?.last && "settings-row-last",
-          (isDefault || isSession) && "bg-[color-mix(in_srgb,var(--ring,#0a84ff)_6%,transparent)]",
-        )}
+        className={cn("settings-row", options?.last && "settings-row-last")}
         data-testid={`model-row-${model.provider}-${model.id}`}
         data-default={isDefault ? "true" : "false"}
         data-session={isSession ? "true" : "false"}
@@ -2636,7 +2645,22 @@ function ModelsSection(
             {model.reasoning ? " · reasoning" : ""}
           </div>
         </div>
-        <div className="flex shrink-0 flex-wrap items-center justify-end gap-1.5">
+        <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
+          <div
+            className="flex items-center gap-1.5"
+            title={tr("models.scopeToggleHint")}
+          >
+            <span className="text-[11px] text-[var(--muted-foreground)] whitespace-nowrap">
+              {tr("models.scopeToggle")}
+            </span>
+            <SettingsToggle
+              checked={scopedSelected.has(key)}
+              onChange={(on) => void setModelFastSwitch(model.provider, model.id, on)}
+              disabled={loading || dialogBusy || scopedBusy}
+              testId={`model-scope-${model.provider}-${model.id}`}
+              aria-label={tr("models.scopeToggle")}
+            />
+          </div>
           {options?.allowEdit ? (
             <SettingsPillButton
               label={tr("models.customEdit")}
@@ -2724,16 +2748,12 @@ function ModelsSection(
   return (
     <SettingsPageShell title={tr("section.models")} testId="settings-models">
       <div className="mb-3 flex items-center gap-2">
-        <label className="settings-rail-search min-w-0 flex-1 !rounded-[12px]">
-          <Search className="size-3.5 shrink-0 opacity-60" strokeWidth={1.75} />
-          <SettingsInput
-            data-testid="models-search"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder={tr("models.search")}
-            className="h-auto min-w-0 flex-1 border-0 bg-transparent px-0 shadow-none focus-visible:border-0 focus-visible:ring-0 dark:bg-transparent"
-          />
-        </label>
+        <SettingsSearchField
+          testId="models-search"
+          value={query}
+          onChange={setQuery}
+          placeholder={tr("models.search")}
+        />
         <SettingsPillButton
           label={tr("models.customAdd")}
           onClick={openCustomDialog}
@@ -2748,120 +2768,77 @@ function ModelsSection(
         />
       </div>
 
-      <SettingsSectionBlock label={tr("models.group.scoped")} testId="models-scoped">
+      {/* Independent wildcard patterns (pi enabledModels globs). */}
+      <SettingsSectionBlock
+        label={tr("models.wildcardSection")}
+        labelHint={tr("models.wildcardHelp")}
+        testId="models-wildcard"
+      >
         <div className="space-y-3 px-3 py-3">
-          <p className="text-[12px] leading-relaxed text-[var(--text-subtle)]">
-            {tr("models.scopedHint")}
-          </p>
-          {scopedModels.length > 0 ? (
-            <div data-testid="models-scoped-list">
-              <div className="mb-1 text-[11px] font-medium text-[var(--text-subtle)]">
-                {tr("models.scopedActive")}
-              </div>
-              <div className="space-y-1 text-xs">
-                {scopedModels.map((model) => (
-                  <div key={`${model.provider}/${model.id}`}>
-                    {model.provider}/{model.id}
-                    {model.name ? ` · ${model.name}` : ""}
-                  </div>
-                ))}
-              </div>
-            </div>
-          ) : (
-            <div className="text-xs opacity-60" data-testid="models-scoped-empty">
-              {tr("models.scopedEmpty")}
-            </div>
-          )}
-          <div>
-            <div className="mb-1 text-[11px] font-medium text-[var(--text-subtle)]">
-              {tr("models.scopedPatterns")}
-            </div>
-            <SettingsTextarea
-              data-testid="models-scoped-patterns"
-              className="min-h-[88px] w-full font-mono text-sm"
-              value={scopedPatternsText}
-              onChange={(e) => setScopedPatternsText(e.target.value)}
-              placeholder={tr("models.scopedPatternsPh")}
-              disabled={loading || scopedBusy}
-            />
-            <div className="mt-1 text-[11px] opacity-60">
-              {tr("models.scopedCount", {
-                count: String(patternsFromEditor().length),
-              })}
-            </div>
-          </div>
-          <div>
-            <div className="mb-1.5 text-[11px] font-medium text-[var(--text-subtle)]">
-              {tr("models.scopedPick")}
-            </div>
-            <div
-              className="pix-scroll max-h-[220px] space-y-0.5 overflow-y-auto rounded-[var(--radius-control)] border border-[var(--border)] p-1"
-              data-testid="models-scoped-picker"
-            >
-              {models.length === 0 ? (
-                <div className="px-2 py-3 text-xs opacity-60">{tr("models.empty")}</div>
-              ) : (
-                models.map((model) => {
-                  const key = `${model.provider}/${model.id}`;
-                  const checked = scopedSelected.has(key);
-                  return (
-                    <label
-                      key={key}
-                      className={cn(
-                        "flex cursor-pointer items-center gap-2 rounded-[var(--radius-control)] px-2 py-1.5 text-[12px]",
-                        checked ? "bg-[var(--hover-fill)]" : "hover:bg-[var(--hover-fill)]",
-                      )}
-                    >
-                      <SettingsInput
-                        type="checkbox"
-                        className="size-3.5 shrink-0"
-                        checked={checked}
-                        disabled={loading || scopedBusy}
-                        onChange={() => toggleScopedModel(model.provider, model.id)}
-                        data-testid={`models-scoped-check-${model.provider}-${model.id}`}
-                      />
-                      <span className="min-w-0 flex-1 truncate font-medium">
-                        {model.name || model.id}
-                      </span>
-                      <span className="shrink-0 truncate text-[11px] text-[var(--text-subtle)]">
-                        {model.provider}/{model.id}
-                      </span>
-                    </label>
-                  );
-                })
-              )}
-            </div>
-          </div>
-          <div className="flex flex-wrap gap-2">
+          <SettingsTextarea
+            data-testid="models-scoped-patterns"
+            className="min-h-[88px] w-full font-mono text-sm"
+            value={scopedGlobText}
+            onChange={(e) => setScopedGlobText(e.target.value)}
+            placeholder={tr("models.scopedPatternsPh")}
+            disabled={loading || scopedBusy}
+          />
+          <div className="flex flex-wrap items-center gap-2">
             <SettingsPillButton
-              label={scopedBusy ? tr("models.scopedSaving") : tr("models.scopedSave")}
-              testId="models-scoped-save"
+              label={scopedBusy ? tr("models.scopedSaving") : tr("models.wildcardSave")}
+              testId="models-wildcard-save"
               disabled={loading || scopedBusy}
-              onClick={() => void saveScopedModels(patternsFromEditor())}
+              onClick={() => void saveEnabledModels(scopedSelected, scopedGlobText)}
             />
             <SettingsPillButton
               label={tr("models.scopedClear")}
-              testId="models-scoped-clear"
+              testId="models-scope-clear"
               disabled={loading || scopedBusy}
-              onClick={() => {
-                setScopedPatternsText("");
-                setScopedSelected(new Set());
-                void saveScopedModels([]);
-              }}
+              onClick={() => void saveEnabledModels(new Set(), "")}
             />
+            {scopedSelected.size > 0 || scopedGlobText.trim() ? (
+              <span className="text-[11px] text-[var(--muted-foreground)]">
+                {tr("models.scopedCount", {
+                  count: String(
+                    scopedSelected.size +
+                      scopedGlobText.split(/[\n,]+/).filter((l) => l.trim()).length,
+                  ),
+                })}
+              </span>
+            ) : null}
           </div>
         </div>
       </SettingsSectionBlock>
 
-      <SettingsSectionBlock label={tr("models.group.custom")} testId="models-custom">
-        <div data-testid="models-list-custom">
-          {renderModelRows(
-            customModels,
-            searching ? tr("models.searchEmpty") : tr("models.group.customEmpty"),
-            { allowEdit: true },
-          )}
-        </div>
-      </SettingsSectionBlock>
+      {/* Custom providers: same card chrome as builtin groups (one card per provider). */}
+      {customModels.length === 0 ? (
+        <SettingsSectionBlock label={tr("models.group.custom")} testId="models-custom">
+          <div data-testid="models-list-custom">
+            {renderModelRows(
+              [],
+              searching ? tr("models.searchEmpty") : tr("models.group.customEmpty"),
+            )}
+          </div>
+        </SettingsSectionBlock>
+      ) : (
+        groupModelsByProvider(customModels, tr("models.group.custom")).map((group) => (
+          <SettingsSectionBlock
+            key={group.key}
+            label={group.label}
+            testId={`models-custom-group-${group.key}`}
+          >
+            <div data-testid={`models-list-custom-${group.key}`}>
+              {group.models.map((model, index) =>
+                renderModelRow(model, {
+                  last: index === group.models.length - 1,
+                  hideProviderPrefix: true,
+                  allowEdit: true,
+                }),
+              )}
+            </div>
+          </SettingsSectionBlock>
+        ))
+      )}
 
       {renderBuiltinProviderSections(
         searching ? tr("models.searchEmpty") : tr("models.group.builtinEmpty"),
@@ -3130,6 +3107,13 @@ function ModelsSection(
 }
 
 /**
+ * Full pi ThinkingLevel set (pi-agent-core / thinkingLevelMap keys).
+ * Used for global defaultThinkingLevel — not the per-model available subset.
+ * @see https://pi.dev/docs and pi-coding-agent custom-provider thinkingLevelMap
+ */
+const PI_THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh"] as const;
+
+/**
  * Only surface pi settings that help the desktop GUI.
  * CLI/TUI-only options (theme, quietStartup, skill commands, free-text model ids)
  * stay in ~/.pi/agent and the Models page.
@@ -3172,9 +3156,10 @@ function PiSettingsSection(
     }
   }
 
-  const thinkingLevels = view?.availableThinkingLevels?.length
-    ? view.availableThinkingLevels
-    : ["off", "minimal", "low", "medium", "high"];
+  // Default thinking is a global settings.json field — always offer the full pi ThinkingLevel
+  // set (docs/custom-provider thinkingLevelMap). Do not use the current session model's
+  // availableThinkingLevels (often only "off" for models without mapped reasoning).
+  const thinkingLevels = PI_THINKING_LEVELS;
 
   return (
     <SettingsPageShell title={tr("section.piSettings")} testId="settings-pi">
@@ -3185,10 +3170,13 @@ function PiSettingsSection(
           control={
             <SettingsSelect
               testId="pi-default-thinking"
-              size="sm"
+              size="md"
               value={String(view?.defaultThinkingLevel ?? "off")}
               onChange={(v) => void apply({ defaultThinkingLevel: v })}
-              options={thinkingLevels.map((level) => ({ value: level, label: level }))}
+              options={thinkingLevels.map((level) => ({
+                value: level,
+                label: thinkingLevelLabel(props.locale, level),
+              }))}
               disabled={loading || !view}
             />
           }
@@ -3441,13 +3429,16 @@ function PiSettingsSection(
           control={
             <SettingsSelect
               testId="pi-http-idle"
-              size="sm"
-              value={String(view?.httpIdleTimeoutMs ?? 60_000)}
+              size="md"
+              // Pix product default: 60 minutes (pi upstream default is 5 minutes / 300000).
+              value={String(view?.httpIdleTimeoutMs ?? 3_600_000)}
               onChange={(v) => void apply({ httpIdleTimeoutMs: Number(v) })}
               options={[
-                { value: "30000", label: tr("piSettings.httpIdle30s") },
-                { value: "60000", label: tr("piSettings.httpIdle60s") },
-                { value: "120000", label: tr("piSettings.httpIdle120s") },
+                { value: "60000", label: tr("piSettings.httpIdle1m") },
+                { value: "300000", label: tr("piSettings.httpIdle5m") },
+                { value: "900000", label: tr("piSettings.httpIdle15m") },
+                { value: "1800000", label: tr("piSettings.httpIdle30m") },
+                { value: "3600000", label: tr("piSettings.httpIdle60m") },
               ]}
               disabled={loading || !view}
             />
@@ -3478,40 +3469,6 @@ function PiSettingsSection(
           }
           last
         />
-      </SettingsSectionBlock>
-
-      <SettingsSectionBlock
-        label={tr("piSettings.inventorySection")}
-        testId="pi-settings-inventory"
-      >
-        <div className="px-3 py-2 text-xs space-y-1.5" data-testid="pi-settings-inventory-list">
-          <p className="m-0 mb-2 text-[12px] leading-relaxed text-[var(--text-subtle)]">
-            {tr("piSettings.inventoryHint")}
-          </p>
-          {(view?.inventory ?? []).map((item, index, list) => (
-            <div
-              key={item.key}
-              className={cn(
-                "settings-row settings-row-flush !gap-3 !px-0 !py-1.5",
-                index === list.length - 1 && "settings-row-last",
-              )}
-              data-testid={`pi-inventory-${item.key}`}
-            >
-              <div className="min-w-0">
-                <code className="text-[11px]">{item.key}</code>
-                <div className="break-all text-[11px] text-[var(--text-subtle)]">{item.value}</div>
-              </div>
-              <div className="shrink-0 text-right text-[11px] text-[var(--text-subtle)]">
-                <div>{item.source}</div>
-                <div>
-                  {item.writable
-                    ? tr("piSettings.inventory.writable")
-                    : tr("piSettings.inventory.readonly")}
-                </div>
-              </div>
-            </div>
-          ))}
-        </div>
       </SettingsSectionBlock>
 
       {view?.degradedCapabilities?.length ? (

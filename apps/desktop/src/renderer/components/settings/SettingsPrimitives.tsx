@@ -1,9 +1,11 @@
 /**
  * Settings chrome layout + thin wrappers around default shadcn form controls.
- * Controls intentionally use stock shadcn styling (no custom skins).
+ * Controls intentionally use stock shadcn styling (no custom skins), except
+ * filter search fields which share one pill chrome (SettingsSearchField).
  */
 import * as React from "react";
 import type { ReactNode } from "react";
+import { CircleHelp, Search } from "lucide-react";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Field, FieldContent, FieldDescription, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
@@ -17,6 +19,36 @@ import {
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "../../lib/utils.ts";
+
+/**
+ * Unified filter search field for all Settings surfaces (left rail + every page toolbar).
+ * One pill shell, one height/radius/type size — never nest a full shadcn Input.
+ */
+export function SettingsSearchField(props: {
+  value: string;
+  onChange: (value: string) => void;
+  placeholder?: string;
+  testId?: string;
+  className?: string;
+  autoFocus?: boolean;
+}) {
+  return (
+    <label className={cn("settings-search", props.className)}>
+      <Search className="settings-search-icon" strokeWidth={1.75} aria-hidden />
+      <input
+        type="search"
+        data-testid={props.testId}
+        value={props.value}
+        onChange={(event) => props.onChange(event.target.value)}
+        placeholder={props.placeholder}
+        autoFocus={props.autoFocus}
+        className="settings-search-input"
+        autoComplete="off"
+        spellCheck={false}
+      />
+    </label>
+  );
+}
 
 export function SettingsPageShell(props: {
   title: string;
@@ -42,6 +74,8 @@ export function SettingsSectionBlock(props: {
   testId?: string;
   showLabel?: boolean;
   labelVariant?: "default" | "code";
+  /** Hover help next to the group label (native title tooltip). */
+  labelHint?: string;
   children: ReactNode;
 }) {
   const showLabel = props.showLabel !== false;
@@ -54,7 +88,21 @@ export function SettingsSectionBlock(props: {
             props.labelVariant === "code" && "settings-section-label-code",
           )}
         >
-          {props.label}
+          <span className="inline-flex min-w-0 items-center gap-1">
+            <span className="min-w-0 truncate">{props.label}</span>
+            {props.labelHint ? (
+              <span
+                className="settings-section-label-help inline-flex shrink-0 cursor-help items-center text-[var(--text-subtle)] hover:text-[var(--muted-foreground)]"
+                title={props.labelHint}
+                aria-label={props.labelHint}
+                data-testid={
+                  props.testId ? `${props.testId}-help` : "settings-section-help"
+                }
+              >
+                <CircleHelp className="size-3.5" strokeWidth={1.75} aria-hidden />
+              </span>
+            ) : null}
+          </span>
         </h2>
       ) : null}
       <div className="settings-card">{props.children}</div>
@@ -196,6 +244,7 @@ export function SettingsPillButton(props: {
   onClick?: () => void;
   testId?: string;
   disabled?: boolean;
+  /** Danger action: normal chrome by default, red only on hover. */
   danger?: boolean;
   type?: "button" | "submit" | "reset";
   className?: string;
@@ -205,9 +254,14 @@ export function SettingsPillButton(props: {
       type={props.type ?? "button"}
       data-testid={props.testId}
       disabled={props.disabled}
-      variant={props.danger ? "destructive" : "secondary"}
+      // Keep secondary chrome for danger — destructive paints solid red at rest.
+      variant="secondary"
       size="sm"
-      className={props.className}
+      className={cn(
+        props.danger &&
+          "hover:border-transparent hover:bg-red-500/10 hover:text-red-400 focus-visible:ring-red-500/20 dark:hover:bg-red-500/15 dark:hover:text-red-400",
+        props.className,
+      )}
       onClick={props.onClick}
     >
       {props.label}

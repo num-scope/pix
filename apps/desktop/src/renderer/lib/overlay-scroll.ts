@@ -4,7 +4,7 @@
  */
 
 export const OVERLAY_SCROLL_SELECTOR =
-  ".pix-scroll, .timeline-scroll, .page-body, .settings-page-body, .composer-suggest-scroll";
+  ".pix-scroll, .timeline-scroll, .page-body, .settings-page-body, .composer-suggest-scroll, .composer-prompt-scroll, .command-palette-scroll, .session-tree-list";
 
 const HIDE_MS = 900;
 const THUMB_CLASS = "pix-scroll-thumb";

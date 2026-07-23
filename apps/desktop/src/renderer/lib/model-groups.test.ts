@@ -10,20 +10,27 @@ describe("model-groups", () => {
     expect(formatProviderGroupLabel("deepseek")).toBe("DeepSeek");
   });
 
-  it("title-cases unknown hyphenated ids", () => {
+  it("title-cases unknown hyphenated ids and preserves mixed-case custom ids", () => {
     expect(formatProviderGroupLabel("my-cool-llm")).toBe("My Cool Llm");
+    expect(formatProviderGroupLabel("XTJ")).toBe("XTJ");
   });
 
-  it("groups custom first then providers by label, shared by settings and composer", () => {
+  it("groups custom providers first by provider label, then builtin — same as settings", () => {
     const models = [
       { provider: "openai", id: "gpt-4o", name: "GPT-4o", source: "builtin" as const },
       { provider: "anthropic", id: "claude", name: "Claude", source: "builtin" as const },
+      { provider: "XTJ", id: "gpt-5.6-sol", name: "gpt-5.6-sol", source: "custom" as const },
       { provider: "acme", id: "x", name: "X", source: "custom" as const },
     ];
     const groups = groupModelsByProvider(models, "自定义");
-    expect(groups.map((g) => g.label)).toEqual(["自定义", "Anthropic", "OpenAI"]);
-    expect(groups[0]?.key).toBe("custom");
-    expect(groups[1]?.key).toBe("anthropic");
-    expect(groups[2]?.key).toBe("openai");
+    // Custom first (Acme, XTJ), then builtin (Anthropic, OpenAI) — all provider labels.
+    expect(groups.map((g) => g.label)).toEqual(["Acme", "XTJ", "Anthropic", "OpenAI"]);
+    expect(groups.map((g) => g.key)).toEqual([
+      "custom:acme",
+      "custom:XTJ",
+      "anthropic",
+      "openai",
+    ]);
+    expect(groups.every((g) => g.key !== "custom")).toBe(true);
   });
 });

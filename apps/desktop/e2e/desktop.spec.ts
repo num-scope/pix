@@ -287,10 +287,7 @@ test.describe("Desktop shell Playwright E2E (macOS Electron)", () => {
     expect(switchedId).toBe(firstSessionId);
   });
 
-  test("packages: open installed page, install local source, then remove", async ({
-    page,
-    pix,
-  }) => {
+  test("packages: discover toolbar and list install, then remove", async ({ page }) => {
     await startHost(page);
     await page.getByTestId("nav-packages").click();
     await expect(page.getByTestId("packages-page")).toBeVisible();
@@ -298,27 +295,35 @@ test.describe("Desktop shell Playwright E2E (macOS Electron)", () => {
     await expect(page.getByTestId("packages-empty")).toContainText(
       /No packages|尚未配置|尚未安装/i,
     );
-    // Discover tab holds the official gallery link.
+
+    // Discover: search · scope · open web · trial toggle on one row; install via list only.
     await page.getByTestId("packages-tab-discover").click();
+    await expect(page.getByTestId("packages-discover-toolbar")).toBeVisible();
+    await expect(page.getByTestId("packages-discover-search")).toBeVisible();
+    await expect(page.getByTestId("packages-discover-scope")).toBeVisible();
     await expect(page.getByTestId("packages-catalog-link")).toHaveAttribute(
       "href",
       "https://pi.dev/packages",
     );
+    await expect(page.getByTestId("package-temporary")).toBeVisible();
+    await expect(page.getByTestId("package-source-input")).toHaveCount(0);
+    await expect(page.getByTestId("package-install-button")).toHaveCount(0);
+
+    await expect(page.getByTestId("packages-discover-list")).toBeVisible({ timeout: 60_000 });
+    const installBtn = page.locator('[data-testid^="catalog-install-"]').first();
+    await expect(installBtn).toBeVisible({ timeout: 30_000 });
+    const installId = await installBtn.getAttribute("data-testid");
+    const packageName = installId?.replace(/^catalog-install-/, "") ?? "";
+    await installBtn.click();
+
     await page.getByTestId("packages-tab-installed").click();
-
-    const localPackage = `${pix.workspace}/e2e-local-package`;
-
-    await page.getByTestId("package-source-input").fill(localPackage);
-    await page.getByTestId("package-scope-select").selectOption("global");
-    await page.getByTestId("package-install-button").click();
-
-    await expect(page.getByTestId("packages-list")).toBeVisible({ timeout: 60_000 });
-    await expect(page.getByTestId("packages-list")).toContainText("e2e-local-package");
-    if (await page.getByTestId("package-form-error").count()) {
-      throw new Error(await page.getByTestId("package-form-error").innerText());
+    await expect(page.getByTestId("packages-list")).toBeVisible({ timeout: 90_000 });
+    if (packageName) {
+      await expect(page.getByTestId("packages-list")).toContainText(packageName, {
+        timeout: 90_000,
+      });
     }
 
-    // Remove using the row action (locale-agnostic: last primary/danger action).
     const removeBtn = page
       .getByTestId("packages-list")
       .getByRole("button")
@@ -328,9 +333,6 @@ test.describe("Desktop shell Playwright E2E (macOS Electron)", () => {
       .poll(
         async () => {
           if (await page.getByTestId("packages-empty").count()) return "empty";
-          if (await page.getByTestId("package-form-error").count()) {
-            return await page.getByTestId("package-form-error").innerText();
-          }
           return "pending";
         },
         { timeout: 60_000 },

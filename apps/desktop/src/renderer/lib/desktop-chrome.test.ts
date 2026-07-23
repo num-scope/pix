@@ -1,11 +1,13 @@
 import { describe, expect, it } from "vite-plus/test";
 import {
+  LINUX_CAPTION_BUTTONS_WIDTH_PX,
   MAC_TRAFFIC_LIGHT_GUTTER_PX,
   MAC_TRAFFIC_LIGHT_INSET_X_PX,
   NON_MAC_TITLEBAR_LEADING_GUTTER_PX,
   TITLEBAR_HEIGHT_PX,
   getMacTrafficLightPosition,
   isMacDesktopChrome,
+  isWindowsDesktopChrome,
   titlebarControlTopPx,
   titlebarLeadingGutterPx,
 } from "./desktop-chrome.ts";
@@ -25,10 +27,15 @@ describe("desktop chrome geometry", () => {
     expect(titlebarLeadingGutterPx(true)).toBe(MAC_TRAFFIC_LIGHT_GUTTER_PX);
     expect(titlebarLeadingGutterPx(false)).toBe(NON_MAC_TITLEBAR_LEADING_GUTTER_PX);
     expect(titlebarControlTopPx(28)).toBe(9);
+    expect(LINUX_CAPTION_BUTTONS_WIDTH_PX).toBeGreaterThan(100);
   });
 
-  it("detects mac desktop chrome from platform / UA", () => {
+  it("detects mac / windows desktop chrome from platform / UA", () => {
     expect(isMacDesktopChrome("MacIntel", "Mozilla/5.0 (Macintosh; Intel Mac OS X)")).toBe(true);
     expect(isMacDesktopChrome("Win32", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")).toBe(false);
+    expect(isWindowsDesktopChrome("Win32", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")).toBe(true);
+    expect(isWindowsDesktopChrome("MacIntel", "Mozilla/5.0 (Macintosh; Intel Mac OS X)")).toBe(
+      false,
+    );
   });
 });

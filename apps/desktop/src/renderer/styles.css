@@ -153,6 +153,11 @@
   --radius-control: var(--radius-sm);
   --radius-field: var(--radius-md);
   --radius-panel: var(--radius-lg);
+  /* Unified group / section label type */
+  --group-label-size: 13px;
+  --group-label-weight: 400;
+  --group-label-line-height: 1.35;
+  --group-label-color: var(--text-subtle);
 }
 
 [data-theme="light"] {
@@ -222,6 +227,11 @@
   --radius-control: var(--radius-sm);
   --radius-field: var(--radius-md);
   --radius-panel: var(--radius-lg);
+  /* Unified group / section label type (sidebar, settings, menus, palette). */
+  --group-label-size: 13px;
+  --group-label-weight: 400;
+  --group-label-line-height: 1.35;
+  --group-label-color: var(--text-subtle);
 }
 
 html,
@@ -230,6 +240,27 @@ body,
   width: 100%;
   height: 100%;
   background: transparent;
+}
+
+/*
+ * Single type scale for all “group name” labels across the app.
+ * Use this class or the listed selectors — do not invent ad-hoc 11px/12px group titles.
+ */
+.group-label,
+.settings-section-label,
+.settings-section-label-code,
+.settings-rail-group-label,
+.sidebar-section-label,
+.composer-suggest-group-label,
+.composer-model-group-label,
+.sidebar-block-head,
+[cmdk-group-heading] {
+  font-size: var(--group-label-size) !important;
+  font-weight: var(--group-label-weight) !important;
+  line-height: var(--group-label-line-height) !important;
+  letter-spacing: normal !important;
+  color: var(--group-label-color) !important;
+  text-transform: none !important;
 }
 
 body {
@@ -270,7 +301,8 @@ body {
 }
 
 /* Titlebar drag regions. macOS reserves a traffic-light gutter in JS;
-   Windows/Linux use a small leading pad so the collapse control sits near the left edge. */
+   Windows/Linux use a small leading pad so the collapse control sits near the left edge.
+   All platforms use a hidden system title strip + in-app 46px drag row. */
 .sidebar-traffic-row,
 .drag-region {
   -webkit-app-region: drag;
@@ -281,6 +313,63 @@ body {
 .drag-region button {
   -webkit-app-region: no-drag;
   app-region: no-drag;
+}
+
+/*
+ * Windows titleBarOverlay (Window Controls Overlay): keep interactive chrome clear of
+ * native min/max/close. When env vars are absent (mac/linux), padding falls back to 1rem.
+ * freeWidth = env(titlebar-area-width); controlsWidth ≈ 100vw - x - freeWidth.
+ * Includes .page-header so packages/resources toolbar actions are not under caption buttons.
+ */
+.thread-header,
+.settings-page-top-cap,
+.page-header {
+  padding-inline-end: max(
+    1rem,
+    calc(100vw - env(titlebar-area-x, 0px) - env(titlebar-area-width, 100vw) + 0.5rem)
+  );
+}
+
+/* Linux self-drawn caption cluster (see WindowCaptionButtons). */
+html[data-custom-window-controls="true"] .thread-header,
+html[data-custom-window-controls="true"] .settings-page-top-cap,
+html[data-custom-window-controls="true"] .page-header {
+  padding-inline-end: 138px;
+}
+
+/* Linux self-drawn caption buttons (fixed, top-right). */
+.window-caption-buttons {
+  position: fixed;
+  top: 0;
+  right: 0;
+  z-index: 2147483001;
+  display: flex;
+  align-items: flex-start;
+  gap: 2px;
+  padding-right: 8px;
+  padding-left: 4px;
+  pointer-events: auto;
+  -webkit-app-region: no-drag !important;
+  app-region: no-drag !important;
+}
+.window-caption-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 0.5rem;
+  background: transparent;
+  color: var(--muted-foreground);
+  cursor: pointer;
+  padding: 0;
+}
+.window-caption-btn:hover {
+  background: var(--hover-fill);
+  color: var(--hover-fill-foreground, var(--foreground));
+}
+.window-caption-btn-close:hover {
+  background: #e81123;
+  color: #ffffff;
 }
 
 /* Collapsed-rail expand control — portaled to body; must stay above shell + no-drag. */
@@ -411,10 +500,7 @@ body {
   min-width: 0;
   align-items: center;
   padding: 0 0.625rem;
-  font-size: 13px;
-  font-weight: 400;
-  letter-spacing: normal;
-  color: var(--text-subtle);
+  /* type from .group-label */
 }
 
 .nav-item-primary {
@@ -472,8 +558,8 @@ body {
 }
 
 .sidebar-block-head {
-  @apply flex items-center justify-between px-2 pt-2 pb-1 text-[11px] font-semibold tracking-wide uppercase;
-  color: var(--text-subtle);
+  @apply flex items-center justify-between px-2 pt-2 pb-1;
+  /* type from .group-label — no uppercase / 11px special case */
 }
 
 .project-row {
@@ -546,13 +632,15 @@ body {
 }
 
 .thread-header {
-  @apply flex h-[46px] shrink-0 items-center gap-1.5 px-4;
+  /* padding-inline-end: Windows titleBarOverlay — see rule above with .settings-page-top-cap */
+  @apply flex h-[46px] shrink-0 items-center gap-1.5 pl-4;
 }
 
 /* Collapsed rail: titlebar row shares the window edge with traffic lights + expand btn.
-   Left inset comes from a no-drag spacer in ThreadHeader (not padding — padding stays drag). */
+   Left inset comes from a no-drag spacer in ThreadHeader (not padding — padding stays drag).
+   Keep right WCO/caption padding from .thread-header — do not reset padding-right. */
 .thread-header-collapsed {
-  @apply pr-3 pl-0;
+  @apply pl-0;
 }
 
 .thread-header h2 {
@@ -578,7 +666,9 @@ body {
 .timeline-scroll,
 .page-body,
 .settings-page-body,
-.composer-suggest-scroll {
+.composer-suggest-scroll,
+.command-palette-scroll,
+.session-tree-list {
   min-height: 0;
   min-width: 0;
   overflow-x: hidden;
@@ -588,11 +678,23 @@ body {
   scrollbar-width: none;
   scrollbar-color: transparent transparent;
 }
+/* Composer prompt only shares scrollbar chrome (not min-height:0 — needs a 2-line floor). */
+.composer-prompt-scroll {
+  min-width: 0;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+  scrollbar-gutter: auto;
+  scrollbar-width: none;
+  scrollbar-color: transparent transparent;
+}
 .pix-scroll::-webkit-scrollbar,
 .timeline-scroll::-webkit-scrollbar,
 .page-body::-webkit-scrollbar,
 .settings-page-body::-webkit-scrollbar,
-.composer-suggest-scroll::-webkit-scrollbar {
+.composer-suggest-scroll::-webkit-scrollbar,
+.composer-prompt-scroll::-webkit-scrollbar,
+.command-palette-scroll::-webkit-scrollbar,
+.session-tree-list::-webkit-scrollbar {
   width: 0 !important;
   height: 0 !important;
   background: transparent;
@@ -699,6 +801,25 @@ body {
 .composer-dock {
   /* Keep solid canvas under the sticky input so scrolling messages don't show through. */
   background: var(--canvas, var(--background));
+  /* Sit closer to the window bottom (was pb-6 via utility on the dock). */
+  padding-bottom: 0.5rem; /* 8px */
+}
+
+/* Prompt textarea: min 2 lines (just enough), grow to 12, then unified overlay scroll. */
+.composer-prompt-scroll {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  resize: none;
+  /*
+   * Default = two text rows + vertical padding (pt-3 + pb-1).
+   * calc so empty state already fits 2 lines; first wrap should not jump height.
+   */
+  min-height: calc(1.5em * 2 + 0.75rem + 0.25rem + 2px);
+  max-height: calc(1.5em * 12 + 0.75rem + 0.25rem + 2px);
+  field-sizing: fixed;
+  line-height: 1.5;
+  overflow-y: hidden; /* JS toggles to auto at max height */
 }
 
 /* Project protrusion above the input card — slightly taller bar, theme fills. */
@@ -862,29 +983,41 @@ body {
   border-top: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
 }
 
-/* / and @ suggestion panels: flat card, NO outer shadow; only inner bottom fade. */
+/* / and @ suggestion panels: flat card, NO outer shadow; only inner bottom fade.
+   Position is pure `position: fixed` (FloatingMenu portal) — never animate transform. */
 .composer-suggest-menu,
 [data-testid="composer-slash-menu"],
 [data-testid="composer-attach-menu"],
 [data-floating-menu][data-elevated="false"] {
-  transform-origin: bottom center;
-  animation: composer-menu-in 120ms ease-out;
   overflow: hidden !important;
-  /* Kill every elevation source (FloatingMenu defaults + .project-context-menu). */
   box-shadow: none !important;
   filter: none !important;
   -webkit-filter: none !important;
 }
 
-@keyframes composer-menu-in {
-  from {
-    opacity: 0;
-    transform: translateY(6px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
+/* Composer prompt: strip shadcn Textarea chrome so it is not a box-inside-box. */
+.composer-card [data-slot="textarea"],
+.composer-card textarea[data-testid="prompt-input"] {
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  outline: none !important;
+  --tw-ring-shadow: 0 0 #0000 !important;
+  --tw-ring-offset-shadow: 0 0 #0000 !important;
+}
+/* When past 12 lines, keep max height and enable the unified overlay scroll host. */
+.composer-card textarea.composer-prompt-scroll[data-overflow="true"] {
+  overflow-y: auto !important;
+}
+.composer-card [data-slot="textarea"]:focus,
+.composer-card [data-slot="textarea"]:focus-visible,
+.composer-card textarea[data-testid="prompt-input"]:focus,
+.composer-card textarea[data-testid="prompt-input"]:focus-visible {
+  border: 0 !important;
+  box-shadow: none !important;
+  outline: none !important;
+  --tw-ring-shadow: 0 0 #0000 !important;
 }
 
 /* Scroll body + bottom fade (fade only when the list actually overflows). */
@@ -937,11 +1070,7 @@ body {
   margin: 0;
   /* Match option row horizontal inset so titles and items share one left edge. */
   padding: 0.4rem 0.625rem 0.25rem;
-  font-size: 13px;
-  font-weight: 400;
-  letter-spacing: normal;
-  line-height: 1.35;
-  color: var(--text-subtle);
+  /* type from .group-label */
   background: var(--surface-panel);
   text-align: left;
 }
@@ -1001,11 +1130,7 @@ body {
   top: 0;
   z-index: 1;
   padding: 0.4rem 0.625rem 0.2rem;
-  font-size: 13px;
-  font-weight: 400;
-  letter-spacing: normal;
-  line-height: 1.35;
-  color: var(--text-subtle);
+  /* type from .group-label */
   background: var(--surface-panel);
   text-align: left;
 }
@@ -1127,7 +1252,8 @@ body {
 .timeline-user-bubble {
   align-self: flex-end;
   max-width: 100%;
-  border-radius: 999px;
+  /* Match composer input card (`.composer-card`) radius */
+  border-radius: var(--radius-panel);
   background: var(--user-bubble);
   color: var(--user-bubble-fg);
   padding: 10px 16px;
@@ -1285,6 +1411,13 @@ body {
 .timeline-assistant-row {
   width: 100%;
   margin-bottom: 26px;
+}
+.timeline-assistant-body {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  flex-direction: column;
+  gap: 0;
 }
 .timeline-assistant-label {
   display: flex;
@@ -1868,8 +2001,10 @@ body {
   color: var(--foreground);
 }
 .page-header {
-  @apply flex shrink-0 items-center justify-between gap-3 border-b px-5 py-3;
+  @apply flex shrink-0 items-center justify-between gap-3 border-b py-3 pl-5;
+  /* pr comes from WCO/caption rule above — do not set a fixed pr that fights overlay inset. */
   border-color: var(--border);
+  min-height: 46px; /* TITLEBAR_HEIGHT_PX — sit under Windows caption strip */
 }
 .page-header h1 {
   @apply m-0 text-[15px] leading-none font-semibold tracking-tight;
@@ -1880,6 +2015,13 @@ body {
 }
 .page-header-actions {
   @apply flex shrink-0 items-center gap-1.5;
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}
+.page-header-actions button,
+.page-header-actions a {
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
 }
 /* Scrollport has no horizontal padding so the scrollbar sits on the pane edge. */
 .page-body {
@@ -2084,22 +2226,28 @@ a.btn-secondary:focus-visible {
   @apply text-[13px];
   color: var(--muted-foreground);
 }
+/* Session / command-style modal backdrop — centered in the app viewport. */
 .palette-backdrop {
-  @apply fixed inset-0 z-50 flex items-start justify-center bg-black/45 pt-[12vh];
+  @apply fixed inset-0 z-[11000] flex items-center justify-center bg-black/50 p-4;
 }
 .palette-panel {
   @apply w-[min(520px,92vw)] overflow-hidden shadow-2xl;
-  border-radius: var(--radius-panel);
+  border-radius: calc(var(--radius-panel) + 2px);
   background: var(--surface-panel);
-  border: 1px solid var(--border);
+  border: 1px solid color-mix(in srgb, var(--border) 85%, transparent);
+  box-shadow: var(--shadow-soft);
 }
 .palette-input {
-  @apply w-full border-0 border-b bg-transparent px-3.5 py-3 text-sm outline-none;
+  @apply w-full rounded-md border bg-transparent px-3 py-2 text-sm outline-none;
   border-color: var(--border);
   color: var(--foreground);
+  background: color-mix(in srgb, var(--muted-foreground) 6%, transparent);
+}
+.palette-input:focus {
+  border-color: color-mix(in srgb, var(--foreground) 22%, var(--border));
 }
 .palette-list {
-  @apply m-0 max-h-80 list-none overflow-auto p-1;
+  @apply m-0 max-h-80 list-none p-1;
 }
 .palette-item {
   @apply flex w-full items-center justify-between gap-2.5 px-2.5 py-2 text-left text-[13px];
@@ -2118,8 +2266,8 @@ a.btn-secondary:focus-visible {
 /* Session tree — flat peer list (no indentation / branch connectors) */
 .session-tree-panel {
   display: flex;
-  width: min(720px, 94vw);
-  max-height: min(78vh, 680px);
+  width: min(640px, 94vw);
+  max-height: min(72vh, 640px);
   flex-direction: column;
   overflow: hidden;
 }
@@ -2129,17 +2277,27 @@ a.btn-secondary:focus-visible {
   align-items: flex-start;
   justify-content: space-between;
   gap: 0.75rem;
-  border-bottom: 1px solid var(--border);
-  padding: 0.85rem 1rem;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 80%, transparent);
+  padding: 1rem 1.1rem 0.85rem;
 }
 .session-tree-list {
   margin: 0;
   list-style: none;
   flex: 1 1 auto;
-  min-height: 240px;
-  overflow: auto;
+  min-height: 200px;
+  min-width: 0;
+  /* Unified overlay scrollbar (pix-scroll / command-palette-scroll family). */
+  overflow-x: hidden;
+  overflow-y: auto;
   overscroll-behavior: contain;
-  padding: 0.4rem 0.35rem 0.5rem;
+  scrollbar-width: none;
+  scrollbar-color: transparent transparent;
+  padding: 0.4rem 0.35rem 0.65rem;
+}
+.session-tree-list::-webkit-scrollbar {
+  width: 0 !important;
+  height: 0 !important;
+  display: none;
 }
 .session-tree-empty {
   padding: 2rem 1rem;
@@ -2292,6 +2450,66 @@ a.btn-secondary:focus-visible {
   color: var(--text-subtle);
 }
 
+/* Session info — same chrome as session tree (header / scroll / panel width). */
+.session-info-panel {
+  width: min(520px, 94vw);
+  max-height: min(72vh, 560px);
+}
+.session-info-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.95rem;
+  min-height: 0;
+  padding: 0.85rem 1.1rem 1.05rem;
+}
+.session-info-field {
+  min-width: 0;
+}
+.session-info-label {
+  font-size: 12px;
+  line-height: 1.3;
+  color: var(--muted-foreground);
+}
+.session-info-value {
+  margin-top: 0.3rem;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--foreground);
+  word-break: break-word;
+}
+.session-info-value-mono {
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
+  font-size: 12px;
+  color: color-mix(in srgb, var(--foreground) 92%, var(--muted-foreground));
+}
+.session-info-stats {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.5rem;
+}
+.session-info-stat {
+  min-width: 0;
+  border: 1px solid color-mix(in srgb, var(--border) 80%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--muted-foreground) 5%, transparent);
+  padding: 0.55rem 0.7rem;
+}
+.session-info-stat-value {
+  margin-top: 0.25rem;
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  line-height: 1.25;
+  color: var(--foreground);
+  font-variant-numeric: tabular-nums;
+}
+.session-info-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  padding-top: 0.15rem;
+}
+
 /* Settings · keyboard shortcut bind control */
 .shortcut-bind {
   display: inline-flex;
@@ -2409,7 +2627,9 @@ a.btn-secondary:focus-visible {
   @apply flex h-full min-h-0 w-full min-w-0 flex-1 flex-col overflow-hidden;
   background: var(--background);
 }
-/* Pure solid band under the window top — no border/divider; content scrolls below it. */
+/* Pure solid band under the window top — no border/divider; content scrolls below it.
+   Add class `drag-region` in JSX so the window can be moved when Settings has no ThreadHeader.
+   Right padding for Windows caption overlay is shared with .thread-header above. */
 .settings-page-top-cap {
   @apply shrink-0;
   height: 46px; /* TITLEBAR_HEIGHT_PX — matches traffic-light row */
@@ -2445,16 +2665,99 @@ a.btn-secondary:focus-visible {
   display: none;
 }
 
-/* Archived sessions page (Codex-style grouped list) */
+/* Archived sessions page — same toolbar rhythm as models: search flex-1 + trailing controls. */
 .archived-toolbar {
-  @apply mb-6 flex flex-wrap items-center gap-2;
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 0.5rem; /* match models `gap-2` */
+  margin-bottom: 0.75rem; /* match models `mb-3` */
+  min-width: 0;
 }
-.archived-search {
-  @apply flex h-9 min-w-0 flex-1 items-center gap-2 rounded-full border border-[var(--border)] px-3;
+/* Like models page: search fills remaining width; filters stay after it (no 14rem cap). */
+.archived-toolbar > .settings-search {
+  flex: 1 1 0% !important;
+  width: auto !important;
+  min-width: 0 !important;
+  max-width: none !important;
+}
+.archived-toolbar .archived-toolbar-filters {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 0.5rem;
+}
+.archived-toolbar .archived-toolbar-filters [data-slot="select-trigger"] {
+  flex-shrink: 0;
+  width: auto;
+  max-width: 12rem;
+}
+/*
+ * Unified Settings search pill — ONE style for left rail + every settings page.
+ * Shell only; inner input is always chrome-less (no nested box / ring / radius).
+ */
+.settings-search {
+  display: flex;
+  min-width: 0;
+  width: 100%;
+  height: 2.25rem; /* 36px — same on rail and content */
+  flex: 1 1 auto;
+  align-items: center;
+  gap: 0.5rem;
+  box-sizing: border-box;
+  border-radius: 9999px;
+  border: 1px solid var(--border);
   background: color-mix(in srgb, var(--muted-foreground) 8%, transparent);
+  padding: 0 0.75rem;
+  transition:
+    border-color 0.12s ease,
+    background-color 0.12s ease;
 }
-.archived-search input {
-  @apply min-w-0 flex-1 border-0 bg-transparent text-[13px] text-[var(--foreground)] outline-none placeholder:text-[var(--text-subtle)];
+.settings-search:focus-within {
+  border-color: color-mix(in srgb, var(--foreground) 22%, var(--border));
+  background: color-mix(in srgb, var(--muted-foreground) 11%, transparent);
+}
+.settings-search-icon {
+  display: block;
+  width: 0.875rem; /* 14px */
+  height: 0.875rem;
+  flex-shrink: 0;
+  color: var(--text-subtle);
+  opacity: 1;
+  pointer-events: none;
+}
+.settings-search-input {
+  min-width: 0;
+  width: 100%;
+  flex: 1 1 auto;
+  height: auto !important;
+  margin: 0;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  padding: 0 !important;
+  font-size: 13px !important;
+  line-height: 1.35;
+  font-weight: 400;
+  color: var(--foreground);
+  outline: none !important;
+  appearance: none;
+  -webkit-appearance: none;
+  --tw-ring-shadow: 0 0 #0000 !important;
+  --tw-ring-offset-shadow: 0 0 #0000 !important;
+}
+.settings-search-input::placeholder {
+  color: var(--text-subtle);
+  opacity: 1;
+}
+.settings-search-input::-webkit-search-decoration,
+.settings-search-input::-webkit-search-cancel-button,
+.settings-search-input::-webkit-search-results-button,
+.settings-search-input::-webkit-search-results-decoration {
+  -webkit-appearance: none;
+  appearance: none;
+  display: none;
 }
 .archived-filter {
   @apply h-9 cursor-pointer appearance-none rounded-full border border-[var(--border)] bg-[var(--secondary)] px-3 pr-8 text-[12.5px] text-[var(--foreground)] outline-none;
@@ -2534,19 +2837,12 @@ a.btn-secondary:focus-visible {
 .settings-section-label {
   margin: 0;
   padding: 0 0.125rem;
-  font-size: 13px;
-  font-weight: 400;
-  letter-spacing: normal;
-  line-height: 1.35;
-  color: var(--muted-foreground);
+  /* type from .group-label */
 }
 /* Provider id labels only (anthropic / openai / …) — monospaced codes. */
 .settings-section-label-code {
   font-family: var(--font-mono);
-  font-size: 13px;
-  font-weight: 400;
-  letter-spacing: normal;
-  color: var(--muted-foreground);
+  /* type from .group-label */
   text-transform: none;
 }
 .settings-section-hint {
@@ -2556,7 +2852,13 @@ a.btn-secondary:focus-visible {
   overflow: hidden;
   border: 1px solid var(--border);
   border-radius: var(--radius-panel);
+  /* Opaque panel surface — all model groups (custom + builtin) share this exact fill. */
   background: var(--surface-panel);
+}
+/* Model list rows never paint a full-row tint (would make single-row custom groups look different). */
+.settings-card > [data-testid^="models-list"] > .settings-row,
+.settings-card > .settings-row {
+  background: transparent;
 }
 /*
  * Row rules are inset (left/right) — same idea as the sidebar divider above
@@ -2725,6 +3027,19 @@ a.btn-secondary:focus-visible {
 }
 .settings-provider-form {
   @apply flex flex-col gap-1 border-b border-[var(--border)] pb-3;
+}
+/* API key form: compact controls — provider select is mid-width (not full column). */
+.settings-provider-field {
+  max-width: 22rem;
+}
+.settings-provider-field-key {
+  max-width: 28rem; /* key + save button */
+}
+.settings-provider-select {
+  /* Fit label, but never stretch across the settings column. */
+  width: fit-content !important;
+  max-width: 17rem; /* ~272px — room for longer provider display names */
+  min-width: 12rem;
 }
 .provider-oauth-dialog {
   border-radius: calc(var(--radius-panel) + 3px);
@@ -3074,17 +3389,9 @@ a.btn-secondary:focus-visible {
 .settings-rail-back:hover {
   background: var(--hover-fill);
 }
-.settings-rail-search {
-  @apply flex h-8 min-w-0 items-center gap-2 rounded-full border border-[var(--sidebar-border)] px-2.5;
-  background: color-mix(in srgb, var(--sidebar-foreground) 6%, transparent);
-}
 .settings-rail-group-label {
   padding: 0.75rem 0.625rem 0.25rem;
-  font-size: 13px;
-  font-weight: 400;
-  letter-spacing: normal;
-  line-height: 1.35;
-  color: var(--text-subtle);
+  /* type from .group-label */
 }
 .settings-rail-item {
   @apply flex h-[32px] w-full min-w-0 items-center gap-2.5 px-2.5 text-left text-[13px] font-normal transition-colors;

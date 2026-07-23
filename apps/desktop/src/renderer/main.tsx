@@ -20,14 +20,20 @@ import {
   type KeyboardEvent,
 } from "react";
 import { createRoot } from "react-dom/client";
-import { ArrowDown, Search } from "lucide-react";
+import { ArrowDown } from "lucide-react";
 import { AppSidebar } from "./components/AppSidebar.tsx";
 import { CommandPalette } from "./components/CommandPalette.tsx";
 import { Composer, type SpeedMode } from "./components/Composer.tsx";
+import { ConfirmDialog } from "./components/ConfirmDialog.tsx";
 import { ErrorDialog } from "./components/ErrorDialog.tsx";
 import { SessionInfoPanel, SessionTreePanel } from "./components/SessionParityPanels.tsx";
 import { RenameDialog } from "./components/RenameDialog.tsx";
 import { SettingsPage } from "./components/settings/SettingsPage.tsx";
+import {
+  SettingsSearchField,
+  SettingsSelect,
+  SettingsToggle,
+} from "./components/settings/SettingsPrimitives.tsx";
 import {
   EnvPanel,
   envPanelLayoutForWidth,
@@ -35,6 +41,7 @@ import {
 } from "./components/EnvPanel.tsx";
 import { PixLogo } from "./components/PixLogo.tsx";
 import { ThreadHeader } from "./components/ThreadHeader.tsx";
+import { WindowCaptionButtons } from "./components/WindowCaptionButtons.tsx";
 import { TimelineProcessBlock, TimelineRow } from "./components/TimelineRow.tsx";
 import {
   MessageScroller,
@@ -219,6 +226,8 @@ function App() {
   const [sessionInfoError, setSessionInfoError] = useState<string | undefined>();
   /** `/name` with no args → rename dialog for pi session display name. */
   const [sessionNameDialogOpen, setSessionNameDialogOpen] = useState(false);
+  /** Product-visible pi install / ensure progress (not only Developer pill). */
+  const [piInstallNotice, setPiInstallNotice] = useState<string | undefined>();
   const lastEscapeAtRef = useRef(0);
   const threadColumnRef = useRef<HTMLElement | null>(null);
   const setSidebarOpen = useShellStore((s) => s.setSidebarOpen);
@@ -397,11 +406,16 @@ function App() {
   const displayModel = snapshot?.model ?? lastComposerChromeRef.current.model;
   const displayThinkingLevel =
     snapshot?.thinkingLevel ?? lastComposerChromeRef.current.thinkingLevel ?? "off";
-  const displayThinkingLevels = snapshot?.availableThinkingLevels?.length
-    ? snapshot.availableThinkingLevels
-    : lastComposerChromeRef.current.availableThinkingLevels?.length
-      ? lastComposerChromeRef.current.availableThinkingLevels
-      : [displayThinkingLevel];
+  // Always surface the full pi ThinkingLevel set in the composer (localized labels).
+  // Model-specific availability is enforced when applying the level.
+  const displayThinkingLevels = [
+    "off",
+    "minimal",
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+  ];
 
   function normalizeCwdKey(path: string): string {
     return path.replace(/\\/g, "/").replace(/\/+$/, "");
@@ -513,10 +527,99 @@ function App() {
     void refreshConversationSessions();
   }, [workspacePath, recentWorkspaces]);
 
-  // Cold start: recent projects + pi packages/resources regardless of open project.
+  // Cold start: ensure global `pi` CLI → recent projects + packages/resources.
   useEffect(() => {
     let cancelled = false;
+    let hideTimer: number | undefined;
+    const formatPiProgress = (event: {
+      phase: string;
+      message: string;
+      version?: string;
+      installedNow?: boolean;
+    }) => {
+      const loc = useShellStore.getState().locale;
+      const versionLabel = event.version ? ` ${event.version}` : "";
+      switch (event.phase) {
+        case "checking":
+          return t(loc, "pi.checking");
+        case "installing":
+          return t(loc, "pi.installing");
+        case "progress":
+          return t(loc, "pi.progress", { detail: event.message });
+        case "complete":
+          return event.installedNow
+            ? t(loc, "pi.completeInstalled", { version: versionLabel })
+            : t(loc, "pi.complete", { version: versionLabel });
+        case "error":
+          return t(loc, "pi.error", { detail: event.message });
+        case "skipped":
+          return t(loc, "pi.skipped");
+        default:
+          return event.message;
+      }
+    };
+    const showPiNotice = (text: string, phase?: string) => {
+      useShellStore.getState().setStatus(text);
+      // Keep product-visible for install work / errors; hide quiet "already present" quickly.
+      if (phase === "complete" && !text.includes("刷新") && !/refresh/i.test(text)) {
+        setPiInstallNotice(text);
+        window.clearTimeout(hideTimer);
+        hideTimer = window.setTimeout(() => {
+          if (!cancelled) setPiInstallNotice(undefined);
+        }, 2800);
+        return;
+      }
+      if (phase === "skipped") {
+        setPiInstallNotice(undefined);
+        return;
+      }
+      setPiInstallNotice(text);
+    };
+    const unsubPiProgress = window.pix.pi.onProgress((event) => {
+      showPiNotice(formatPiProgress(event), event.phase);
+    });
     void (async () => {
+      try {
+        // Main process also starts ensure on ready; this shares the in-flight promise.
+        const piResult = await window.pix.pi.ensure();
+        if (cancelled) return;
+        if (piResult.error) {
+          showPiNotice(
+            t(useShellStore.getState().locale, "pi.error", { detail: piResult.error }),
+            "error",
+          );
+        } else if (piResult.installedNow) {
+          showPiNotice(
+            t(useShellStore.getState().locale, "pi.completeInstalled", {
+              version: piResult.version ? ` ${piResult.version}` : "",
+            }),
+            "complete",
+          );
+          try {
+            const snap = await window.pix.host.start({ force: true });
+            if (!cancelled) useShellStore.getState().acceptSnapshot(snap);
+          } catch {
+            // Host may not be up yet — refreshPiStatus will start it.
+          }
+        } else if (piResult.alreadyPresent) {
+          showPiNotice(
+            t(useShellStore.getState().locale, "pi.complete", {
+              version: piResult.version ? ` ${piResult.version}` : "",
+            }),
+            "complete",
+          );
+        }
+      } catch (error) {
+        if (!cancelled) {
+          showPiNotice(
+            t(useShellStore.getState().locale, "pi.error", {
+              detail: error instanceof Error ? error.message : String(error),
+            }),
+            "error",
+          );
+        }
+      }
+      if (cancelled) return;
       await refreshRecentWorkspaces();
       if (cancelled) return;
       await refreshPiStatus({ ensure: true });
@@ -525,6 +628,8 @@ function App() {
     })();
     return () => {
       cancelled = true;
+      window.clearTimeout(hideTimer);
+      unsubPiProgress();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -986,16 +1091,54 @@ function App() {
   }
 
   /**
-   * Codex-style edit: fork before the original user entry (when known), then resend text.
+   * Edit + resend policy (pi-native):
+   * - Any user message with an entry id can be edited (session tree can branch from any turn).
+   * - Last user message: navigateTree + resend immediately.
+   * - Earlier user messages: confirm first — later turns on this branch are abandoned.
+   * Uses navigateTree (same JSONL), never fork (new file).
    */
-  async function editUserAndResend(item: Extract<TimelineItem, { kind: "user" }>, text: string) {
+  const [editResendConfirm, setEditResendConfirm] = useState<{
+    item: Extract<TimelineItem, { kind: "user" }>;
+    text: string;
+  } | null>(null);
+
+  function isLastUserMessage(item: Extract<TimelineItem, { kind: "user" }>): boolean {
+    for (let i = timeline.length - 1; i >= 0; i--) {
+      const row = timeline[i];
+      if (row?.kind !== "user") continue;
+      if (item.entryId && row.entryId) return row.entryId === item.entryId;
+      return row.id === item.id;
+    }
+    return true;
+  }
+
+  async function editUserAndResend(
+    item: Extract<TimelineItem, { kind: "user" }>,
+    text: string,
+    options?: { skipConfirm?: boolean },
+  ) {
     const next = text.trim();
     if (!next || running) return;
+    if (!options?.skipConfirm && !isLastUserMessage(item)) {
+      setEditResendConfirm({ item, text: next });
+      return;
+    }
     try {
       if (item.entryId) {
         markSessionOpenForBottomScroll();
-        const opened = await window.pix.session.fork(item.entryId);
-        applySessionOpen(opened);
+        const opened = await window.pix.session.navigateTree(item.entryId, {
+          summarize: false,
+        });
+        if (opened.cancelled) {
+          setTimelineReady(true);
+          pendingScrollBottomRef.current = false;
+          return;
+        }
+        applySessionOpen({
+          snapshot: opened.snapshot,
+          threads: opened.threads,
+          history: opened.history,
+        });
         requestContentReveal();
       }
       setPrompt(next);
@@ -1020,20 +1163,15 @@ function App() {
       draft.trim() || (attachedPaths.length > 0 ? t(locale, "composer.attach.defaultPrompt") : "");
     if (!displayMessage) return;
 
-    try {
-      if (!useShellStore.getState().snapshot) await ensureHost();
-    } catch (error) {
-      reportAppError(error, "无法启动 Agent");
-      return;
-    }
-
     // Built-in slash commands (do not hit the model unless unresolved).
     const slash = parseSlashLine(displayMessage);
     if (slash && attachedPaths.length === 0) {
       try {
-        const source = buildUnifiedSlashCatalog(snapshot, locale).find(
-          (item) => item.name === slash.name,
-        )?.source;
+        if (!useShellStore.getState().snapshot) await ensureHost();
+        const source = buildUnifiedSlashCatalog(
+          useShellStore.getState().snapshot,
+          locale,
+        ).find((item) => item.name === slash.name)?.source;
         const handled = await runBuiltinSlash(slash.name, slash.args, source);
         if (handled) {
           setPrompt("");
@@ -1049,7 +1187,7 @@ function App() {
     const shell = parseShellInjection(displayMessage);
     if (shell.kind !== "none" && attachedPaths.length === 0) {
       if (!shell.command.trim()) return;
-      const agentWasRunning = running;
+      const agentWasRunning = useShellStore.getState().running;
       setPrompt("");
       if (!agentWasRunning) setRunning(true);
       setStatus(
@@ -1058,6 +1196,7 @@ function App() {
           : t(locale, "session.parity.shellRunning"),
       );
       try {
+        if (!useShellStore.getState().snapshot) await ensureHost();
         const result = await window.pix.session.bash(shell.command, {
           excludeFromContext: shell.kind === "hidden-shell",
         });
@@ -1086,7 +1225,8 @@ function App() {
       return;
     }
 
-    const queueBehavior = running ? (streamingBehavior ?? "steer") : undefined;
+    const wasRunning = useShellStore.getState().running;
+    const queueBehavior = wasRunning ? (streamingBehavior ?? "steer") : undefined;
     const message = promptWithAttachedPaths(displayMessage, attachedPaths);
     const imagePaths = attachedPaths.filter(isPromptImagePath);
 
@@ -1106,8 +1246,10 @@ function App() {
     setSentPrompts((current) => [...current, displayMessage]);
 
     if (queueBehavior) {
+      // Already streaming — keep stop button; just queue follow-up / steer.
       setStatus(queueBehavior === "followUp" ? "Follow-up queued" : "Guidance queued");
       try {
+        if (!useShellStore.getState().snapshot) await ensureHost();
         const next = await window.pix.agent.prompt(message, queueBehavior, imagePaths);
         if (stillSameSession()) acceptSnapshot(next);
       } catch (error) {
@@ -1123,10 +1265,12 @@ function App() {
       return;
     }
 
+    // Flip send → stop immediately (before ensureHost / stream wait).
     setRunning(true);
     setLastFailure(undefined);
     setStatus("Agent running...");
     try {
+      if (!useShellStore.getState().snapshot) await ensureHost();
       const next = await window.pix.agent.prompt(message, undefined, imagePaths);
       if (!stillSameSession()) return;
       acceptSnapshot(next);
@@ -1455,7 +1599,8 @@ function App() {
       }
     }
     try {
-      if (!useShellStore.getState().runtimeId) await ensureHost();
+      // Always wait for a fully ready host (process + runtime), not only a runtimeId flag.
+      await ensureHost();
       setView("thread");
       setSidebarOpen(false);
       setPrompt("");
@@ -1475,18 +1620,26 @@ function App() {
     }
   }
 
+  /** Monotonic id so rapid「新建会话」clicks only apply the latest result. */
+  const newBlankTaskGenRef = useRef(0);
+  const newBlankTaskInFlightRef = useRef(false);
+
   /**
    * Global「新建会话」(sidebar top + 对话 section header):
    * Pure conversation — NOT bound to any project.
    * Host cwd = Documents/Pix/conversations (hidden from 项目 rail / recent).
    * Only the project-row ✏️ creates a session under that project.
    *
-   * UI rules (no intermediate flash):
-   * - Keep last model/thinking chrome until the new snapshot arrives
-   * - Keep previous project on the rail via recentWorkspaces (never a missing frame)
-   * - Empty hero shows「开始对话」immediately, never「打开工作区以开始」
+   * Lifecycle (clear/start/create) runs as one main-process exclusive op so rapid
+   * clicks cannot kill a mid-start host (Windows exit code 0).
    */
   async function newBlankTask() {
+    const gen = ++newBlankTaskGenRef.current;
+    // Coalesce bursts: one in-flight op; later clicks only bump gen and wait their turn.
+    if (newBlankTaskInFlightRef.current) {
+      // Let the in-flight call finish; the latest gen will re-enter via queue below.
+    }
+
     // Leaving a generating session — abort first so the host is free for a new thread.
     if (useShellStore.getState().running) {
       try {
@@ -1494,9 +1647,11 @@ function App() {
       } catch {
         // ignore
       } finally {
-        setRunning(false);
+        if (gen === newBlankTaskGenRef.current) setRunning(false);
       }
     }
+    if (gen !== newBlankTaskGenRef.current) return;
+
     setView("thread");
     setSidebarOpen(false);
     setPrompt("");
@@ -1521,53 +1676,50 @@ function App() {
     // Do NOT setSnapshot(undefined) — composer would flash 未选择模型 / empty would
     // flash 打开工作区以开始. pendingPureConversation drives conversation chrome instead.
 
+    newBlankTaskInFlightRef.current = true;
     try {
-      await window.pix.workspace.clearActive();
-      selectWorkspacePath(undefined);
+      setStatus("Creating conversation...");
+      setRuntimeId(undefined);
+      setLastSequence(0);
 
-      // After clearActive: e2e may keep PIX_WORKSPACE fixture; product returns undefined.
-      const afterClear = await window.pix.workspace.getCwd().catch(() => undefined);
-      // Product: Documents/Pix/conversations — never listed under 项目.
-      const convCwd = afterClear ?? (await window.pix.workspace.ensureConversation());
+      // Single exclusive main-process op (safe under rapid clicks).
+      const opened = await window.pix.session.createBlankConversation();
+      if (gen !== newBlankTaskGenRef.current) return;
 
-      const live = useShellStore.getState();
-      const alreadyOnConvHost =
-        Boolean(live.runtimeId && live.snapshot?.cwd) &&
-        isNonProjectWorkspacePath(live.snapshot!.cwd) &&
-        normalizeCwdKey(live.snapshot!.cwd) === normalizeCwdKey(convCwd);
-
-      if (!alreadyOnConvHost) {
-        setStatus("Creating conversation...");
-        // Drop runtime identity so events from the dying project host are ignored.
-        setRuntimeId(undefined);
-        setLastSequence(0);
-        const value = await window.pix.host.start({ cwd: convCwd });
-        acceptSnapshot(value);
-        try {
-          await refreshComposerModels();
-        } catch {
-          // keep previous modelOptions
-        }
-      }
-
-      const opened = await window.pix.session.create();
       markSessionOpenForBottomScroll();
       applySessionOpen(opened);
       requestContentReveal();
-      // Pure conversation — never select conversation/scratch as a project.
       selectWorkspacePath(undefined);
       pendingPureConversationRef.current = false;
       setPendingPureConversation(false);
       setStatus("Agent Host ready");
+      try {
+        await refreshComposerModels();
+      } catch {
+        // keep previous modelOptions
+      }
+      if (gen !== newBlankTaskGenRef.current) return;
       await refreshThreads();
       await refreshConversationSessions();
       await refreshRecentWorkspaces();
+
+      // If more clicks arrived while we worked, run once more for the latest gen.
+      if (gen !== newBlankTaskGenRef.current) {
+        newBlankTaskInFlightRef.current = false;
+        void newBlankTask();
+        return;
+      }
     } catch (error) {
+      if (gen !== newBlankTaskGenRef.current) return;
       pendingPureConversationRef.current = false;
       setPendingPureConversation(false);
       reportAppError(error, "无法开始新会话");
       setTimelineReady(true);
       pendingScrollBottomRef.current = false;
+    } finally {
+      if (gen === newBlankTaskGenRef.current) {
+        newBlankTaskInFlightRef.current = false;
+      }
     }
   }
 
@@ -1596,7 +1748,7 @@ function App() {
       const current = useShellStore.getState().snapshot?.cwd;
       if (!current || normalizeCwdKey(current) !== normalizeCwdKey(path)) {
         await openWorkspacePath(path, { resumeRecent: false });
-      } else if (!useShellStore.getState().runtimeId) {
+      } else {
         await ensureHost();
       }
       setStatus("Creating thread...");
@@ -1838,23 +1990,26 @@ function App() {
 
   const commands = useMemo(
     () =>
-      buildShellCommands({
-        newThread: () => void newBlankTask(),
-        openPackages: () => void openPackages(),
-        openResources: () => void openResources(),
-        openSettings: () => void openSettings(),
-        openThread: () => void openThread(),
-        focusComposer,
-        toggleTheme: () => toggleColorMode(),
-        forkThread: () => void forkThread(),
-        toggleReview: () => setReviewOpen((open) => !open),
-        toggleEnvPanel: () => {
-          if (!envPanelFits || !workspacePath || !hasActivity) return;
-          setEnvPanelOpen((open) => !open);
+      buildShellCommands(
+        {
+          newThread: () => void newBlankTask(),
+          openPackages: () => void openPackages(),
+          openResources: () => void openResources(),
+          openSettings: () => void openSettings(),
+          openThread: () => void openThread(),
+          focusComposer,
+          toggleTheme: () => toggleColorMode(),
+          forkThread: () => void forkThread(),
+          toggleReview: () => setReviewOpen((open) => !open),
+          toggleEnvPanel: () => {
+            if (!envPanelFits || !workspacePath || !hasActivity) return;
+            setEnvPanelOpen((open) => !open);
+          },
         },
-      }),
-    // handlers close over latest store setters; recompute lightly when mode/view changes
-    [colorMode, view, running, envPanelFits, workspacePath, hasActivity, shortcutRevision],
+        locale,
+      ),
+    // handlers close over latest store setters; recompute lightly when mode/view/locale changes
+    [colorMode, view, running, envPanelFits, workspacePath, hasActivity, shortcutRevision, locale],
   );
 
   useEffect(() => {
@@ -1942,6 +2097,20 @@ function App() {
       data-theme={colorMode}
       data-sidebar-translucent={sidebarTranslucent ? "true" : "false"}
     >
+      {/* Linux only (customWindowControls); Windows uses native titleBarOverlay. */}
+      <WindowCaptionButtons />
+      {piInstallNotice ? (
+        <div
+          className="pi-install-banner pointer-events-none fixed inset-x-0 top-0 z-[2147483002] flex justify-center px-3 pt-2"
+          data-testid="pi-install-banner"
+          role="status"
+          aria-live="polite"
+        >
+          <div className="pointer-events-none max-w-[min(520px,92vw)] truncate rounded-full border border-[var(--border)] bg-[var(--surface-panel)] px-3.5 py-1.5 text-[12px] text-[var(--foreground)] shadow-[var(--shadow-soft)]">
+            {piInstallNotice}
+          </div>
+        </div>
+      ) : null}
       <AppSidebar
         colorMode={colorMode}
         themePreference={themePreference}
@@ -2105,6 +2274,10 @@ function App() {
                                         onEditUser={(item, text) =>
                                           void editUserAndResend(item, text)
                                         }
+                                        onForkAssistant={(item) => {
+                                          // pi fork: new session file from this assistant entry.
+                                          void forkThread(item.entryId);
+                                        }}
                                       />
                                     )}
                                   </MessageScrollerItem>
@@ -2142,7 +2315,7 @@ function App() {
 
                         <div
                           ref={composerDockRef}
-                          className="composer-dock pointer-events-none sticky bottom-0 z-[2] w-full bg-[var(--canvas)] pt-1 pb-6"
+                          className="composer-dock pointer-events-none sticky bottom-0 z-[2] w-full bg-[var(--canvas)] pt-1 pb-2"
                           data-mode="sticky"
                           data-testid="composer-dock"
                         >
@@ -2239,10 +2412,16 @@ function App() {
                         title={t(locale, "thread.scrollToBottom")}
                         aria-label={t(locale, "thread.scrollToBottom")}
                         className={cn(
-                          "z-20 size-7 rounded-full border border-border bg-popover text-foreground shadow-[0_4px_16px_rgb(0_0_0/0.28)]",
-                          "hover:bg-accent",
+                          // Position via style only — avoid transform fights with enter/exit animation.
+                          "z-20 size-7 rounded-full border border-border bg-popover text-foreground",
+                          "shadow-[0_4px_16px_rgb(0_0_0/0.28)] hover:bg-accent",
                         )}
-                        style={{ bottom: Math.max(composerDockHeight + 12, 72) }}
+                        style={{
+                          left: "50%",
+                          marginLeft: -14, // half of size-7 (28px) for true center
+                          // Sit above sticky composer dock (not the default bottom-4).
+                          bottom: Math.max(composerDockHeight + 12, 72),
+                        }}
                       >
                         <ArrowDown className="size-3.5" strokeWidth={2.25} />
                         <span className="sr-only">{t(locale, "thread.scrollToBottom")}</span>
@@ -2359,6 +2538,7 @@ function App() {
 
       <CommandPalette
         open={paletteOpen}
+        locale={locale}
         commands={commands}
         onClose={() => setPaletteOpen(false)}
       />
@@ -2480,6 +2660,23 @@ function App() {
         }}
       />
 
+      <ConfirmDialog
+        open={Boolean(editResendConfirm)}
+        title={t(locale, "timeline.editConfirmTitle")}
+        message={t(locale, "timeline.editConfirmMessage")}
+        confirmLabel={t(locale, "timeline.editConfirm")}
+        cancelLabel={t(locale, "common.cancel")}
+        danger
+        testId="timeline-edit-resend-confirm"
+        onCancel={() => setEditResendConfirm(null)}
+        onConfirm={() => {
+          const pending = editResendConfirm;
+          setEditResendConfirm(null);
+          if (!pending) return;
+          void editUserAndResend(pending.item, pending.text, { skipConfirm: true });
+        }}
+      />
+
       <ErrorDialog
         open={Boolean(appError)}
         title={t(locale, "error.dialogTitle")}
@@ -2509,11 +2706,9 @@ function PackagesPage(props: {
 }) {
   const tr = (key: Parameters<typeof t>[1], vars?: Record<string, string>) =>
     t(props.locale, key, vars);
-  const [source, setSource] = useState("");
-  const [scope, setScope] = useState<"global" | "project">("global");
+  /** Trial install: like CLI `-e` — not written to settings. */
   const [temporary, setTemporary] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [formError, setFormError] = useState<string>();
   const CATALOG_PAGE = 20;
   const [tab, setTab] = useState<"installed" | "discover">("installed");
   const [catalogQuery, setCatalogQuery] = useState("");
@@ -2635,33 +2830,21 @@ function PackagesPage(props: {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab, catalogHasMore, catalogLoading, catalogLoadingMore, catalog.length, catalogQuery]);
 
-  async function submitInstall(event: FormEvent) {
-    event.preventDefault();
-    const value = source.trim();
-    if (!value) {
-      setFormError(tr("packages.sourceRequired"));
-      return;
-    }
-    setBusy(true);
-    setFormError(undefined);
-    try {
-      await props.onInstall(value, scope, temporary ? { temporary: true } : undefined);
-      setSource("");
-    } catch {
-      // Parent install path already surfaces a modal via reportAppError.
-    } finally {
-      setBusy(false);
-    }
-  }
-
   async function installFromCatalog(item: CatalogPackage) {
     setInstallingSource(item.source);
+    setBusy(true);
     try {
-      await props.onInstall(item.source, discoverScope);
+      await props.onInstall(
+        item.source,
+        discoverScope,
+        temporary ? { temporary: true } : undefined,
+      );
+      props.onRefresh();
     } catch {
       // modal via parent
     } finally {
       setInstallingSource(undefined);
+      setBusy(false);
     }
   }
 
@@ -2741,29 +2924,32 @@ function PackagesPage(props: {
         <div className="page-body-inner">
           {tab === "discover" ? (
             <div data-testid="packages-discover">
-              <div className="mb-3 flex flex-wrap items-center gap-2">
-                <label className="settings-rail-search min-w-0 flex-1 !rounded-[12px]">
-                  <Search className="size-3.5 shrink-0 opacity-60" strokeWidth={1.75} />
-                  <input
-                    data-testid="packages-discover-search"
-                    value={catalogQuery}
-                    onChange={(e) => setCatalogQuery(e.target.value)}
-                    placeholder={tr("packages.discoverSearch")}
-                    className="min-w-0 flex-1 border-0 bg-transparent text-[13px] text-[var(--foreground)] outline-none placeholder:text-[var(--text-subtle)]"
-                  />
-                </label>
-                <select
-                  className="settings-select h-8 max-w-[9rem]"
-                  data-testid="packages-discover-scope"
+              {/* One toolbar: search · scope · open web · trial toggle. Install only via list. */}
+              <div
+                className="mb-3 flex min-w-0 flex-nowrap items-center gap-2"
+                data-testid="packages-discover-toolbar"
+              >
+                <SettingsSearchField
+                  testId="packages-discover-search"
+                  value={catalogQuery}
+                  onChange={setCatalogQuery}
+                  placeholder={tr("packages.discoverSearch")}
+                  className="min-w-0 flex-1"
+                />
+                <SettingsSelect
+                  testId="packages-discover-scope"
+                  size="md"
+                  className="h-9 shrink-0"
                   value={discoverScope}
-                  onChange={(e) => setDiscoverScope(e.target.value as "global" | "project")}
+                  onChange={(v) => setDiscoverScope(v as "global" | "project")}
                   disabled={busy || Boolean(installingSource)}
-                >
-                  <option value="global">{tr("packages.scopeGlobal")}</option>
-                  <option value="project">{tr("packages.scopeProject")}</option>
-                </select>
+                  options={[
+                    { value: "global", label: tr("packages.scopeGlobal") },
+                    { value: "project", label: tr("packages.scopeProject") },
+                  ]}
+                />
                 <a
-                  className="btn-secondary inline-flex items-center no-underline"
+                  className="btn-secondary inline-flex h-9 shrink-0 items-center whitespace-nowrap no-underline"
                   href="https://pi.dev/packages"
                   target="_blank"
                   rel="noreferrer"
@@ -2771,6 +2957,22 @@ function PackagesPage(props: {
                 >
                   {tr("packages.discoverOpenWeb")}
                 </a>
+                <div
+                  className="flex h-9 shrink-0 items-center gap-2 rounded-full border border-[var(--border)] px-2.5"
+                  data-testid="package-temporary-label"
+                  title={tr("packages.temporary")}
+                >
+                  <span className="whitespace-nowrap text-[12px] text-[var(--muted-foreground)]">
+                    {tr("packages.installTemp")}
+                  </span>
+                  <SettingsToggle
+                    checked={temporary}
+                    onChange={setTemporary}
+                    disabled={props.loading || busy}
+                    testId="package-temporary"
+                    aria-label={tr("packages.temporary")}
+                  />
+                </div>
               </div>
               {catalogError ? (
                 <p className="form-error" data-testid="packages-discover-error">
@@ -2830,12 +3032,19 @@ function PackagesPage(props: {
                             data-testid={`catalog-install-${item.name}`}
                             disabled={installed || installing || busy || props.loading}
                             onClick={() => void installFromCatalog(item)}
+                            title={
+                              temporary
+                                ? tr("packages.temporary")
+                                : tr("packages.discoverInstall")
+                            }
                           >
                             {installed
                               ? tr("packages.discoverInstalled")
                               : installing
                                 ? tr("packages.discoverInstalling")
-                                : tr("packages.discoverInstall")}
+                                : temporary
+                                  ? tr("packages.installTemp")
+                                  : tr("packages.discoverInstall")}
                           </button>
                         </div>
                       </article>
@@ -2859,66 +3068,6 @@ function PackagesPage(props: {
             </div>
           ) : (
             <>
-              <form
-                className="install-form"
-                data-testid="package-install-form"
-                onSubmit={(e) => void submitInstall(e)}
-              >
-                <label className="install-label">
-                  {tr("packages.source")}
-                  <input
-                    data-testid="package-source-input"
-                    value={source}
-                    onChange={(event) => setSource(event.target.value)}
-                    placeholder={tr("packages.sourcePlaceholder")}
-                    disabled={props.loading || busy}
-                  />
-                </label>
-                <label className="install-label">
-                  {tr("packages.scope")}
-                  <select
-                    data-testid="package-scope-select"
-                    value={scope}
-                    onChange={(event) => setScope(event.target.value as "global" | "project")}
-                    disabled={props.loading || busy || temporary}
-                  >
-                    <option value="global">{tr("packages.scopeGlobal")}</option>
-                    <option value="project">{tr("packages.scopeProject")}</option>
-                  </select>
-                </label>
-                <label
-                  className="install-label flex flex-row items-center gap-2"
-                  data-testid="package-temporary-label"
-                >
-                  <input
-                    type="checkbox"
-                    data-testid="package-temporary"
-                    checked={temporary}
-                    onChange={(event) => setTemporary(event.target.checked)}
-                    disabled={props.loading || busy}
-                  />
-                  <span>{tr("packages.temporary")}</span>
-                </label>
-                <div className="install-actions">
-                  <button
-                    type="submit"
-                    className="btn-primary"
-                    data-testid="package-install-button"
-                    disabled={props.loading || busy || !source.trim()}
-                  >
-                    {busy
-                      ? tr("packages.working")
-                      : temporary
-                        ? tr("packages.installTemp")
-                        : tr("packages.install")}
-                  </button>
-                </div>
-              </form>
-              {formError ? (
-                <p className="form-error" data-testid="package-form-error">
-                  {formError}
-                </p>
-              ) : null}
               {props.packages.length === 0 ? (
                 <div className="empty-panel" data-testid="packages-empty">
                   <h2>{tr("packages.emptyTitle")}</h2>

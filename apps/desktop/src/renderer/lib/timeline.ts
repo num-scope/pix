@@ -19,7 +19,13 @@ export type TimelineItem =
       timestamp?: string;
       entryId?: string;
     }
-  | { id: string; kind: "assistant"; text: string; timestamp?: string }
+  | {
+      id: string;
+      kind: "assistant";
+      text: string;
+      timestamp?: string;
+      entryId?: string;
+    }
   | { id: string; kind: "thinking"; text: string; timestamp?: string }
   | {
       id: string;
@@ -104,6 +110,7 @@ export function historyToTimeline(history: SessionHistoryMessage[]): TimelineIte
         id: `history-assistant-${index}`,
         kind: "assistant",
         text: item.text,
+        ...(item.entryId ? { entryId: item.entryId } : {}),
         ...(item.timestamp ? { timestamp: item.timestamp } : {}),
       });
       continue;

@@ -16,6 +16,7 @@ import {
   LoaderCircle,
   Presentation,
   SquarePen,
+  GitFork,
   Terminal,
   X,
 } from "lucide-react";
@@ -29,11 +30,9 @@ import {
   AttachmentTrigger,
 } from "@/components/ui/attachment";
 import { Badge } from "@/components/ui/badge";
-import { Bubble, BubbleContent } from "@/components/ui/bubble";
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Marker, MarkerContent, MarkerIcon } from "@/components/ui/marker";
-import { Message, MessageContent, MessageFooter } from "@/components/ui/message";
 import { MarkdownContent } from "./MarkdownContent.tsx";
 import {
   attachmentLabel,
@@ -189,20 +188,33 @@ async function copyText(text: string): Promise<boolean> {
   }
 }
 
+type MetaActionKind = "time" | "copy" | "edit" | "fork";
+
 function MetaActions(props: {
   locale: Locale;
+  /** Render order of hover actions (role-specific). */
+  order: MetaActionKind[];
   time?: string | undefined;
   onCopy?: (() => void) | undefined;
   onEdit?: (() => void) | undefined;
+  onFork?: (() => void) | undefined;
   copied?: boolean | undefined;
   className?: string | undefined;
 }) {
   const timeLabel = formatMessageTime(props.time, props.locale === "zh" ? "zh" : "en");
-  return (
-    <div className={cn("timeline-meta-actions", props.className)}>
-      {timeLabel ? <span className="timeline-meta-time">{timeLabel}</span> : null}
-      {props.onCopy ? (
+
+  function renderAction(kind: MetaActionKind) {
+    if (kind === "time") {
+      return timeLabel ? (
+        <span key="time" className="timeline-meta-time">
+          {timeLabel}
+        </span>
+      ) : null;
+    }
+    if (kind === "copy" && props.onCopy) {
+      return (
         <Button
+          key="copy"
           type="button"
           variant="ghost"
           size="icon-xs"
@@ -222,9 +234,12 @@ function MetaActions(props: {
             <Copy className="size-3.5" strokeWidth={1.6} />
           )}
         </Button>
-      ) : null}
-      {props.onEdit ? (
+      );
+    }
+    if (kind === "edit" && props.onEdit) {
+      return (
         <Button
+          key="edit"
           type="button"
           variant="ghost"
           size="icon-xs"
@@ -238,7 +253,34 @@ function MetaActions(props: {
         >
           <SquarePen className="size-3.5" strokeWidth={1.6} />
         </Button>
-      ) : null}
+      );
+    }
+    if (kind === "fork" && props.onFork) {
+      return (
+        <Button
+          key="fork"
+          type="button"
+          variant="ghost"
+          size="icon-xs"
+          className="timeline-meta-btn"
+          title={t(props.locale, "timeline.fork")}
+          aria-label={t(props.locale, "timeline.fork")}
+          data-testid="timeline-fork"
+          onClick={(e) => {
+            e.stopPropagation();
+            props.onFork?.();
+          }}
+        >
+          <GitFork className="size-3.5" strokeWidth={1.6} />
+        </Button>
+      );
+    }
+    return null;
+  }
+
+  return (
+    <div className={cn("timeline-meta-actions", props.className)}>
+      {props.order.map((kind) => renderAction(kind))}
     </div>
   );
 }
@@ -247,11 +289,13 @@ export const TimelineRow = memo(function TimelineRow(props: {
   item: TimelineItem;
   locale: Locale;
   workspacePath?: string | undefined;
-  /** Edit + resubmit a user message (fork when entryId available). */
+  /** Edit + resubmit a user message (same-session navigateTree + prompt). */
   onEditUser?: (
     item: Extract<TimelineItem, { kind: "user" }>,
     text: string,
   ) => void | Promise<void>;
+  /** Fork at an assistant entry into a new session file (pi fork). */
+  onForkAssistant?: (item: Extract<TimelineItem, { kind: "assistant" }>) => void | Promise<void>;
   editingLocked?: boolean;
 }) {
   const { item } = props;
@@ -318,62 +362,61 @@ export const TimelineRow = memo(function TimelineRow(props: {
       );
     }
 
+    // Native layout (not Message/Bubble stack): shadcn Message is w-full and fights
+    // .timeline-user-row / .timeline-user-content flex-end constraints → misaligned bubbles.
     return (
-      <Message align="end" className="timeline-user-row group/msg" data-kind="user">
-        <MessageContent className="timeline-user-content items-end">
+      <article className="timeline-user-row group/msg" data-kind="user">
+        <div className="timeline-user-content">
           {item.text ? (
-            <Bubble
-              variant="muted"
-              align="end"
-              className="max-w-full *:data-[slot=bubble-content]:bg-[var(--user-bubble)] *:data-[slot=bubble-content]:text-[var(--user-bubble-fg)]"
-            >
-              <BubbleContent className="timeline-user-bubble text-[14px]">
-                <p className="m-0 whitespace-pre-wrap">{item.text}</p>
-              </BubbleContent>
-            </Bubble>
+            <div className="timeline-user-bubble">
+              <p className="m-0 whitespace-pre-wrap">{item.text}</p>
+            </div>
           ) : null}
           {item.attachments?.length ? <AttachmentList paths={item.attachments} /> : null}
-          <MessageFooter className="px-0">
-            <MetaActions
-              locale={props.locale}
-              {...(item.timestamp ? { time: item.timestamp } : {})}
-              {...(item.text ? { onCopy: () => void handleCopy(item.text) } : {})}
-              {...(props.onEditUser ? { onEdit: () => setEditing(true) } : {})}
-              copied={copied}
-              className="timeline-meta-actions-user"
-            />
-          </MessageFooter>
-        </MessageContent>
-      </Message>
+          {/* User: 日期时间 · 复制 · 编辑重发 */}
+          <MetaActions
+            locale={props.locale}
+            order={["time", "copy", "edit"]}
+            {...(item.timestamp ? { time: item.timestamp } : {})}
+            {...(item.text ? { onCopy: () => void handleCopy(item.text) } : {})}
+            {...(props.onEditUser ? { onEdit: () => setEditing(true) } : {})}
+            copied={copied}
+            className="timeline-meta-actions-user"
+          />
+        </div>
+      </article>
     );
   }
 
   if (item.kind === "assistant") {
     return (
-      <Message align="start" className="timeline-assistant-row group/msg" data-kind="assistant">
-        <MessageContent>
-          <Bubble variant="ghost" align="start" className="max-w-full">
-            <BubbleContent className="w-full max-w-full p-0">
-              <MarkdownContent
-                className="w-full text-[14px] leading-relaxed text-foreground"
-                workspacePath={props.workspacePath}
-                locale={props.locale}
-              >
-                {item.text}
-              </MarkdownContent>
-            </BubbleContent>
-          </Bubble>
-          <MessageFooter className="px-0">
-            <MetaActions
-              locale={props.locale}
-              {...(item.timestamp ? { time: item.timestamp } : {})}
-              {...(item.text ? { onCopy: () => void handleCopy(item.text) } : {})}
-              copied={copied}
-              className="timeline-meta-actions-assistant"
-            />
-          </MessageFooter>
-        </MessageContent>
-      </Message>
+      <article className="timeline-assistant-row group/msg" data-kind="assistant">
+        <div className="timeline-assistant-body">
+          <MarkdownContent
+            className="w-full text-[14px] leading-relaxed text-foreground"
+            workspacePath={props.workspacePath}
+            locale={props.locale}
+          >
+            {item.text}
+          </MarkdownContent>
+          {/* AI: 复制 · fork · 日期时间 */}
+          <MetaActions
+            locale={props.locale}
+            order={["copy", "fork", "time"]}
+            {...(item.timestamp ? { time: item.timestamp } : {})}
+            {...(item.text ? { onCopy: () => void handleCopy(item.text) } : {})}
+            {...(props.onForkAssistant
+              ? {
+                  onFork: () => {
+                    void props.onForkAssistant?.(item);
+                  },
+                }
+              : {})}
+            copied={copied}
+            className="timeline-meta-actions-assistant"
+          />
+        </div>
+      </article>
     );
   }
 

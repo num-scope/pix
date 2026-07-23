@@ -67,6 +67,18 @@ export function ThreadHeader(props: {
   const fullTitle = threadId ? threadDisplayTitle(threadId, aliases, props.title) : props.title;
   /** Visible title capped at 28 chars; full string stays in tooltip / rename. */
   const displayTitle = fullTitle.length > 28 ? `${fullTitle.slice(0, 28)}…` : fullTitle;
+  const isFork = Boolean(props.thread?.parentSessionPath?.trim());
+  const parentFile = props.thread?.parentSessionPath
+    ? props.thread.parentSessionPath.split(/[/\\]/).pop() || props.thread.parentSessionPath
+    : undefined;
+  const titleTooltip = isFork
+    ? [
+        fullTitle,
+        parentFile
+          ? tr("session.forkedFrom", { name: parentFile })
+          : tr("session.forked"),
+      ].join("\n")
+    : fullTitle;
   const showEnvToggle = props.envToggleVisible !== false;
 
   useEffect(() => {
@@ -172,7 +184,7 @@ export function ThreadHeader(props: {
         <div className="no-drag flex min-w-0 max-w-[calc(100%-2.5rem)] items-center gap-0.5">
           <h2
             className="m-0 min-w-0 shrink-0 text-[13px] font-semibold tracking-tight"
-            title={fullTitle}
+            title={titleTooltip}
           >
             {displayTitle}
           </h2>

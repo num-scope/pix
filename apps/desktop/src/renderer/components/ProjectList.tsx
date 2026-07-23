@@ -540,10 +540,25 @@ export function ProjectList(props: ProjectListProps) {
     const pinnedHere = isPinnedThread(thread.id, pinnedThreads);
     const unread = isUnreadThread(thread.id, unreadThreads);
     const indent = opts?.indent !== false && kind === "session";
+    const isFork = Boolean(thread.parentSessionPath?.trim());
+    const parentFile = thread.parentSessionPath
+      ? thread.parentSessionPath.split(/[/\\]/).pop() || thread.parentSessionPath
+      : undefined;
     const pinLabel = kind === "session" ? tr("session.pin") : tr("thread.pin");
     const unpinLabel = kind === "session" ? tr("session.unpin") : tr("thread.unpin");
     const archiveLabel = kind === "session" ? tr("session.archive") : tr("thread.archive");
     const testPrefix = kind === "session" ? "session" : "thread";
+    const tooltipParts = [title];
+    if (isFork) {
+      tooltipParts.push(
+        parentFile
+          ? tr("session.forkedFrom", { name: parentFile })
+          : tr("session.forked"),
+      );
+    }
+    if (kind !== "conversation" && (thread.cwd || thread.path)) {
+      tooltipParts.push(thread.cwd || thread.path);
+    }
 
     return (
       <div key={`${kind}-${thread.id}`} className="relative min-w-0">
@@ -555,14 +570,15 @@ export function ProjectList(props: ProjectListProps) {
           <button
             type="button"
             className={cn(
-              "flex h-full min-w-0 flex-1 items-center gap-1.5 text-left transition-[padding]",
-              indent && "pl-5",
+              // gap-2 matches project row (folder icon + name) so indented session titles align.
+              "flex h-full min-w-0 flex-1 items-center gap-2 text-left transition-[padding]",
               // Default: full width (fade to row end). Hover/open: leave room for actions.
               "pr-0 group-hover/item:pr-14 group-focus-within/item:pr-14",
               showMenu && "pr-14",
             )}
             data-active={thread.active ? "true" : "false"}
             data-kind={kind}
+            data-fork={isFork ? "true" : "false"}
             data-state={thread.active ? props.runState : "idle"}
             data-testid={
               thread.active && kind === "conversation"
@@ -571,14 +587,15 @@ export function ProjectList(props: ProjectListProps) {
                   ? "thread-item-current"
                   : `${testPrefix}-item-${thread.id}`
             }
-            // Conversations: title only (never project path / name). Sessions may show path in tooltip.
-            title={kind === "conversation" ? title : `${title}\n${thread.cwd || thread.path}`}
+            title={tooltipParts.join("\n")}
             onClick={() => {
               if (unread) setUnreadThreads(markThreadUnread(thread.id, false));
               // Always switch — re-open is needed after failed loads / cross-workspace hops.
               props.onSwitchThread(thread.path, thread.cwd);
             }}
           >
+            {/* Under a project: spacer = Folder icon width so title lines up with project name. */}
+            {indent ? <span className="inline-block size-4 shrink-0" aria-hidden /> : null}
             {unread ? (
               <span className="size-1.5 shrink-0 rounded-full bg-[#0a84ff]" aria-hidden />
             ) : null}
@@ -698,19 +715,22 @@ export function ProjectList(props: ProjectListProps) {
         data-kind="session"
       >
         {threadsForProject.length === 0 ? (
-          <p className="px-2.5 py-1.5 pl-8 text-[12px] text-[var(--text-subtle)]">
-            {tr("session.empty")}
+          <p className="sidebar-list-row !h-auto py-1.5 text-[12px] text-[var(--text-subtle)]">
+            {/* Match project name x: same as folder icon + gap-2 under project row */}
+            <span className="inline-block size-4 shrink-0" aria-hidden />
+            <span className="min-w-0">{tr("session.empty")}</span>
           </p>
         ) : null}
         {visibleThreads.map((t) => renderThreadButton(t, { indent: true, kind: "session" }))}
         {hasMore ? (
           <button
             type="button"
-            className="sidebar-list-row pl-8 text-[12px] text-[var(--text-subtle)]"
+            className="sidebar-list-row gap-2 text-[12px] text-[var(--text-subtle)]"
             data-testid="session-show-more"
             onClick={() => handleShowMoreProject(path)}
           >
-            {tr("session.showMore")}
+            <span className="inline-block size-4 shrink-0" aria-hidden />
+            <span className="min-w-0">{tr("session.showMore")}</span>
           </button>
         ) : null}
       </div>

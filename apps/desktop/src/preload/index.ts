@@ -1,9 +1,32 @@
 import { contextBridge, ipcRenderer, webUtils } from "electron";
-import type { HostEvent, PixDesktopApi } from "@pix/contracts";
+import type { HostEvent, PiCliProgressEvent, PixDesktopApi } from "@pix/contracts";
 
 const api: PixDesktopApi = {
   app: {
     getRuntime: () => ipcRenderer.invoke("pix:app:get-runtime"),
+  },
+  window: {
+    minimize: () => ipcRenderer.invoke("pix:window:minimize"),
+    toggleMaximize: () => ipcRenderer.invoke("pix:window:toggle-maximize"),
+    close: () => ipcRenderer.invoke("pix:window:close"),
+    isMaximized: () => ipcRenderer.invoke("pix:window:is-maximized"),
+    onStateChange(listener) {
+      const handler = (
+        _event: Electron.IpcRendererEvent,
+        state: { isMaximized: boolean },
+      ) => listener(state);
+      ipcRenderer.on("pix:window:state", handler);
+      return () => ipcRenderer.removeListener("pix:window:state", handler);
+    },
+  },
+  pi: {
+    ensure: () => ipcRenderer.invoke("pix:pi:ensure"),
+    onProgress(listener) {
+      const handler = (_event: Electron.IpcRendererEvent, value: PiCliProgressEvent) =>
+        listener(value);
+      ipcRenderer.on("pix:pi:progress", handler);
+      return () => ipcRenderer.removeListener("pix:pi:progress", handler);
+    },
   },
   appearance: {
     setThemeSource: (source) => ipcRenderer.invoke("pix:appearance:set-theme-source", source),
@@ -117,6 +140,7 @@ const api: PixDesktopApi = {
     list: () => ipcRenderer.invoke("pix:session:list"),
     listForCwd: (cwd) => ipcRenderer.invoke("pix:session:list-for-cwd", cwd),
     create: () => ipcRenderer.invoke("pix:session:new"),
+    createBlankConversation: () => ipcRenderer.invoke("pix:session:create-blank"),
     switch: (sessionPath) => ipcRenderer.invoke("pix:session:switch", sessionPath),
     fork: (entryId) => ipcRenderer.invoke("pix:session:fork", entryId),
     tree: () => ipcRenderer.invoke("pix:session:tree"),

@@ -10,7 +10,22 @@ import type {
 } from "@pix/contracts";
 import type { ReactNode } from "react";
 import { useEffect, useState } from "react";
-import { Bot, GitBranch, Minimize2, Settings2, Tag, User, Wrench } from "lucide-react";
+import {
+  Bot,
+  GitBranch,
+  Minimize2,
+  RefreshCw,
+  Settings2,
+  Tag,
+  User,
+  Wrench,
+  X,
+} from "lucide-react";
+import { Button } from "@/components/ui/button";
+import {
+  SettingsInput,
+  SettingsSelect,
+} from "./settings/SettingsPrimitives.tsx";
 import { t, type Locale, type MessageKey } from "../lib/i18n.ts";
 import { cn } from "../lib/utils.ts";
 
@@ -77,7 +92,7 @@ export function SessionTreePanel(props: {
 
   return (
     <div
-      className="palette-backdrop !items-center !pt-0"
+      className="palette-backdrop"
       data-testid="session-tree-panel"
       onClick={props.onClose}
     >
@@ -90,11 +105,11 @@ export function SessionTreePanel(props: {
       >
         <div className="session-tree-header">
           <div className="min-w-0 flex-1">
-            <div className="text-sm font-semibold tracking-tight">
+            <div className="text-[15px] font-semibold tracking-tight">
               {tr(forkMode ? "sessionTree.forkTitle" : "sessionTree.title")}
             </div>
             <div
-              className="mt-0.5 truncate text-[11px] text-[var(--text-subtle)]"
+              className="mt-1 truncate text-[12px] leading-snug text-[var(--text-subtle)]"
               title={props.tree?.sessionFile ?? props.tree?.sessionId}
             >
               {fileLabel ?? "—"}
@@ -103,17 +118,34 @@ export function SessionTreePanel(props: {
                 : ""}
             </div>
           </div>
-          <div className="flex shrink-0 gap-2">
-            <button
+          {/* Refresh reloads tree from the live session (new turns / forks / labels). */}
+          <div className="flex shrink-0 items-center gap-1">
+            <Button
               type="button"
-              className="settings-pill-btn"
+              variant="ghost"
+              size="icon-sm"
+              data-testid="session-tree-refresh"
+              disabled={props.loading}
+              title={tr("sessionTree.refreshHint")}
+              aria-label={tr("sessionTree.refresh")}
               onClick={() => void props.onRefresh()}
             >
-              {tr("sessionTree.refresh")}
-            </button>
-            <button type="button" className="settings-pill-btn" onClick={props.onClose}>
-              {tr("sessionTree.close")}
-            </button>
+              <RefreshCw
+                className={cn("size-4", props.loading && "animate-spin")}
+                strokeWidth={1.75}
+              />
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-sm"
+              data-testid="session-tree-close"
+              title={tr("sessionTree.close")}
+              aria-label={tr("sessionTree.close")}
+              onClick={props.onClose}
+            >
+              <X className="size-4" strokeWidth={1.75} />
+            </Button>
           </div>
         </div>
 
@@ -123,32 +155,38 @@ export function SessionTreePanel(props: {
           </div>
         ) : null}
 
-        <div className="px-4 py-2 text-xs text-[var(--text-subtle)]">
-          {tr(forkMode ? "sessionTree.forkHint" : "sessionTree.hint")}
-        </div>
+        {forkMode ? (
+          <div className="px-4 py-2.5 text-[12px] leading-relaxed text-[var(--muted-foreground)]">
+            {tr("sessionTree.forkHint")}
+          </div>
+        ) : null}
 
         {!forkMode ? (
-          <div className="flex flex-col gap-2 border-y border-[var(--border-subtle)] px-4 py-2">
-            <label className="flex items-center justify-between gap-3 text-xs">
-              <span>{tr("sessionTree.summary")}</span>
-              <select
-                className="palette-input max-w-[240px] py-1"
+          <div className="flex flex-col gap-2.5 border-y border-[var(--border-subtle)] px-4 py-3">
+            <div className="flex items-center justify-between gap-3">
+              <span className="shrink-0 text-[12px] text-[var(--muted-foreground)]">
+                {tr("sessionTree.summary")}
+              </span>
+              <SettingsSelect
+                testId="session-tree-summary-mode"
+                size="md"
+                className="min-w-[10rem]"
                 value={summaryMode}
-                onChange={(event) =>
-                  setSummaryMode(event.target.value as "none" | "auto" | "custom")
-                }
-              >
-                <option value="none">{tr("sessionTree.summary.none")}</option>
-                <option value="auto">{tr("sessionTree.summary.auto")}</option>
-                <option value="custom">{tr("sessionTree.summary.custom")}</option>
-              </select>
-            </label>
+                onChange={(v) => setSummaryMode(v as "none" | "auto" | "custom")}
+                options={[
+                  { value: "none", label: tr("sessionTree.summary.none") },
+                  { value: "auto", label: tr("sessionTree.summary.auto") },
+                  { value: "custom", label: tr("sessionTree.summary.custom") },
+                ]}
+              />
+            </div>
             {summaryMode === "custom" ? (
-              <input
-                className="palette-input py-1"
+              <SettingsInput
+                data-testid="session-tree-summary-custom"
                 value={customInstructions}
                 onChange={(event) => setCustomInstructions(event.target.value)}
                 placeholder={tr("sessionTree.summary.placeholder")}
+                className="h-9 w-full"
               />
             ) : null}
           </div>
@@ -246,129 +284,209 @@ export function SessionInfoPanel(props: {
   if (!props.open) return null;
   const tr = (key: MessageKey, vars?: Record<string, string>) => t(props.locale, key, vars);
   const tokens = props.info?.tokens;
+  const pathFull = props.info?.path ?? props.info?.sessionFile;
+  const fileLabel = pathFull
+    ? pathFull.split(/[/\\]/).pop() || pathFull
+    : props.info?.sessionId?.slice(0, 8);
+
   return (
-    <div className="palette-backdrop" data-testid="session-info-panel" onClick={props.onClose}>
+    <div
+      className="palette-backdrop"
+      data-testid="session-info-panel"
+      onClick={props.onClose}
+    >
       <div
-        className="palette-panel"
+        className="palette-panel session-tree-panel session-info-panel"
         role="dialog"
         aria-modal="true"
         aria-label={tr("sessionInfo.title")}
         onClick={(event) => event.stopPropagation()}
       >
-        <div className="flex items-center justify-between gap-2 px-3 pt-3">
-          <div className="text-sm font-medium">{tr("sessionInfo.title")}</div>
-          <button type="button" className="settings-pill-btn" onClick={props.onClose}>
-            {tr("sessionInfo.close")}
-          </button>
+        <div className="session-tree-header">
+          <div className="min-w-0 flex-1">
+            <div className="text-[15px] font-semibold tracking-tight">
+              {tr("sessionInfo.title")}
+            </div>
+            <div
+              className="mt-1 truncate text-[12px] leading-snug text-[var(--text-subtle)]"
+              title={pathFull ?? props.info?.sessionId}
+            >
+              {fileLabel ?? "—"}
+              {props.info != null
+                ? ` · ${tr("sessionInfo.messages")}: ${props.info.messageCount}`
+                : ""}
+            </div>
+          </div>
+          <div className="flex shrink-0 items-center gap-1">
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-sm"
+              data-testid="session-info-refresh"
+              disabled={props.loading}
+              title={tr("sessionInfo.refreshHint")}
+              aria-label={tr("sessionInfo.refresh")}
+              onClick={() => void props.onRefresh()}
+            >
+              <RefreshCw
+                className={cn("size-4", props.loading && "animate-spin")}
+                strokeWidth={1.75}
+              />
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-sm"
+              data-testid="session-info-close"
+              title={tr("sessionInfo.close")}
+              aria-label={tr("sessionInfo.close")}
+              onClick={props.onClose}
+            >
+              <X className="size-4" strokeWidth={1.75} />
+            </Button>
+          </div>
         </div>
+
         {props.error ? (
-          <div className="px-3 py-2 text-sm text-red-500">{props.error}</div>
-        ) : props.loading || !props.info ? (
-          <div className="px-3 py-4 text-sm opacity-60">{tr("sessionInfo.loading")}</div>
+          <div className="px-4 py-2 text-sm text-red-500" data-testid="session-info-error">
+            {props.error}
+          </div>
+        ) : null}
+
+        {props.loading && !props.info ? (
+          <div className="session-tree-empty" data-testid="session-info-loading">
+            {tr("sessionInfo.loading")}
+          </div>
+        ) : !props.info ? (
+          <div className="session-tree-empty">{tr("sessionInfo.loading")}</div>
         ) : (
-          <div className="px-3 py-3 space-y-3 text-sm" data-testid="session-info-body">
-            <div>
-              <div className="opacity-60 text-xs">{tr("sessionInfo.path")}</div>
-              <div className="break-all" data-testid="session-info-path">
-                {props.info.path ?? props.info.sessionFile ?? "—"}
+          <div className="session-tree-list session-info-body" data-testid="session-info-body">
+            <div className="session-info-field">
+              <div className="session-info-label">{tr("sessionInfo.path")}</div>
+              <div
+                className="session-info-value session-info-value-mono break-all"
+                data-testid="session-info-path"
+                title={pathFull ?? undefined}
+              >
+                {pathFull ?? "—"}
               </div>
             </div>
-            <div>
-              <div className="opacity-60 text-xs">{tr("sessionInfo.id")}</div>
-              <div data-testid="session-info-id">{props.info.sessionId}</div>
+
+            <div className="session-info-field">
+              <div className="session-info-label">{tr("sessionInfo.id")}</div>
+              <div
+                className="session-info-value session-info-value-mono"
+                data-testid="session-info-id"
+              >
+                {props.info.sessionId}
+              </div>
             </div>
-            <div>
-              <div className="opacity-60 text-xs">{tr("sessionInfo.name")}</div>
-              <div className="mt-1 flex gap-2">
-                <input
-                  className="palette-input flex-1"
+
+            <div className="session-info-field">
+              <div className="session-info-label">{tr("sessionInfo.name")}</div>
+              <div className="mt-1.5 flex items-center gap-2">
+                <SettingsInput
                   data-testid="session-info-name-input"
                   value={name}
                   onChange={(event) => setName(event.target.value)}
                   placeholder={tr("sessionInfo.namePlaceholder")}
+                  className="h-9 min-w-0 flex-1"
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      event.preventDefault();
+                      void props.onRename(name.trim());
+                    }
+                  }}
                 />
-                <button
+                <Button
                   type="button"
-                  className="settings-pill-btn"
+                  variant="secondary"
+                  size="sm"
                   data-testid="session-info-name-save"
                   onClick={() => void props.onRename(name.trim())}
                 >
                   {tr("sessionInfo.save")}
-                </button>
+                </Button>
               </div>
             </div>
-            <div className="grid grid-cols-2 gap-2">
-              <div>
-                <div className="opacity-60 text-xs">{tr("sessionInfo.messages")}</div>
-                <div data-testid="session-info-messages">{props.info.messageCount}</div>
+
+            <div className="session-info-stats">
+              <div className="session-info-stat">
+                <div className="session-info-label">{tr("sessionInfo.messages")}</div>
+                <div className="session-info-stat-value" data-testid="session-info-messages">
+                  {props.info.messageCount}
+                </div>
               </div>
-              <div>
-                <div className="opacity-60 text-xs">{tr("sessionInfo.cost")}</div>
-                <div data-testid="session-info-cost">{props.info.cost.toFixed(4)}</div>
+              <div className="session-info-stat">
+                <div className="session-info-label">{tr("sessionInfo.cost")}</div>
+                <div className="session-info-stat-value" data-testid="session-info-cost">
+                  {props.info.cost.toFixed(4)}
+                </div>
               </div>
-              <div>
-                <div className="opacity-60 text-xs">{tr("sessionInfo.tokens")}</div>
-                <div data-testid="session-info-tokens">{tokens?.total ?? 0}</div>
+              <div className="session-info-stat">
+                <div className="session-info-label">{tr("sessionInfo.tokens")}</div>
+                <div className="session-info-stat-value" data-testid="session-info-tokens">
+                  {tokens?.total ?? 0}
+                </div>
               </div>
-              <div>
-                <div className="opacity-60 text-xs">{tr("sessionInfo.context")}</div>
-                <div data-testid="session-info-context">
+              <div className="session-info-stat">
+                <div className="session-info-label">{tr("sessionInfo.context")}</div>
+                <div className="session-info-stat-value" data-testid="session-info-context">
                   {props.info.context?.percent != null
                     ? `${Math.round(props.info.context.percent)}%`
                     : "—"}
                 </div>
               </div>
             </div>
-            <div className="flex flex-wrap gap-2 pt-1">
+
+            <div className="session-info-actions">
               {props.onShare ? (
-                <button
+                <Button
                   type="button"
-                  className="settings-pill-btn"
+                  variant="outline"
+                  size="sm"
                   data-testid="session-info-share"
                   onClick={() => void props.onShare?.()}
                 >
                   {tr("sessionInfo.share")}
-                </button>
+                </Button>
               ) : null}
-              <button
+              <Button
                 type="button"
-                className="settings-pill-btn"
+                variant="outline"
+                size="sm"
                 data-testid="session-info-export-jsonl"
                 onClick={() => void props.onExport("jsonl")}
               >
                 {tr("sessionInfo.exportJsonl")}
-              </button>
-              <button
+              </Button>
+              <Button
                 type="button"
-                className="settings-pill-btn"
+                variant="outline"
+                size="sm"
                 data-testid="session-info-export-html"
                 onClick={() => void props.onExport("html")}
               >
                 {tr("sessionInfo.exportHtml")}
-              </button>
-              <button
+              </Button>
+              <Button
                 type="button"
-                className="settings-pill-btn"
+                variant="outline"
+                size="sm"
                 data-testid="session-info-clone"
                 onClick={() => void props.onClone()}
               >
                 {tr("sessionInfo.clone")}
-              </button>
-              <button
+              </Button>
+              <Button
                 type="button"
-                className="settings-pill-btn"
+                variant="outline"
+                size="sm"
                 data-testid="session-info-compact"
                 onClick={() => void props.onCompact()}
               >
                 {tr("sessionInfo.compact")}
-              </button>
-              <button
-                type="button"
-                className="settings-pill-btn"
-                onClick={() => void props.onRefresh()}
-              >
-                {tr("sessionInfo.refresh")}
-              </button>
+              </Button>
             </div>
           </div>
         )}

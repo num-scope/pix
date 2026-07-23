@@ -42,7 +42,7 @@ import { clampSidebarWidth, SIDEBAR_COLLAPSED_WIDTH } from "../lib/sidebar-prefs
 import { cn } from "../lib/utils.ts";
 import type { SettingsSection, ShellView } from "../store/shell-store.ts";
 import type { ThreadRunState } from "../lib/timeline.ts";
-import { PixLogo } from "./PixLogo.tsx";
+import { SettingsSearchField } from "./settings/SettingsPrimitives.tsx";
 import { ProjectList } from "./ProjectList.tsx";
 
 export interface AppSidebarProps {
@@ -292,19 +292,18 @@ function ProductRail(
   const { tr } = props;
   return (
     <>
-      {/* Brand row: large Pix + search only (theme in Settings). */}
+      {/* Brand row: title left-aligned with nav/list rows (same px-2.5 content inset). */}
       <div
-        className="mb-1 flex h-10 items-center justify-between gap-2 px-1"
+        className="mb-1 flex h-10 items-center justify-between gap-2"
         data-testid="sidebar-home-header"
       >
         <button
           type="button"
           data-testid="brand-menu"
           title={tr("app.name")}
-          className="flex min-w-0 items-center gap-2 rounded-md px-0.5 py-0.5 text-left transition-colors hover:bg-[var(--hover-fill)]"
+          className="flex min-w-0 flex-1 items-center rounded-md px-2.5 py-0.5 text-left transition-colors hover:bg-[var(--hover-fill)]"
           onClick={props.onOpenPalette}
         >
-          <PixLogo className="size-5" title={tr("app.name")} />
           <span className="truncate text-[18px] leading-none font-semibold tracking-tight text-[var(--sidebar-foreground)]">
             {tr("app.name")}
           </span>
@@ -602,18 +601,14 @@ function SettingsRail(props: {
         <span className="truncate">{tr("nav.backToApp")}</span>
       </button>
 
-      {/* Search — pill */}
+      {/* Search — same SettingsSearchField as every settings page */}
       <div className="px-1 pt-1.5 pb-1">
-        <label className="settings-rail-search">
-          <Search className="size-3.5 shrink-0 text-[var(--text-subtle)]" strokeWidth={1.75} />
-          <input
-            data-testid="settings-search"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder={tr("settings.search")}
-            className="min-w-0 flex-1 border-0 bg-transparent text-[12.5px] text-[var(--sidebar-foreground)] outline-none placeholder:text-[var(--text-subtle)]"
-          />
-        </label>
+        <SettingsSearchField
+          testId="settings-search"
+          value={query}
+          onChange={setQuery}
+          placeholder={tr("settings.search")}
+        />
       </div>
 
       {/* Grouped nav */}

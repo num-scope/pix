@@ -65,10 +65,12 @@ import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
+import { ensurePiCli, type PiCliProgressEvent } from "./pi-cli-ensure.ts";
 
 const execFileAsync = promisify(execFile);
 const currentDirectory = dirname(fileURLToPath(import.meta.url));
 const HOST_EVENT_CHANNEL = "pix:host:event";
+const PI_PROGRESS_CHANNEL = "pix:pi:progress";
 
 /** Best-effort branch / worktree labels for composer chrome (no git binary required). */
 function readGitContext(cwd: string | undefined): GitContextInfo {
@@ -1042,52 +1044,124 @@ async function listOpenTargets(cwd: string): Promise<DetectedApp[]> {
     for (const item of resolved) push(item);
   } else if (process.platform === "win32") {
     push({ id: "explorer", name: "Explorer", kind: "finder", target: "explorer" });
+    // Only list apps that resolve on PATH or known install dirs (do not advertise missing IDEs).
+    const winCandidates: Array<{
+      id: string;
+      name: string;
+      kind: DetectedApp["kind"];
+      target: string;
+      /** Extra absolute paths to check when `where` fails (e.g. Cursor not on PATH). */
+      extraPaths?: string[];
+    }> = [
+      {
+        id: "cursor",
+        name: "Cursor",
+        kind: "ide",
+        target: "cursor",
+        extraPaths: [
+          join(homedir(), "AppData", "Local", "Programs", "cursor", "Cursor.exe"),
+          join(homedir(), "AppData", "Local", "cursor", "Cursor.exe"),
+          "C:\\Program Files\\Cursor\\Cursor.exe",
+        ],
+      },
+      {
+        id: "vscode",
+        name: "Visual Studio Code",
+        kind: "ide",
+        target: "code",
+        extraPaths: [
+          join(homedir(), "AppData", "Local", "Programs", "Microsoft VS Code", "Code.exe"),
+          "C:\\Program Files\\Microsoft VS Code\\Code.exe",
+          "C:\\Program Files\\Microsoft VS Code\\bin\\code.cmd",
+        ],
+      },
+      {
+        id: "goland",
+        name: "GoLand",
+        kind: "ide",
+        target: "goland",
+        extraPaths: [
+          join(homedir(), "AppData", "Local", "Programs", "GoLand", "bin", "goland64.exe"),
+        ],
+      },
+      {
+        id: "pycharm",
+        name: "PyCharm",
+        kind: "ide",
+        target: "pycharm",
+        extraPaths: [
+          join(homedir(), "AppData", "Local", "Programs", "PyCharm", "bin", "pycharm64.exe"),
+        ],
+      },
+      { id: "wt", name: "Windows Terminal", kind: "terminal", target: "wt" },
+      { id: "cmd", name: "Command Prompt", kind: "terminal", target: "cmd" },
+      { id: "powershell", name: "PowerShell", kind: "terminal", target: "powershell" },
+    ];
+
     await Promise.all(
-      [
-        { id: "cursor", name: "Cursor", kind: "ide" as const, target: "cursor" },
-        { id: "vscode", name: "Visual Studio Code", kind: "ide" as const, target: "code" },
-        { id: "wt", name: "Windows Terminal", kind: "terminal" as const, target: "wt" },
-        { id: "cmd", name: "Command Prompt", kind: "terminal" as const, target: "cmd" },
-        { id: "powershell", name: "PowerShell", kind: "terminal" as const, target: "powershell" },
-      ].map(async (c) => {
-        let iconDataUrl: string | undefined;
+      winCandidates.map(async (c) => {
+        let exe: string | undefined;
         try {
-          const { stdout } = await execFileAsync("where", [c.target], {
+          const { stdout } = await execFileAsync("where.exe", [c.target], {
             windowsHide: true,
-            shell: true,
+            timeout: 8_000,
+            maxBuffer: 1024 * 1024,
           });
-          const exe = stdout
+          exe = stdout
             .split(/\r?\n/)
             .map((s) => s.trim())
-            .find(Boolean);
-          if (exe && existsSync(exe)) iconDataUrl = await fileIconDataUrl(exe);
+            .find((line) => line.length > 0 && existsSync(line));
         } catch {
-          // lucide fallback
+          exe = undefined;
         }
-        push({ ...c, ...(iconDataUrl ? { iconDataUrl } : {}) });
+        if (!exe) {
+          exe = (c.extraPaths ?? []).find((p) => existsSync(p));
+        }
+        if (!exe) return; // not installed — omit from menu
+        let iconDataUrl: string | undefined;
+        try {
+          iconDataUrl = await fileIconDataUrl(exe);
+        } catch {
+          iconDataUrl = undefined;
+        }
+        // Prefer resolved absolute path so open works even when the shim is not on PATH.
+        push({
+          id: c.id,
+          name: c.name,
+          kind: c.kind,
+          target: exe,
+          ...(iconDataUrl ? { iconDataUrl } : {}),
+        });
       }),
     );
   } else {
     push({ id: "files", name: "Files", kind: "finder", target: "xdg-open" });
-    for (const c of [
-      { id: "cursor", name: "Cursor", kind: "ide" as const, target: "cursor" },
-      { id: "vscode", name: "Visual Studio Code", kind: "ide" as const, target: "code" },
-      {
-        id: "terminal",
-        name: "Terminal",
-        kind: "terminal" as const,
-        target: "x-terminal-emulator",
-      },
-      {
-        id: "gnome-terminal",
-        name: "GNOME Terminal",
-        kind: "terminal" as const,
-        target: "gnome-terminal",
-      },
-      { id: "konsole", name: "Konsole", kind: "terminal" as const, target: "konsole" },
-    ]) {
-      push({ ...c });
-    }
+    await Promise.all(
+      [
+        { id: "cursor", name: "Cursor", kind: "ide" as const, target: "cursor" },
+        { id: "vscode", name: "Visual Studio Code", kind: "ide" as const, target: "code" },
+        {
+          id: "terminal",
+          name: "Terminal",
+          kind: "terminal" as const,
+          target: "x-terminal-emulator",
+        },
+        {
+          id: "gnome-terminal",
+          name: "GNOME Terminal",
+          kind: "terminal" as const,
+          target: "gnome-terminal",
+        },
+        { id: "konsole", name: "Konsole", kind: "terminal" as const, target: "konsole" },
+      ].map(async (c) => {
+        try {
+          await execFileAsync("which", [c.target], { timeout: 5_000, maxBuffer: 256 * 1024 });
+          push({ ...c });
+        } catch {
+          // not installed
+        }
+      }),
+    );
   }
 
   void cwd;
@@ -1611,10 +1685,18 @@ function processEnvironment(): Record<string, string> {
   );
 }
 
+function normalizeHostCwd(path: string): string {
+  return path.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+}
+
 class HostSupervisor {
   #host: ActiveHost | undefined;
   #snapshot: HostSnapshot | undefined;
-  #startPromise: Promise<HostSnapshot> | undefined;
+  /**
+   * Single-flight lifecycle queue. clearActive / start / stop / newSession must not
+   * interleave — rapid「新建会话」clicks previously killed mid-start hosts (exit 0).
+   */
+  #opQueue: Promise<unknown> = Promise.resolve();
   #previousRuntimeId: string | undefined;
   #sessionFile: string | undefined;
   #workspaceCwd: string | undefined;
@@ -1635,6 +1717,15 @@ class HostSupervisor {
       timeout: NodeJS.Timeout;
     }
   >();
+
+  #exclusive<T>(fn: () => Promise<T>): Promise<T> {
+    const run = this.#opQueue.then(fn, fn);
+    this.#opQueue = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
+  }
 
   constructor(private readonly window: BrowserWindow) {
     const prefs = loadDesktopPrefs();
@@ -1691,6 +1782,15 @@ class HostSupervisor {
     resumeRecent?: boolean;
     force?: boolean;
   }): Promise<HostSnapshot> {
+    return this.#exclusive(() => this.#startExclusive(options));
+  }
+
+  async #startExclusive(options?: {
+    cwd?: string;
+    sessionFile?: string;
+    resumeRecent?: boolean;
+    force?: boolean;
+  }): Promise<HostSnapshot> {
     if (options?.cwd) {
       this.#workspaceCwd = options.cwd;
       this.#requireExplicitWorkspace = false;
@@ -1699,37 +1799,77 @@ class HostSupervisor {
     }
     if (options?.sessionFile !== undefined) this.#sessionFile = options.sessionFile;
     if (options?.resumeRecent !== undefined) this.#resumeRecent = options.resumeRecent;
-    if (!options?.force && this.#snapshot && !options?.cwd && options?.sessionFile === undefined) {
-      return Promise.resolve(this.#snapshot);
+
+    const live =
+      this.#host &&
+      this.#snapshot &&
+      !this.#host.ignoreMessages &&
+      !this.#host.stopping;
+    if (
+      !options?.force &&
+      live &&
+      options?.sessionFile === undefined &&
+      (!options?.cwd ||
+        normalizeHostCwd(this.#snapshot!.cwd) === normalizeHostCwd(options.cwd))
+    ) {
+      return this.#snapshot!;
     }
-    if (this.#startPromise) return this.#startPromise;
-    this.#startPromise = this.#start(Boolean(options?.force || options?.cwd)).finally(() => {
-      this.#startPromise = undefined;
+
+    // Only kill when explicitly forced or the workspace actually changes.
+    const forceSpawn =
+      Boolean(options?.force) ||
+      Boolean(
+        this.#host &&
+          options?.cwd &&
+          this.#snapshot &&
+          normalizeHostCwd(this.#snapshot.cwd) !== normalizeHostCwd(options.cwd),
+      );
+
+    return this.#start(forceSpawn);
+  }
+
+  /**
+   * Ensure utility process is up AND runtime handle exists (host.ready received).
+   * Checking only `#host` is insufficient: the process can be mid-start with no handle yet.
+   */
+  async #ensureHostReady(): Promise<void> {
+    if (this.#host && this.#snapshot && !this.#host.ignoreMessages && !this.#host.stopping) {
+      return;
+    }
+    const zombie =
+      Boolean(this.#host) &&
+      !this.#snapshot &&
+      !this.#host!.stopping &&
+      !this.#host!.ignoreMessages;
+    await this.#startExclusive({
+      ...(this.#workspaceCwd ? { cwd: this.#workspaceCwd } : {}),
+      force: zombie,
     });
-    return this.#startPromise;
   }
 
   async openWorkspace(
     cwd: string,
     options?: { resumeRecent?: boolean; sessionFile?: string },
   ): Promise<HostSnapshot> {
-    rememberWorkspace(cwd);
-    this.#workspaceCwd = cwd;
-    this.#requireExplicitWorkspace = false;
-    // Prefer explicit session when switching into a project (avoids open→default→switch flicker).
-    this.#sessionFile = options?.sessionFile;
-    this.#resumeRecent = options?.resumeRecent === true && !options?.sessionFile;
-    await this.stop().catch(() => undefined);
-    // stop()'s child exit path may have run after our pre-clear; re-assert intent.
-    this.#sessionFile = options?.sessionFile;
-    this.#snapshot = undefined;
-    this.#host = undefined;
-    this.#resumeRecent = options?.resumeRecent === true && !options?.sessionFile;
-    return this.start({
-      cwd,
-      ...(options?.sessionFile ? { sessionFile: options.sessionFile } : {}),
-      resumeRecent: options?.resumeRecent === true && !options?.sessionFile,
-      force: true,
+    return this.#exclusive(async () => {
+      rememberWorkspace(cwd);
+      this.#workspaceCwd = cwd;
+      this.#requireExplicitWorkspace = false;
+      // Prefer explicit session when switching into a project (avoids open→default→switch flicker).
+      this.#sessionFile = options?.sessionFile;
+      this.#resumeRecent = options?.resumeRecent === true && !options?.sessionFile;
+      await this.#stopExclusive().catch(() => undefined);
+      // stop()'s child exit path may have run after our pre-clear; re-assert intent.
+      this.#sessionFile = options?.sessionFile;
+      this.#snapshot = undefined;
+      this.#host = undefined;
+      this.#resumeRecent = options?.resumeRecent === true && !options?.sessionFile;
+      return this.#startExclusive({
+        cwd,
+        ...(options?.sessionFile ? { sessionFile: options.sessionFile } : {}),
+        resumeRecent: options?.resumeRecent === true && !options?.sessionFile,
+        force: true,
+      });
     });
   }
 
@@ -1740,8 +1880,12 @@ class HostSupervisor {
    * Keeps the project on the recent list so it stays visible in the sidebar groups.
    */
   async clearActiveWorkspace(): Promise<void> {
+    return this.#exclusive(() => this.#clearActiveExclusive());
+  }
+
+  async #clearActiveExclusive(): Promise<void> {
     const previous = this.#workspaceCwd;
-    await this.stop().catch(() => undefined);
+    await this.#stopExclusive().catch(() => undefined);
     this.#sessionFile = undefined;
     this.#snapshot = undefined;
     this.#host = undefined;
@@ -1758,6 +1902,44 @@ class HostSupervisor {
         rememberWorkspace(previous);
       }
     }
+  }
+
+  /**
+   * Atomic「新建会话」for pure conversation: stop if needed, ensure conversation host,
+   * create a new session. Rapid clicks serialize on #opQueue — no mid-start kills.
+   */
+  createBlankConversation(): Promise<{
+    snapshot: HostSnapshot;
+    threads: SessionThreadSummary[];
+    history: SessionHistoryMessage[];
+  }> {
+    return this.#exclusive(async () => {
+      const convCwd =
+        process.env.PIX_WORKSPACE?.trim() || ensureConversationWorkspacePath();
+      const alreadyOnConv =
+        Boolean(this.#host && this.#snapshot) &&
+        !this.#host!.stopping &&
+        !this.#host!.ignoreMessages &&
+        isConversationWorkspacePath(this.#snapshot!.cwd) &&
+        normalizeHostCwd(this.#snapshot!.cwd) === normalizeHostCwd(convCwd);
+
+      if (!alreadyOnConv) {
+        await this.#clearActiveExclusive();
+        // Fixture workspace (e2e) wins over conversation home when set.
+        if (process.env.PIX_WORKSPACE?.trim()) {
+          this.#workspaceCwd = process.env.PIX_WORKSPACE.trim();
+          this.#requireExplicitWorkspace = false;
+        } else {
+          this.#workspaceCwd = convCwd;
+          this.#requireExplicitWorkspace = false;
+        }
+        await this.#startExclusive({
+          cwd: this.#workspaceCwd,
+        });
+      }
+
+      return this.#newSessionExclusive();
+    });
   }
 
   async #start(forceSpawn = false): Promise<HostSnapshot> {
@@ -1891,19 +2073,21 @@ class HostSupervisor {
   }
 
   async listSessions(): Promise<{ threads: SessionThreadSummary[]; activeSessionId?: string }> {
-    if (!this.#host) await this.start();
-    const event = await this.#request({
-      protocolVersion: IPC_PROTOCOL_VERSION,
-      type: "session.list",
-      requestId: randomUUID(),
+    return this.#exclusive(async () => {
+      await this.#ensureHostReady();
+      const event = await this.#request({
+        protocolVersion: IPC_PROTOCOL_VERSION,
+        type: "session.list",
+        requestId: randomUUID(),
+      });
+      if (event.type !== "session.list")
+        throw new Error("Agent Host returned an unexpected session list response");
+      const result: { threads: SessionThreadSummary[]; activeSessionId?: string } = {
+        threads: event.threads,
+      };
+      if (event.activeSessionId !== undefined) result.activeSessionId = event.activeSessionId;
+      return result;
     });
-    if (event.type !== "session.list")
-      throw new Error("Agent Host returned an unexpected session list response");
-    const result: { threads: SessionThreadSummary[]; activeSessionId?: string } = {
-      threads: event.threads,
-    };
-    if (event.activeSessionId !== undefined) result.activeSessionId = event.activeSessionId;
-    return result;
   }
 
   async newSession(): Promise<{
@@ -1911,7 +2095,17 @@ class HostSupervisor {
     threads: SessionThreadSummary[];
     history: SessionHistoryMessage[];
   }> {
-    if (!this.#host) await this.start();
+    return this.#exclusive(async () => {
+      await this.#ensureHostReady();
+      return this.#newSessionExclusive();
+    });
+  }
+
+  async #newSessionExclusive(): Promise<{
+    snapshot: HostSnapshot;
+    threads: SessionThreadSummary[];
+    history: SessionHistoryMessage[];
+  }> {
     const event = await this.#request({
       protocolVersion: IPC_PROTOCOL_VERSION,
       type: "session.new",
@@ -2698,6 +2892,10 @@ class HostSupervisor {
   }
 
   async stop(): Promise<void> {
+    return this.#exclusive(() => this.#stopExclusive());
+  }
+
+  async #stopExclusive(): Promise<void> {
     const host = this.#host;
     if (!host) return;
     host.stopping = true;
@@ -2710,7 +2908,8 @@ class HostSupervisor {
     } finally {
       host.ignoreMessages = true;
       host.child.kill();
-      await host.exit.promise;
+      await host.exit.promise.catch(() => undefined);
+      if (this.#host === host) this.#host = undefined;
       this.#snapshot = undefined;
       this.#rejectPending(new Error("Agent Host stopped"));
     }
@@ -2732,6 +2931,16 @@ class HostSupervisor {
       stopping: false,
     };
     this.#host = host;
+
+    // Surface host stdout/stderr so "exited with code 0" failures are diagnosable.
+    child.stdout?.on("data", (chunk: Buffer | string) => {
+      const text = String(chunk).trim();
+      if (text) console.log(`[agent-host:${host.hostId.slice(0, 8)}] ${text}`);
+    });
+    child.stderr?.on("data", (chunk: Buffer | string) => {
+      const text = String(chunk).trim();
+      if (text) console.warn(`[agent-host:${host.hostId.slice(0, 8)}] ${text}`);
+    });
 
     child.on("message", (message) => {
       if (this.#host !== host || host.ignoreMessages || !isHostEvent(message)) return;
@@ -2804,7 +3013,10 @@ class HostSupervisor {
       }
       this.#snapshot = undefined;
       this.#lastSequence = 0;
-      const error = new Error(`Agent Host exited with code ${exitCode}`);
+      // Intentional stop/replace: pending callers should fail softly; Windows kill often is code 0.
+      const error = host.stopping
+        ? new Error("Agent Host was replaced or stopped")
+        : new Error(`Agent Host exited with code ${exitCode}`);
       host.hello.reject(error);
       this.#rejectPending(error);
 
@@ -3042,9 +3254,47 @@ function applyAppBranding(): void {
   }
 }
 
+/** Keep in sync with apps/desktop/src/renderer/lib/desktop-chrome.ts TITLEBAR_HEIGHT_PX. */
+const TITLEBAR_HEIGHT_PX = 46;
+
+/** Match renderer `styles.css` shell backgrounds for titleBarOverlay / frame fill. */
+function titleBarChromeColors(): { color: string; symbolColor: string } {
+  if (nativeTheme.shouldUseDarkColors) {
+    return { color: "#191919", symbolColor: "#fafafa" };
+  }
+  return { color: "#ffffff", symbolColor: "#0a0a0a" };
+}
+
+/** Windows: native caption buttons sit in the custom titlebar via titleBarOverlay. */
+function applyWindowsTitleBarOverlay(win: BrowserWindow | null | undefined): void {
+  if (process.platform !== "win32" || !win || win.isDestroyed()) return;
+  if (typeof win.setTitleBarOverlay !== "function") return;
+  const { color, symbolColor } = titleBarChromeColors();
+  try {
+    win.setTitleBarOverlay({
+      color,
+      symbolColor,
+      height: TITLEBAR_HEIGHT_PX,
+    });
+  } catch (error) {
+    console.warn("[pix] setTitleBarOverlay failed:", error);
+  }
+}
+
+function applyNonMacWindowChrome(win: BrowserWindow | null | undefined): void {
+  if (!win || win.isDestroyed() || process.platform === "darwin") return;
+  const { color } = titleBarChromeColors();
+  try {
+    win.setBackgroundColor(color);
+  } catch {
+    // ignore
+  }
+  applyWindowsTitleBarOverlay(win);
+}
+
 async function createWindow(): Promise<void> {
   // Keep in sync with apps/desktop/src/renderer/lib/desktop-chrome.ts (Synara-aligned).
-  const titlebarHeight = 46;
+  const titlebarHeight = TITLEBAR_HEIGHT_PX;
   const trafficDotRadius = 7;
   const trafficLightPosition = {
     x: 16,
@@ -3055,6 +3305,7 @@ async function createWindow(): Promise<void> {
   applyAppBranding();
 
   const savedWindow = resolveWindowCreateOptions(loadDesktopPrefs().window);
+  const chrome = titleBarChromeColors();
 
   mainWindow = new BrowserWindow({
     width: savedWindow.width,
@@ -3068,7 +3319,8 @@ async function createWindow(): Promise<void> {
     show: false,
     ...(iconPath ? { icon: iconPath } : {}),
     // macOS: traffic lights in the sidebar titlebar + real sidebar vibrancy (true glass).
-    // Windows/Linux: keep native frame (min/max/close); hide the default app menu bar.
+    // Windows/Linux: frameless custom titlebar (hidden system title strip); drag via -webkit-app-region.
+    // Windows keeps native min/max/close via titleBarOverlay; Linux uses renderer caption buttons.
     ...(process.platform === "darwin"
       ? {
           titleBarStyle: "hiddenInset" as const,
@@ -3079,8 +3331,18 @@ async function createWindow(): Promise<void> {
           backgroundColor: "#00000000",
         }
       : {
-          backgroundColor: "#191919",
+          backgroundColor: chrome.color,
           autoHideMenuBar: true,
+          titleBarStyle: "hidden" as const,
+          ...(process.platform === "win32"
+            ? {
+                titleBarOverlay: {
+                  color: chrome.color,
+                  symbolColor: chrome.symbolColor,
+                  height: titlebarHeight,
+                },
+              }
+            : {}),
         }),
     webPreferences: {
       contextIsolation: true,
@@ -3090,6 +3352,14 @@ async function createWindow(): Promise<void> {
     },
   });
   attachWindowBoundsPersistence(mainWindow);
+  const emitWindowState = () => {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    mainWindow.webContents.send("pix:window:state", {
+      isMaximized: mainWindow.isMaximized(),
+    });
+  };
+  mainWindow.on("maximize", emitWindowState);
+  mainWindow.on("unmaximize", emitWindowState);
   mainWindow.once("ready-to-show", () => {
     if (!mainWindow || mainWindow.isDestroyed()) return;
     if (savedWindow.isMaximized) mainWindow.maximize();
@@ -3256,14 +3526,60 @@ void app
       enableTestCommands:
         process.env.PIX_ENABLE_TEST_COMMANDS === "1" ||
         process.env.PIX_ENABLE_TEST_COMMANDS === "true",
+      /** Windows uses native titleBarOverlay buttons; Linux needs renderer caption buttons. */
+      customWindowControls: process.platform === "linux",
     }));
+    ipcMain.handle("pix:window:minimize", () => {
+      if (mainWindow && !mainWindow.isDestroyed()) mainWindow.minimize();
+    });
+    ipcMain.handle("pix:window:toggle-maximize", () => {
+      if (!mainWindow || mainWindow.isDestroyed()) return false;
+      if (mainWindow.isMaximized()) mainWindow.unmaximize();
+      else mainWindow.maximize();
+      return mainWindow.isMaximized();
+    });
+    ipcMain.handle("pix:window:close", () => {
+      if (mainWindow && !mainWindow.isDestroyed()) mainWindow.close();
+    });
+    ipcMain.handle("pix:window:is-maximized", () =>
+      Boolean(mainWindow && !mainWindow.isDestroyed() && mainWindow.isMaximized()),
+    );
     ipcMain.handle("pix:appearance:set-theme-source", (_event, source: unknown) => {
       if (source !== "light" && source !== "dark" && source !== "system") {
         throw new Error("Invalid native theme source");
       }
       nativeTheme.themeSource = source;
+      applyNonMacWindowChrome(mainWindow);
     });
+    nativeTheme.on("updated", () => {
+      applyNonMacWindowChrome(mainWindow);
+    });
+
+    const broadcastPiProgress = (event: PiCliProgressEvent) => {
+      if (!mainWindow || mainWindow.isDestroyed()) return;
+      mainWindow.webContents.send(PI_PROGRESS_CHANNEL, event);
+    };
+    const runEnsurePiCli = async () => {
+      const result = await ensurePiCli({ onProgress: broadcastPiProgress });
+      // Fresh install only: gently re-read config. Do not force-kill a healthy host mid-start
+      // (that surfaces as "Agent Host exited with code 0" on Windows).
+      if (result.installedNow && supervisor) {
+        try {
+          await supervisor.start({ force: false });
+        } catch (error) {
+          console.warn("[pix] host refresh after pi install failed:", error);
+        }
+      }
+      return result;
+    };
+    ipcMain.handle("pix:pi:ensure", () => runEnsurePiCli());
+
     await createWindow();
+    // Do not wait for the renderer effect — start ensure as soon as the window exists
+    // so `pnpm dev` installs even if React remounts cancel the first UI call.
+    void runEnsurePiCli().catch((error) => {
+      console.warn("[pix] pi ensure failed:", error);
+    });
 
     ipcMain.handle(
       "pix:host:start",
@@ -3523,6 +3839,7 @@ void app
       return listProjectSessions(cwd, activeSessionId ? { activeSessionId } : undefined);
     });
     ipcMain.handle("pix:session:new", () => supervisor?.newSession());
+    ipcMain.handle("pix:session:create-blank", () => supervisor?.createBlankConversation());
     ipcMain.handle("pix:session:switch", (_event, sessionPath: string) =>
       supervisor?.switchSession(sessionPath),
     );

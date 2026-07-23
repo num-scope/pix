@@ -48,6 +48,7 @@ import {
   createPortableExtensionUiBridge,
   type ExtensionUiRequestEvent,
 } from "./extension-ui-bridge.ts";
+import { deleteProviderCredential, persistProviderApiKey } from "./auth-json.ts";
 import {
   readModelsJsonConfig,
   removeCustomProviderFromModelsJson,
@@ -68,6 +69,11 @@ export {
   projectToolPresentation,
   sanitizeSerializable,
 } from "./generic-renderers.ts";
+export {
+  authJsonPath,
+  deleteProviderCredential,
+  persistProviderApiKey,
+} from "./auth-json.ts";
 export {
   ensureModelsJsonTemplate,
   modelsJsonPath,
@@ -493,6 +499,45 @@ function threadTitleFromSession(info: { name?: string; firstMessage: string; id:
 }
 
 /**
+ * Within one cwd list, append ` (2)`, ` (3)`, … when multiple sessions share the
+ * same base title (common after fork: pi inherits `session_info` name).
+ * Oldest by createdAt (fallback modifiedAt) keeps the bare title.
+ * Pure helper — does not rewrite session files (pi does not auto-number forks).
+ */
+export function disambiguateSessionTitles(
+  threads: SessionThreadSummary[],
+): SessionThreadSummary[] {
+  if (threads.length < 2) return threads;
+  const groups = new Map<string, number[]>();
+  for (let i = 0; i < threads.length; i++) {
+    const base = (threads[i]?.titleBase ?? threads[i]?.title ?? "").trim() || threads[i]!.title;
+    const list = groups.get(base);
+    if (list) list.push(i);
+    else groups.set(base, [i]);
+  }
+  const next = threads.map((t) => ({ ...t }));
+  for (const [base, indices] of groups) {
+    if (indices.length < 2 || !base) continue;
+    indices.sort((a, b) => {
+      const left = next[a]!;
+      const right = next[b]!;
+      const leftKey = left.createdAt ?? left.modifiedAt;
+      const rightKey = right.createdAt ?? right.modifiedAt;
+      const cmp = leftKey.localeCompare(rightKey);
+      if (cmp !== 0) return cmp;
+      return left.id.localeCompare(right.id);
+    });
+    for (let rank = 0; rank < indices.length; rank++) {
+      const idx = indices[rank]!;
+      const row = next[idx]!;
+      row.titleBase = base;
+      row.title = rank === 0 ? base : `${base} (${rank + 1})`;
+    }
+  }
+  return next;
+}
+
+/**
  * List pi sessions for any project cwd without switching the live runtime.
  * Used by the sidebar to show conversations under every expanded project.
  */
@@ -505,17 +550,29 @@ export async function listProjectSessions(
     agentDir: options?.agentDir ?? getAgentDir(),
   });
   const listed = await SessionManager.list(cwd, resolved.sessionDir);
-  return listed
-    .map((item) => ({
+  const mapped = listed.map((item) => {
+    const titleBase = threadTitleFromSession(item);
+    const row: SessionThreadSummary = {
       id: item.id,
       path: item.path,
       cwd: item.cwd,
-      title: threadTitleFromSession(item),
+      title: titleBase,
+      titleBase,
       modifiedAt: item.modified.toISOString(),
       messageCount: item.messageCount,
       active: options?.activeSessionId ? item.id === options.activeSessionId : false,
-    }))
-    .sort((left, right) => right.modifiedAt.localeCompare(left.modifiedAt));
+    };
+    if (item.created instanceof Date && !Number.isNaN(item.created.getTime())) {
+      row.createdAt = item.created.toISOString();
+    }
+    if (typeof item.parentSessionPath === "string" && item.parentSessionPath.trim()) {
+      row.parentSessionPath = item.parentSessionPath;
+    }
+    return row;
+  });
+  return disambiguateSessionTitles(mapped).sort((left, right) =>
+    right.modifiedAt.localeCompare(left.modifiedAt),
+  );
 }
 
 export function packageKindFromSource(source: string): PackageSummary["kind"] {
@@ -1252,11 +1309,25 @@ export async function createPixRuntime(
       );
     },
     setThinkingLevel(level) {
-      const available = runtime.session.getAvailableThinkingLevels().map((item) => String(item));
-      if (available.length > 0 && !available.includes(level)) {
-        throw new Error(`Thinking level not available: ${level}`);
+      const known = new Set(["off", "minimal", "low", "medium", "high", "xhigh"]);
+      const normalized = String(level).trim().toLowerCase();
+      if (!known.has(normalized)) {
+        throw new Error(`Unknown thinking level: ${level}`);
       }
-      runtime.session.setThinkingLevel(level as never);
+      // Allow full pi ThinkingLevel set even when the model reports a narrow subset
+      // (common for custom providers with reasoning:true but incomplete thinkingLevelMap).
+      try {
+        runtime.session.setThinkingLevel(normalized as never);
+      } catch (error) {
+        const available = runtime.session.getAvailableThinkingLevels().map((item) => String(item));
+        throw new Error(
+          available.length > 0
+            ? `Thinking level not available for this model: ${normalized} (supports: ${available.join(", ")})`
+            : error instanceof Error
+              ? error.message
+              : `Failed to set thinking level: ${normalized}`,
+        );
+      }
       return createSnapshot(
         runtimeId,
         runtime,
@@ -1273,36 +1344,63 @@ export async function createPixRuntime(
       return listProviderUsage(runtime.services);
     },
     async setProviderApiKey(provider, apiKey) {
+      const providerId = provider.trim();
       const trimmed = apiKey.trim();
-      if (!provider.trim()) throw new Error("Provider is required");
+      if (!providerId) throw new Error("Provider is required");
       if (!trimmed) throw new Error("API key is required");
-      await runtime.services.modelRuntime.setRuntimeApiKey(provider, trimmed);
+      // Durable write first — setRuntimeApiKey alone is memory-only (RuntimeCredentials).
+      await persistProviderApiKey(runtime.services.agentDir, providerId, trimmed);
+      await runtime.services.modelRuntime.setRuntimeApiKey(providerId, trimmed);
       return listProviderAuthSummaries(runtime.services);
     },
     async clearProviderAuth(provider) {
-      if (!provider.trim()) throw new Error("Provider is required");
+      const providerId = provider.trim();
+      if (!providerId) throw new Error("Provider is required");
       try {
-        await runtime.services.modelRuntime.logout(provider);
+        await runtime.services.modelRuntime.logout(providerId);
       } catch {
         // Provider may only have a runtime key.
       }
-      await runtime.services.modelRuntime.removeRuntimeApiKey(provider);
+      await runtime.services.modelRuntime.removeRuntimeApiKey(providerId);
+      await deleteProviderCredential(runtime.services.agentDir, providerId);
       return listProviderAuthSummaries(runtime.services);
     },
     async getModelsJsonConfig() {
       return readModelsJsonConfig(runtime.services.agentDir);
     },
     async upsertCustomProvider(input) {
+      const providerId = input.provider.trim();
+      const previousProvider = input.previousProvider?.trim();
       const config = await upsertCustomProviderInModelsJson(runtime.services.agentDir, input);
-      await runtime.services.modelRuntime.reloadConfig();
       const apiKey = input.apiKey?.trim();
       if (apiKey) {
-        await runtime.services.modelRuntime.setRuntimeApiKey(input.provider.trim(), apiKey);
+        await persistProviderApiKey(runtime.services.agentDir, providerId, apiKey);
+      }
+      // If the provider id was renamed, drop the old credential slot.
+      if (previousProvider && previousProvider !== providerId) {
+        await deleteProviderCredential(runtime.services.agentDir, previousProvider);
+        try {
+          await runtime.services.modelRuntime.removeRuntimeApiKey(previousProvider);
+        } catch {
+          // ignore
+        }
+      }
+      await runtime.services.modelRuntime.reloadConfig();
+      // Keep current process configured even if AuthStorage has not re-read auth.json yet.
+      if (apiKey) {
+        await runtime.services.modelRuntime.setRuntimeApiKey(providerId, apiKey);
       }
       return config;
     },
     async removeCustomProvider(provider) {
-      const config = await removeCustomProviderFromModelsJson(runtime.services.agentDir, provider);
+      const providerId = provider.trim();
+      const config = await removeCustomProviderFromModelsJson(runtime.services.agentDir, providerId);
+      await deleteProviderCredential(runtime.services.agentDir, providerId);
+      try {
+        await runtime.services.modelRuntime.removeRuntimeApiKey(providerId);
+      } catch {
+        // ignore
+      }
       await runtime.services.modelRuntime.reloadConfig();
       return config;
     },
@@ -1563,11 +1661,26 @@ export async function createPixRuntime(
   };
 }
 
+/** Pix product default: 60 minutes (pi upstream default is 5 minutes / 300_000). */
+export const PIX_DEFAULT_HTTP_IDLE_TIMEOUT_MS = 3_600_000;
+
 function projectPiSettings(
   services: AgentSessionServices,
-  session?: AgentSessionRuntime["session"],
+  _session?: AgentSessionRuntime["session"],
 ): PiSettingsView {
   const sm = services.settingsManager;
+  // If the user never set httpIdleTimeoutMs, promote Pix's 60-minute product default.
+  const globalSnap = sm.getGlobalSettings() as { httpIdleTimeoutMs?: unknown };
+  if (
+    globalSnap.httpIdleTimeoutMs === undefined ||
+    globalSnap.httpIdleTimeoutMs === null
+  ) {
+    try {
+      sm.setHttpIdleTimeoutMs(PIX_DEFAULT_HTTP_IDLE_TIMEOUT_MS);
+    } catch {
+      // Ignore if SettingsManager rejects (should not for a valid ms value).
+    }
+  }
   const thinking = sm.getDefaultThinkingLevel();
   const compaction = sm.getCompactionSettings();
   const retry = sm.getRetrySettings();
@@ -1584,9 +1697,9 @@ function projectPiSettings(
     hideThinkingBlock: sm.getHideThinkingBlock(),
     quietStartup: sm.getQuietStartup(),
     enableSkillCommands: sm.getEnableSkillCommands(),
-    availableThinkingLevels: session
-      ? session.getAvailableThinkingLevels().map((level) => String(level))
-      : ["off", "minimal", "low", "medium", "high"],
+    // Global settings UI needs the full pi ThinkingLevel set. Session-model subsets
+    // (often just "off") are exposed on HostSnapshot for the composer only.
+    availableThinkingLevels: ["off", "minimal", "low", "medium", "high", "xhigh"],
     steeringMode: sm.getSteeringMode(),
     followUpMode: sm.getFollowUpMode(),
     doubleEscapeAction: sm.getDoubleEscapeAction(),
@@ -1880,7 +1993,16 @@ async function applyPiSettingsPatch(
     if (patch.defaultModel !== undefined) sm.setDefaultModel(patch.defaultModel);
   }
   if (patch.defaultThinkingLevel !== undefined) {
-    sm.setDefaultThinkingLevel(patch.defaultThinkingLevel as never);
+    const level = String(patch.defaultThinkingLevel).trim().toLowerCase();
+    sm.setDefaultThinkingLevel(level as never);
+    // Sync current session so composer thinking chrome updates immediately.
+    if (session) {
+      try {
+        session.setThinkingLevel(level as never);
+      } catch {
+        // Model may reject the level; default remains saved for new sessions.
+      }
+    }
   }
   if (patch.defaultProjectTrust !== undefined) {
     sm.setDefaultProjectTrust(patch.defaultProjectTrust);
