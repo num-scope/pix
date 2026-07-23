@@ -11,6 +11,7 @@ import {
   getAgentDir,
   hasTrustRequiringProjectResources,
   ProjectTrustStore,
+  resolveModelScopeWithDiagnostics,
   SessionManager,
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
@@ -26,8 +27,13 @@ import type {
   ProviderAuthSummary,
   ProviderUsageSnapshot,
   ResourceSummary,
+  ScopedModelView,
+  SessionBashResult,
+  SessionExportResult,
   SessionHistoryMessage,
+  SessionInfoView,
   SessionThreadSummary,
+  SessionTreeView,
   UpsertCustomProviderInput,
 } from "@pix/contracts";
 import { basename, isAbsolute, win32 } from "node:path";
@@ -42,6 +48,11 @@ import {
 } from "./models-json.ts";
 import { listProviderUsage } from "./provider-usage.ts";
 import { resolvePixSessionDir } from "./session-dir.ts";
+import {
+  listBuiltinSlashCommands,
+  projectSessionTree,
+  type TreeNodeLike,
+} from "./session-parity.ts";
 
 export { createPortableExtensionUiBridge } from "./extension-ui-bridge.ts";
 export {
@@ -64,6 +75,12 @@ export {
   type ResolvePixSessionDirOptions,
   type SessionDirSource,
 } from "./session-dir.ts";
+export {
+  listBuiltinSlashCommands,
+  mergeSlashCatalog,
+  parseShellInjection,
+  projectSessionTree,
+} from "./session-parity.ts";
 import { randomUUID } from "node:crypto";
 
 export interface CreatePixRuntimeOptions {
@@ -169,7 +186,26 @@ export interface PixRuntimeHandle {
   upsertCustomProvider(input: UpsertCustomProviderInput): Promise<ModelsJsonConfigView>;
   removeCustomProvider(provider: string): Promise<ModelsJsonConfigView>;
   getPiSettings(): PiSettingsView;
-  patchPiSettings(patch: PiSettingsPatch): PiSettingsView;
+  patchPiSettings(patch: PiSettingsPatch): PiSettingsView | Promise<PiSettingsView>;
+  getSessionTree(): SessionTreeView;
+  navigateTree(
+    targetId: string,
+    options?: { summarize?: boolean; customInstructions?: string },
+  ): Promise<{ cancelled: boolean; snapshot: HostSnapshot }>;
+  compact(instructions?: string): Promise<HostSnapshot>;
+  setSessionName(name: string): HostSnapshot;
+  getSessionName(): string | undefined;
+  cloneSession(): Promise<{ cancelled: boolean }>;
+  getSessionInfo(): SessionInfoView;
+  exportSession(format: "html" | "jsonl", outputPath?: string): Promise<SessionExportResult>;
+  importSession(inputPath: string): Promise<{ cancelled: boolean }>;
+  executeBash(
+    command: string,
+    options?: { excludeFromContext?: boolean },
+  ): Promise<{ result: SessionBashResult; snapshot: HostSnapshot }>;
+  getLastAssistantText(): string | undefined;
+  listScopedModels(): ScopedModelView[];
+  refreshModelCatalog(): Promise<ModelSummary[]>;
   /** One-shot completion that does not write into the session transcript. */
   completeText(
     prompt: string,
@@ -373,6 +409,7 @@ export function projectHistoryFromSessionManager(sessionManager: {
   getEntries(): Array<{
     type: string;
     id: string;
+    timestamp?: string;
     message?: {
       role?: string;
       content?: unknown;
@@ -658,12 +695,19 @@ function createSnapshot(
   };
 
   if (runtime.session.sessionFile) snapshot.sessionFile = runtime.session.sessionFile;
+  const sessionName = runtime.session.sessionName ?? runtime.session.sessionManager.getSessionName();
+  if (sessionName) snapshot.sessionName = sessionName;
   if (model) snapshot.model = { provider: model.provider, id: model.id };
   snapshot.thinkingLevel = String(runtime.session.thinkingLevel);
   snapshot.availableThinkingLevels = runtime.session
     .getAvailableThinkingLevels()
     .map((level) => String(level));
   snapshot.trust = resolvePixProjectTrust(services.cwd, services.agentDir);
+  snapshot.builtinSlashCommands = listBuiltinSlashCommands();
+  snapshot.steeringMode = runtime.session.steeringMode;
+  snapshot.followUpMode = runtime.session.followUpMode;
+  snapshot.hideThinkingBlock = services.settingsManager.getHideThinkingBlock();
+  snapshot.doubleEscapeAction = services.settingsManager.getDoubleEscapeAction();
 
   const stats = runtime.session.getSessionStats();
   const contextUsage = runtime.session.getContextUsage() ?? stats.contextUsage;
@@ -1010,9 +1054,169 @@ export async function createPixRuntime(
     getPiSettings() {
       return projectPiSettings(runtime.services, runtime.session);
     },
-    patchPiSettings(patch) {
-      applyPiSettingsPatch(runtime.services.settingsManager, patch);
+    async patchPiSettings(patch) {
+      await applyPiSettingsPatch(runtime.services, patch, runtime.session);
       return projectPiSettings(runtime.services, runtime.session);
+    },
+    getSessionTree() {
+      const sm = runtime.session.sessionManager;
+      const filterMode = runtime.services.settingsManager.getTreeFilterMode();
+      const roots = sm.getTree() as unknown as TreeNodeLike[];
+      const leafId = sm.getLeafId();
+      return projectSessionTree({
+        sessionId: runtime.session.sessionId,
+        ...(runtime.session.sessionFile ? { sessionFile: runtime.session.sessionFile } : {}),
+        ...(leafId ? { leafId } : {}),
+        filterMode,
+        roots,
+      });
+    },
+    async navigateTree(targetId, options) {
+      const result = await runtime.session.navigateTree(targetId, {
+        ...(options?.summarize !== undefined ? { summarize: options.summarize } : {}),
+        ...(options?.customInstructions
+          ? { customInstructions: options.customInstructions }
+          : {}),
+      });
+      return {
+        cancelled: result.cancelled,
+        snapshot: createSnapshot(
+          runtimeId,
+          runtime,
+          runtime.services,
+          0,
+          extensionErrors,
+          configDiagnostics,
+        ),
+      };
+    },
+    async compact(instructions) {
+      await runtime.session.compact(instructions);
+      return createSnapshot(
+        runtimeId,
+        runtime,
+        runtime.services,
+        0,
+        extensionErrors,
+        configDiagnostics,
+      );
+    },
+    setSessionName(name) {
+      runtime.session.setSessionName(name);
+      return createSnapshot(
+        runtimeId,
+        runtime,
+        runtime.services,
+        0,
+        extensionErrors,
+        configDiagnostics,
+      );
+    },
+    getSessionName() {
+      return runtime.session.sessionName ?? runtime.session.sessionManager.getSessionName();
+    },
+    async cloneSession() {
+      // pi RPC clone = fork at current leaf (same file branch copied to new session file).
+      const leafId = runtime.session.sessionManager.getLeafId();
+      if (!leafId) throw new Error("Cannot clone session: no current entry selected");
+      return afterSessionReplacement(() => runtime.fork(leafId, { position: "at" }));
+    },
+    getSessionInfo() {
+      const stats = runtime.session.getSessionStats();
+      const contextUsage = runtime.session.getContextUsage() ?? stats.contextUsage;
+      const info: SessionInfoView = {
+        sessionId: runtime.session.sessionId,
+        messageCount: runtime.session.sessionManager.getEntries().length,
+        tokens: {
+          input: stats.tokens.input,
+          output: stats.tokens.output,
+          cacheRead: stats.tokens.cacheRead,
+          cacheWrite: stats.tokens.cacheWrite,
+          total: stats.tokens.total,
+        },
+        cost: stats.cost,
+      };
+      if (runtime.session.sessionFile) {
+        info.sessionFile = runtime.session.sessionFile;
+        info.path = runtime.session.sessionFile;
+      }
+      const name = runtime.session.sessionName ?? runtime.session.sessionManager.getSessionName();
+      if (name) info.sessionName = name;
+      if (contextUsage) {
+        info.context = {
+          tokens: contextUsage.tokens,
+          contextWindow: contextUsage.contextWindow,
+          percent: contextUsage.percent,
+        };
+      }
+      return info;
+    },
+    async exportSession(format, outputPath) {
+      if (format === "html") {
+        const path = await runtime.session.exportToHtml(outputPath);
+        return { format, path };
+      }
+      const path = runtime.session.exportToJsonl(outputPath);
+      return { format, path };
+    },
+    async importSession(inputPath) {
+      return afterSessionReplacement(() => runtime.importFromJsonl(inputPath));
+    },
+    async executeBash(command, options) {
+      const excludeFromContext = options?.excludeFromContext === true;
+      const bashResult = await runtime.session.executeBash(command, undefined, {
+        excludeFromContext,
+      });
+      let output = "";
+      let exitCode = 0;
+      if (typeof bashResult === "object" && bashResult) {
+        const record = bashResult as { output?: unknown; exitCode?: unknown; text?: unknown };
+        if (typeof record.output === "string") output = record.output;
+        else if (typeof record.text === "string") output = record.text;
+        if (typeof record.exitCode === "number") exitCode = record.exitCode;
+      } else if (typeof bashResult === "string") {
+        output = bashResult;
+      }
+      return {
+        result: {
+          command,
+          output,
+          exitCode,
+          excludeFromContext,
+        },
+        snapshot: createSnapshot(
+          runtimeId,
+          runtime,
+          runtime.services,
+          0,
+          extensionErrors,
+          configDiagnostics,
+        ),
+      };
+    },
+    getLastAssistantText() {
+      return runtime.session.getLastAssistantText();
+    },
+    listScopedModels() {
+      return runtime.session.scopedModels.map((item) => {
+        const model = item.model;
+        const view: ScopedModelView = {
+          provider: model.provider,
+          id: model.id,
+        };
+        if (model.name) view.name = model.name;
+        return view;
+      });
+    },
+    async refreshModelCatalog() {
+      await runtime.services.modelRuntime.reloadConfig();
+      return runtime.services.modelRuntime.getModels().map((model) => ({
+        provider: model.provider,
+        id: model.id,
+        name: model.name ?? model.id,
+        reasoning: Boolean(model.reasoning),
+        source: classifyModelSource(model.provider, runtime.services),
+      }));
     },
     async completeText(prompt, options) {
       const modelRuntime = runtime.services.modelRuntime;
@@ -1052,17 +1256,36 @@ function projectPiSettings(
 ): PiSettingsView {
   const sm = services.settingsManager;
   const thinking = sm.getDefaultThinkingLevel();
+  const compaction = sm.getCompactionSettings();
+  const retry = sm.getRetrySettings();
+  const thinkingBudgets = sm.getThinkingBudgets();
   const view: PiSettingsView = {
     agentDir: services.agentDir,
     defaultProjectTrust: sm.getDefaultProjectTrust(),
     compactionEnabled: sm.getCompactionEnabled(),
+    compactionReserveTokens: compaction.reserveTokens,
+    compactionKeepRecentTokens: compaction.keepRecentTokens,
     retryEnabled: sm.getRetryEnabled(),
+    retryMaxRetries: retry.maxRetries,
+    retryBaseDelayMs: retry.baseDelayMs,
     hideThinkingBlock: sm.getHideThinkingBlock(),
     quietStartup: sm.getQuietStartup(),
     enableSkillCommands: sm.getEnableSkillCommands(),
     availableThinkingLevels: session
       ? session.getAvailableThinkingLevels().map((level) => String(level))
       : ["off", "minimal", "low", "medium", "high"],
+    steeringMode: sm.getSteeringMode(),
+    followUpMode: sm.getFollowUpMode(),
+    doubleEscapeAction: sm.getDoubleEscapeAction(),
+    treeFilterMode: sm.getTreeFilterMode(),
+    enableInstallTelemetry: sm.getEnableInstallTelemetry(),
+    enableAnalytics: sm.getEnableAnalytics(),
+    httpIdleTimeoutMs: sm.getHttpIdleTimeoutMs(),
+    enabledModels: [...(sm.getEnabledModels() ?? [])],
+    // Nested compaction/retry thresholds are writable via SettingsManager private save path.
+    readOnlyFields: ["thinkingBudgets"],
+    // Stable keys for desktop i18n (piSettings.degraded.*). Do not localize here.
+    degradedCapabilities: ["tui", "sandbox", "llama", "gist"],
   };
   const provider = sm.getDefaultProvider();
   const model = sm.getDefaultModel();
@@ -1071,6 +1294,7 @@ function projectPiSettings(
   if (model) view.defaultModel = model;
   if (thinking) view.defaultThinkingLevel = String(thinking);
   if (theme) view.theme = theme;
+  if (thinkingBudgets) view.thinkingBudgets = { ...thinkingBudgets };
   return view;
 }
 
@@ -1127,7 +1351,76 @@ function classifyModelSource(
   return PI_BUILTIN_PROVIDERS.has(provider) ? "builtin" : "custom";
 }
 
-function applyPiSettingsPatch(sm: SettingsManager, patch: PiSettingsPatch): void {
+/**
+ * pi SettingsManager exposes setCompactionEnabled / setRetryEnabled but not nested
+ * reserveTokens / maxRetries setters. Mirror those setters' save path via the same
+ * private fields so nested keys persist into settings.json.
+ */
+function asWritableSettingsManager(sm: SettingsManager): {
+  globalSettings: Record<string, unknown>;
+  markModified: (field: string, nestedKey?: string) => void;
+  save: () => void;
+} {
+  return sm as unknown as {
+    globalSettings: Record<string, unknown>;
+    markModified: (field: string, nestedKey?: string) => void;
+    save: () => void;
+  };
+}
+
+function ensureNestedObject(
+  parent: Record<string, unknown>,
+  key: string,
+): Record<string, unknown> {
+  const current = parent[key];
+  if (current && typeof current === "object" && !Array.isArray(current)) {
+    return current as Record<string, unknown>;
+  }
+  const next: Record<string, unknown> = {};
+  parent[key] = next;
+  return next;
+}
+
+function patchNestedCompaction(
+  sm: SettingsManager,
+  patch: { reserveTokens?: number; keepRecentTokens?: number },
+): void {
+  const writable = asWritableSettingsManager(sm);
+  const compaction = ensureNestedObject(writable.globalSettings, "compaction");
+  if (patch.reserveTokens !== undefined) {
+    compaction.reserveTokens = Math.max(1024, Math.floor(patch.reserveTokens));
+    writable.markModified("compaction", "reserveTokens");
+  }
+  if (patch.keepRecentTokens !== undefined) {
+    compaction.keepRecentTokens = Math.max(1024, Math.floor(patch.keepRecentTokens));
+    writable.markModified("compaction", "keepRecentTokens");
+  }
+  writable.save();
+}
+
+function patchNestedRetry(
+  sm: SettingsManager,
+  patch: { maxRetries?: number; baseDelayMs?: number },
+): void {
+  const writable = asWritableSettingsManager(sm);
+  const retry = ensureNestedObject(writable.globalSettings, "retry");
+  if (patch.maxRetries !== undefined) {
+    retry.maxRetries = Math.max(0, Math.min(20, Math.floor(patch.maxRetries)));
+    writable.markModified("retry", "maxRetries");
+  }
+  if (patch.baseDelayMs !== undefined) {
+    retry.baseDelayMs = Math.max(0, Math.min(60_000, Math.floor(patch.baseDelayMs)));
+    writable.markModified("retry", "baseDelayMs");
+  }
+  writable.save();
+}
+
+async function applyPiSettingsPatch(
+  services: AgentSessionServices,
+  patch: PiSettingsPatch,
+  session?: AgentSessionRuntime["session"],
+): Promise<void> {
+  const sm = services.settingsManager;
   if (patch.defaultProvider !== undefined && patch.defaultModel !== undefined) {
     sm.setDefaultModelAndProvider(patch.defaultProvider, patch.defaultModel);
   } else {
@@ -1142,10 +1435,75 @@ function applyPiSettingsPatch(sm: SettingsManager, patch: PiSettingsPatch): void
   }
   if (patch.theme !== undefined) sm.setTheme(patch.theme);
   if (patch.compactionEnabled !== undefined) sm.setCompactionEnabled(patch.compactionEnabled);
+  if (
+    patch.compactionReserveTokens !== undefined ||
+    patch.compactionKeepRecentTokens !== undefined
+  ) {
+    patchNestedCompaction(sm, {
+      ...(patch.compactionReserveTokens !== undefined
+        ? { reserveTokens: patch.compactionReserveTokens }
+        : {}),
+      ...(patch.compactionKeepRecentTokens !== undefined
+        ? { keepRecentTokens: patch.compactionKeepRecentTokens }
+        : {}),
+    });
+  }
   if (patch.retryEnabled !== undefined) sm.setRetryEnabled(patch.retryEnabled);
+  if (patch.retryMaxRetries !== undefined || patch.retryBaseDelayMs !== undefined) {
+    patchNestedRetry(sm, {
+      ...(patch.retryMaxRetries !== undefined ? { maxRetries: patch.retryMaxRetries } : {}),
+      ...(patch.retryBaseDelayMs !== undefined ? { baseDelayMs: patch.retryBaseDelayMs } : {}),
+    });
+  }
   if (patch.hideThinkingBlock !== undefined) sm.setHideThinkingBlock(patch.hideThinkingBlock);
   if (patch.quietStartup !== undefined) sm.setQuietStartup(patch.quietStartup);
   if (patch.enableSkillCommands !== undefined) sm.setEnableSkillCommands(patch.enableSkillCommands);
+  if (patch.steeringMode !== undefined) {
+    sm.setSteeringMode(patch.steeringMode);
+    session?.setSteeringMode(patch.steeringMode);
+  }
+  if (patch.followUpMode !== undefined) {
+    sm.setFollowUpMode(patch.followUpMode);
+    session?.setFollowUpMode(patch.followUpMode);
+  }
+  if (patch.doubleEscapeAction !== undefined) {
+    sm.setDoubleEscapeAction(patch.doubleEscapeAction);
+  }
+  if (patch.treeFilterMode !== undefined) {
+    sm.setTreeFilterMode(patch.treeFilterMode);
+  }
+  if (patch.enableInstallTelemetry !== undefined) {
+    sm.setEnableInstallTelemetry(patch.enableInstallTelemetry);
+  }
+  if (patch.enableAnalytics !== undefined) {
+    sm.setEnableAnalytics(patch.enableAnalytics);
+  }
+  if (patch.httpIdleTimeoutMs !== undefined) {
+    sm.setHttpIdleTimeoutMs(patch.httpIdleTimeoutMs);
+  }
+  if (patch.enabledModels !== undefined) {
+    const patterns = patch.enabledModels
+      .map((item) => item.trim())
+      .filter((item) => item.length > 0);
+    // Empty list clears scope (same as pi when no --models / enabledModels).
+    sm.setEnabledModels(patterns.length > 0 ? patterns : undefined);
+    if (session) {
+      if (patterns.length === 0) {
+        session.setScopedModels([]);
+      } else {
+        const { scopedModels } = await resolveModelScopeWithDiagnostics(
+          patterns,
+          services.modelRuntime,
+        );
+        session.setScopedModels(
+          scopedModels.map((item) => ({
+            model: item.model,
+            ...(item.thinkingLevel !== undefined ? { thinkingLevel: item.thinkingLevel } : {}),
+          })),
+        );
+      }
+    }
+  }
 }
 
 export function listProviderAuthSummaries(services: AgentSessionServices): ProviderAuthSummary[] {

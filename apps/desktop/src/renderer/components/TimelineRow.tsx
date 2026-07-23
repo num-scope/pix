@@ -1,9 +1,11 @@
-import { memo, type ReactNode } from "react";
+import { memo, useEffect, useState, type ReactNode } from "react";
 import {
   Brain,
   Check,
   ChevronDown,
+  ChevronRight,
   CircleAlert,
+  Copy,
   File,
   FileArchive,
   FileCode2,
@@ -13,6 +15,7 @@ import {
   Folder,
   LoaderCircle,
   Presentation,
+  SquarePen,
   Terminal,
   X,
 } from "lucide-react";
@@ -23,7 +26,10 @@ import {
   type AttachmentKind,
 } from "../lib/composer-suggestions.ts";
 import { t, type Locale } from "../lib/i18n.ts";
-import type { TimelineItem } from "../lib/timeline.ts";
+import {
+  formatMessageTime,
+  type TimelineItem,
+} from "../lib/timeline.ts";
 import { cn } from "../lib/utils.ts";
 
 function attachmentIcon(kind: AttachmentKind) {
@@ -145,15 +151,138 @@ function ToolCard(props: { item: Extract<TimelineItem, { kind: "tool" }>; locale
   );
 }
 
+async function copyText(text: string): Promise<boolean> {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function MetaActions(props: {
+  locale: Locale;
+  time?: string | undefined;
+  onCopy?: (() => void) | undefined;
+  onEdit?: (() => void) | undefined;
+  copied?: boolean | undefined;
+  className?: string | undefined;
+}) {
+  const timeLabel = formatMessageTime(props.time, props.locale === "zh" ? "zh" : "en");
+  return (
+    <div className={cn("timeline-meta-actions", props.className)}>
+      {timeLabel ? <span className="timeline-meta-time">{timeLabel}</span> : null}
+      {props.onCopy ? (
+        <button
+          type="button"
+          className={cn("timeline-meta-btn", props.copied && "timeline-meta-btn-done")}
+          title={
+            props.copied
+              ? t(props.locale, "timeline.copied")
+              : t(props.locale, "timeline.copy")
+          }
+          aria-label={t(props.locale, "timeline.copy")}
+          onClick={(e) => {
+            e.stopPropagation();
+            props.onCopy?.();
+          }}
+        >
+          {props.copied ? (
+            <Check className="size-3.5" strokeWidth={2} />
+          ) : (
+            <Copy className="size-3.5" strokeWidth={1.6} />
+          )}
+        </button>
+      ) : null}
+      {props.onEdit ? (
+        <button
+          type="button"
+          className="timeline-meta-btn"
+          title={t(props.locale, "timeline.edit")}
+          aria-label={t(props.locale, "timeline.edit")}
+          onClick={(e) => {
+            e.stopPropagation();
+            props.onEdit?.();
+          }}
+        >
+          <SquarePen className="size-3.5" strokeWidth={1.6} />
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
 export const TimelineRow = memo(function TimelineRow(props: {
   item: TimelineItem;
   locale: Locale;
   workspacePath?: string | undefined;
+  /** Edit + resubmit a user message (fork when entryId available). */
+  onEditUser?: (item: Extract<TimelineItem, { kind: "user" }>, text: string) => void | Promise<void>;
+  editingLocked?: boolean;
 }) {
   const { item } = props;
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(item.kind === "user" ? item.text : "");
+  const [copied, setCopied] = useState(false);
+
+  useEffect(() => {
+    if (item.kind === "user") setDraft(item.text);
+  }, [item]);
+
+  async function handleCopy(text: string) {
+    const ok = await copyText(text);
+    if (ok) {
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1200);
+    }
+  }
+
   if (item.kind === "user") {
+    if (editing) {
+      return (
+        <article className="timeline-user-row" data-kind="user" data-editing="true">
+          <div className="timeline-user-content timeline-user-edit">
+            <textarea
+              className="timeline-user-edit-input"
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              rows={Math.min(8, Math.max(2, draft.split("\n").length + 1))}
+              autoFocus
+              data-testid="timeline-user-edit"
+            />
+            <div className="timeline-user-edit-actions">
+              <button
+                type="button"
+                className="timeline-user-edit-cancel"
+                disabled={props.editingLocked}
+                onClick={() => {
+                  setDraft(item.text);
+                  setEditing(false);
+                }}
+              >
+                {t(props.locale, "common.cancel")}
+              </button>
+              <button
+                type="button"
+                className="timeline-user-edit-send"
+                disabled={props.editingLocked || !draft.trim()}
+                onClick={() => {
+                  void (async () => {
+                    await props.onEditUser?.(item, draft.trim());
+                    setEditing(false);
+                  })();
+                }}
+              >
+                {t(props.locale, "timeline.send")}
+              </button>
+            </div>
+          </div>
+        </article>
+      );
+    }
+
     return (
-      <article className="timeline-user-row" data-kind="user">
+      <article className="timeline-user-row group/msg" data-kind="user">
         <div className="timeline-user-content">
           {item.text ? (
             <div className="timeline-user-bubble">
@@ -161,17 +290,22 @@ export const TimelineRow = memo(function TimelineRow(props: {
             </div>
           ) : null}
           {item.attachments?.length ? <AttachmentList paths={item.attachments} /> : null}
+          <MetaActions
+            locale={props.locale}
+            {...(item.timestamp ? { time: item.timestamp } : {})}
+            {...(item.text ? { onCopy: () => void handleCopy(item.text) } : {})}
+            {...(props.onEditUser ? { onEdit: () => setEditing(true) } : {})}
+            copied={copied}
+            className="timeline-meta-actions-user"
+          />
         </div>
       </article>
     );
   }
+
   if (item.kind === "assistant") {
     return (
-      <article className="timeline-assistant-row" data-kind="assistant">
-        <div className="timeline-assistant-label">
-          <span>π</span>
-          <strong>pi</strong>
-        </div>
+      <article className="timeline-assistant-row group/msg" data-kind="assistant">
         <MarkdownContent
           className="w-full text-[14px] leading-relaxed text-[var(--foreground)]"
           workspacePath={props.workspacePath}
@@ -179,9 +313,17 @@ export const TimelineRow = memo(function TimelineRow(props: {
         >
           {item.text}
         </MarkdownContent>
+        <MetaActions
+          locale={props.locale}
+          {...(item.timestamp ? { time: item.timestamp } : {})}
+          {...(item.text ? { onCopy: () => void handleCopy(item.text) } : {})}
+          copied={copied}
+          className="timeline-meta-actions-assistant"
+        />
       </article>
     );
   }
+
   if (item.kind === "thinking") {
     return (
       <article className="content-thinking-wrap" data-kind="thinking">
@@ -225,5 +367,38 @@ export const TimelineRow = memo(function TimelineRow(props: {
         ) : null}
       </div>
     </article>
+  );
+});
+
+/** Collapsible process block (“已处理”) before a final assistant reply. */
+export const TimelineProcessBlock = memo(function TimelineProcessBlock(props: {
+  locale: Locale;
+  items: Array<Extract<TimelineItem, { kind: "thinking" | "tool" }>>;
+  durationLabel?: string | undefined;
+  workspacePath?: string | undefined;
+}) {
+  const label = props.durationLabel
+    ? t(props.locale, "timeline.processedWithDuration", { duration: props.durationLabel })
+    : t(props.locale, "timeline.processed");
+  return (
+    <div className="timeline-process" data-testid="timeline-process">
+      <details className="timeline-process-details">
+        <summary className="timeline-process-summary">
+          <span>{label}</span>
+          {/* Right = collapsed, down = expanded (Codex-style). */}
+          <ChevronRight className="timeline-process-chevron size-3.5 shrink-0 opacity-60" strokeWidth={2} />
+        </summary>
+        <div className="timeline-process-body">
+          {props.items.map((item) => (
+            <TimelineRow
+              key={item.id}
+              item={item}
+              locale={props.locale}
+              workspacePath={props.workspacePath}
+            />
+          ))}
+        </div>
+      </details>
+    </div>
   );
 });

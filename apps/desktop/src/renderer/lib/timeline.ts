@@ -1,4 +1,4 @@
-import type { HostEvent, HostSnapshot, SessionHistoryMessage } from "@pix/contracts";
+import type { HostEvent, SessionHistoryMessage } from "@pix/contracts";
 
 export type ThreadRunState =
   | "idle"
@@ -11,9 +11,16 @@ export type ThreadRunState =
   | "recovering";
 
 export type TimelineItem =
-  | { id: string; kind: "user"; text: string; attachments?: string[] }
-  | { id: string; kind: "assistant"; text: string }
-  | { id: string; kind: "thinking"; text: string }
+  | {
+      id: string;
+      kind: "user";
+      text: string;
+      attachments?: string[];
+      timestamp?: string;
+      entryId?: string;
+    }
+  | { id: string; kind: "assistant"; text: string; timestamp?: string }
+  | { id: string; kind: "thinking"; text: string; timestamp?: string }
   | {
       id: string;
       kind: "tool";
@@ -22,8 +29,26 @@ export type TimelineItem =
       status: "running" | "completed" | "error";
       args?: unknown;
       output?: string;
+      timestamp?: string;
     }
-  | { id: string; kind: "system"; text: string; title?: string; tone?: "info" | "error" };
+  | {
+      id: string;
+      kind: "system";
+      text: string;
+      title?: string;
+      tone?: "info" | "error";
+      timestamp?: string;
+    };
+
+/** Render blocks: process steps collapse under “已处理”. */
+export type TimelineBlock =
+  | { type: "item"; item: TimelineItem }
+  | {
+      type: "process";
+      id: string;
+      items: Array<Extract<TimelineItem, { kind: "thinking" | "tool" }>>;
+      durationLabel?: string;
+    };
 
 function decodeXml(value: string): string {
   return value
@@ -69,15 +94,27 @@ export function historyToTimeline(history: SessionHistoryMessage[]): TimelineIte
         kind: "user",
         text: content.text,
         ...(content.paths.length > 0 ? { attachments: content.paths } : {}),
+        ...(item.entryId ? { entryId: item.entryId } : {}),
+        ...(item.timestamp ? { timestamp: item.timestamp } : {}),
       });
       continue;
     }
     if (item.role === "assistant") {
-      items.push({ id: `history-assistant-${index}`, kind: "assistant", text: item.text });
+      items.push({
+        id: `history-assistant-${index}`,
+        kind: "assistant",
+        text: item.text,
+        ...(item.timestamp ? { timestamp: item.timestamp } : {}),
+      });
       continue;
     }
     if (item.role === "thinking") {
-      items.push({ id: `history-thinking-${index}`, kind: "thinking", text: item.text });
+      items.push({
+        id: `history-thinking-${index}`,
+        kind: "thinking",
+        text: item.text,
+        ...(item.timestamp ? { timestamp: item.timestamp } : {}),
+      });
       continue;
     }
     if (item.role === "tool") {
@@ -87,10 +124,16 @@ export function historyToTimeline(history: SessionHistoryMessage[]): TimelineIte
         toolName: item.toolName ?? "tool",
         status: item.isError === true ? "error" : "completed",
         output: item.text,
+        ...(item.timestamp ? { timestamp: item.timestamp } : {}),
       });
       continue;
     }
-    items.push({ id: `history-system-${index}`, kind: "system", text: item.text });
+    items.push({
+      id: `history-system-${index}`,
+      kind: "system",
+      text: item.text,
+      ...(item.timestamp ? { timestamp: item.timestamp } : {}),
+    });
   }
   return items;
 }
@@ -103,6 +146,7 @@ export function projectEventsToTimeline(events: HostEvent[], prompts: string[]):
   let thinkingId = 0;
   let promptIndex = 0;
   const tools = new Map<string, Extract<TimelineItem, { kind: "tool" }>>();
+  const now = () => new Date().toISOString();
 
   const flushAssistant = () => {
     if (!assistantBuffer) return;
@@ -110,6 +154,7 @@ export function projectEventsToTimeline(events: HostEvent[], prompts: string[]):
       id: `assistant-${assistantId++}`,
       kind: "assistant",
       text: assistantBuffer,
+      timestamp: now(),
     });
     assistantBuffer = "";
   };
@@ -120,6 +165,7 @@ export function projectEventsToTimeline(events: HostEvent[], prompts: string[]):
       id: `thinking-${thinkingId++}`,
       kind: "thinking",
       text: thinkingBuffer,
+      timestamp: now(),
     });
     thinkingBuffer = "";
   };
@@ -144,6 +190,7 @@ export function projectEventsToTimeline(events: HostEvent[], prompts: string[]):
             kind: "user",
             text: prompt,
             ...(source.paths.length > 0 ? { attachments: source.paths } : {}),
+            timestamp: now(),
           });
         }
       } else if (runtimeEvent.type === "thinking.delta") {
@@ -162,6 +209,7 @@ export function projectEventsToTimeline(events: HostEvent[], prompts: string[]):
           text: runtimeEvent.message,
           title: runtimeEvent.reason === "aborted" ? "Response stopped" : "Response failed",
           tone: "error",
+          timestamp: now(),
         });
       } else if (runtimeEvent.type === "tool.started") {
         flushMessage();
@@ -172,6 +220,7 @@ export function projectEventsToTimeline(events: HostEvent[], prompts: string[]):
           toolName: runtimeEvent.toolName,
           status: "running",
           args: runtimeEvent.args,
+          timestamp: now(),
         };
         tools.set(runtimeEvent.toolCallId, tool);
         items.push(tool);
@@ -189,6 +238,7 @@ export function projectEventsToTimeline(events: HostEvent[], prompts: string[]):
             toolName: runtimeEvent.toolName,
             status: runtimeEvent.isError ? "error" : "completed",
             output: runtimeEvent.output || (runtimeEvent.isError ? "Tool failed" : "Done"),
+            timestamp: now(),
           });
         }
       } else if (runtimeEvent.type === "custom.message") {
@@ -199,6 +249,7 @@ export function projectEventsToTimeline(events: HostEvent[], prompts: string[]):
           title: runtimeEvent.customType,
           text: runtimeEvent.content || summarizeData(runtimeEvent.details),
           tone: "info",
+          timestamp: now(),
         });
       } else if (runtimeEvent.type === "custom.entry") {
         flushMessage();
@@ -208,6 +259,7 @@ export function projectEventsToTimeline(events: HostEvent[], prompts: string[]):
           title: runtimeEvent.customType,
           text: summarizeData(runtimeEvent.data),
           tone: "info",
+          timestamp: now(),
         });
       }
     } else if (event.type === "host.crashed") {
@@ -218,6 +270,7 @@ export function projectEventsToTimeline(events: HostEvent[], prompts: string[]):
         text: event.message,
         title: "Agent Host crashed",
         tone: "error",
+        timestamp: now(),
       });
     } else if (event.type === "host.restarted") {
       flushMessage();
@@ -226,12 +279,74 @@ export function projectEventsToTimeline(events: HostEvent[], prompts: string[]):
         kind: "system",
         text: "Agent Host restarted",
         tone: "info",
+        timestamp: now(),
       });
     }
   }
 
   flushMessage();
   return items;
+}
+
+/**
+ * Collapse consecutive thinking/tool items into a process group before each assistant reply.
+ */
+export function buildTimelineBlocks(items: TimelineItem[]): TimelineBlock[] {
+  const blocks: TimelineBlock[] = [];
+  let process: Array<Extract<TimelineItem, { kind: "thinking" | "tool" }>> = [];
+
+  const flushProcess = () => {
+    if (process.length === 0) return;
+    const first = process[0]?.timestamp;
+    const last = process[process.length - 1]?.timestamp;
+    let durationLabel: string | undefined;
+    if (first && last) {
+      const ms = Math.max(0, new Date(last).getTime() - new Date(first).getTime());
+      durationLabel = formatDurationMs(ms);
+    }
+    blocks.push({
+      type: "process",
+      id: `process-${process[0]!.id}`,
+      items: process,
+      ...(durationLabel ? { durationLabel } : {}),
+    });
+    process = [];
+  };
+
+  for (const item of items) {
+    if (item.kind === "thinking" || item.kind === "tool") {
+      process.push(item);
+      continue;
+    }
+    flushProcess();
+    blocks.push({ type: "item", item });
+  }
+  flushProcess();
+  return blocks;
+}
+
+export function formatMessageTime(iso: string | undefined, locale: "zh" | "en"): string {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  try {
+    return d.toLocaleString(locale === "zh" ? "zh-CN" : "en-US", {
+      weekday: "short",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    });
+  } catch {
+    return d.toISOString().slice(11, 16);
+  }
+}
+
+export function formatDurationMs(ms: number): string {
+  const totalSec = Math.round(ms / 1000);
+  if (totalSec < 60) return `${totalSec}s`;
+  const m = Math.floor(totalSec / 60);
+  const s = totalSec % 60;
+  return s > 0 ? `${m}m ${s}s` : `${m}m`;
 }
 
 function summarizeData(value: unknown): string {
@@ -244,8 +359,3 @@ function summarizeData(value: unknown): string {
   }
 }
 
-export function snapshotSummary(snapshot: HostSnapshot | undefined): string {
-  if (!snapshot) return "No runtime snapshot";
-  const model = snapshot.model ? `${snapshot.model.provider}/${snapshot.model.id}` : "no model";
-  return `${model} · tools ${snapshot.activeTools.join(", ") || "none"} · ext ${snapshot.resources.extensions}`;
-}

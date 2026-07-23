@@ -31,8 +31,8 @@ export function shellMainWidth(shellWidthPx: number, railWidthPx: number): numbe
   return Math.max(0, Math.round(shellWidthPx) - Math.round(railWidthPx));
 }
 
-/** CSS alpha for frosted sidebar fill (for unit/structural checks). */
-export const SIDEBAR_TRANSLUCENT_MIX_PERCENT = 32;
+/** Web-layer tint over native vibrancy (for unit/structural checks). */
+export const SIDEBAR_TRANSLUCENT_MIX_PERCENT = 0;
 
 /** OpenCowork-aligned dark shell hex values (for unit/structural checks). */
 /** Exact OpenCowork `.dark` shell palette (main.css). */

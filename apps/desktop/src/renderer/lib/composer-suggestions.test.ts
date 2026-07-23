@@ -28,20 +28,34 @@ describe("composer suggestions", () => {
     ]);
   });
 
-  it("keeps skills exclusive to slash suggestions", () => {
+  it("keeps skills on slash and never exposes pi commands under @", () => {
     const commands = [
       { name: "skill:review", description: "Inspect changes", source: "skill" as const },
       { name: "review", description: "Review workspace", source: "prompt" as const },
       { name: "reload", description: "Reload extensions", source: "extension" as const },
+      { name: "tree", description: "Session tree", source: "extension" as const },
     ];
 
     expect(filterSlashCommands(commands, "").map((command) => command.name)).toContain(
       "skill:review",
     );
-    expect(filterResourceCommands(commands, "").map((command) => command.name)).toEqual([
-      "reload",
-      "review",
-    ]);
+    // `@` is attach-only — no prompts, skills, extensions, or builtin pi commands.
+    expect(filterResourceCommands(commands, "")).toEqual([]);
+    expect(filterResourceCommands(commands, "rev")).toEqual([]);
+  });
+
+  it("does not truncate skills with a small flat list cap when listing all", () => {
+    const commands = Array.from({ length: 40 }, (_, i) => ({
+      name: i < 20 ? `cmd-${i}` : `skill:s${i}`,
+      description: `desc ${i}`,
+      source: (i < 20 ? "prompt" : "skill") as "prompt" | "skill",
+    }));
+    const all = filterSlashCommands(commands, "");
+    expect(all.filter((c) => c.source === "skill")).toHaveLength(20);
+    const filtered = filterSlashCommands(commands, "skill:s3");
+    expect(filtered.every((c) => c.name.includes("skill:s3") || c.description.includes("3"))).toBe(
+      true,
+    );
   });
 
   it("formats readable path context and portable labels", () => {

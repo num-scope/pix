@@ -32,6 +32,7 @@ import type { FormEvent } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { t, type Locale, type MessageKey } from "../../lib/i18n.ts";
+import { groupModelsByProvider } from "../../lib/model-groups.ts";
 import {
   deleteThreadLocal,
   loadArchivedThreadMeta,
@@ -682,7 +683,6 @@ function NotificationsSection(
   const showAppError = useShellStore((s) => s.showAppError);
   const [prefs, setPrefs] = useState<NotificationPrefs>(loadNotificationPrefs);
   const [testing, setTesting] = useState(false);
-  const [testNote, setTestNote] = useState<string>();
 
   function update(patch: Partial<NotificationPrefs>) {
     setPrefs(patchNotificationPrefs(patch));
@@ -690,23 +690,19 @@ function NotificationsSection(
 
   async function sendTest() {
     setTesting(true);
-    setTestNote(undefined);
     try {
-      // Test always fires even when the window is focused (ignores onlyWhenUnfocused).
+      // Test always posts even when focused (diagnostics).
       const ok = await window.pix.notifications.show({
         title: tr("notify.testTitle"),
         body: tr("notify.testBody"),
         silent: !prefs.sound,
+        force: true,
       });
       if (!ok) {
         showAppError(tr("notify.testFailed"));
-        setTestNote(tr("notify.testFailedHint"));
-        return;
       }
-      setTestNote(tr("notify.testSent"));
     } catch (error) {
       showAppError(error instanceof Error ? error.message : tr("notify.testFailed"));
-      setTestNote(tr("notify.testFailedHint"));
     } finally {
       setTesting(false);
     }
@@ -794,21 +790,18 @@ function NotificationsSection(
           last
         />
       </SettingsSectionBlock>
-      <div className="mt-4 flex flex-col items-start gap-2">
+      <div className="mt-3 flex flex-wrap items-center gap-2">
         <SettingsPillButton
           label={testing ? "…" : tr("notify.test")}
           testId="settings-notify-test"
           disabled={!prefs.enabled || testing}
           onClick={() => void sendTest()}
         />
-        {testNote ? (
-          <p
-            className="m-0 text-[12px] text-[var(--muted-foreground)]"
-            data-testid="settings-notify-test-note"
-          >
-            {testNote}
-          </p>
-        ) : null}
+        <SettingsPillButton
+          label={tr("notify.openSystem")}
+          testId="settings-notify-open-system"
+          onClick={() => void window.pix.notifications.openSystemSettings()}
+        />
       </div>
     </SettingsPageShell>
   );
@@ -2274,6 +2267,13 @@ function ModelsSection(
 ) {
   const { tr } = props;
   const [models, setModels] = useState<ModelSummary[]>([]);
+  const [scopedModels, setScopedModels] = useState<
+    Array<{ provider: string; id: string; name?: string }>
+  >([]);
+  /** Editable enabledModels patterns (pi scope). */
+  const [scopedPatternsText, setScopedPatternsText] = useState("");
+  const [scopedSelected, setScopedSelected] = useState<Set<string>>(() => new Set());
+  const [scopedBusy, setScopedBusy] = useState(false);
   const [defaultKey, setDefaultKey] = useState("");
   const [query, setQuery] = useState("");
   const [loading, setLoading] = useState(false);
@@ -2283,8 +2283,6 @@ function ModelsSection(
   const [editingOrigin, setEditingOrigin] = useState<{ provider: string; modelId: string } | null>(
     null,
   );
-  /** User-expanded built-in provider groups (search forces all matching groups open). */
-  const [expandedProviders, setExpandedProviders] = useState<Set<string>>(() => new Set());
   const [providerId, setProviderId] = useState("");
   const [baseUrl, setBaseUrl] = useState("");
   const [api, setApi] = useState<CustomModelApi>("openai-completions");
@@ -2344,11 +2342,28 @@ function ModelsSection(
     setLoading(true);
     try {
       await props.onEnsureHost();
-      const [list, settings] = await Promise.all([
-        window.pix.models.list(),
+      // Prefer catalog reload so models.json / extension providers re-resolve (#16/#17).
+      const [list, settings, scoped] = await Promise.all([
+        window.pix.models.refreshCatalog().catch(() => window.pix.models.list()),
         window.pix.settings.get(),
+        window.pix.models.listScoped().catch(() => []),
       ]);
       setModels(list);
+      setScopedModels(scoped);
+      const patterns = settings.enabledModels ?? [];
+      setScopedPatternsText(patterns.join("\n"));
+      const selected = new Set<string>();
+      for (const pattern of patterns) {
+        // Exact provider/id pattern → tick matching checkbox.
+        if (pattern.includes("/") && !pattern.includes("*") && !pattern.includes("?")) {
+          const bare = pattern.split(":")[0] ?? pattern;
+          selected.add(bare);
+        }
+      }
+      for (const item of scoped) {
+        selected.add(`${item.provider}/${item.id}`);
+      }
+      setScopedSelected(selected);
       setDefaultKey(
         settings.defaultProvider && settings.defaultModel
           ? `${settings.defaultProvider}/${settings.defaultModel}`
@@ -2359,6 +2374,49 @@ function ModelsSection(
     } finally {
       setLoading(false);
     }
+  }
+
+  function toggleScopedModel(provider: string, id: string) {
+    const key = `${provider}/${id}`;
+    setScopedSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      // Keep free-form patterns that are not exact model keys.
+      const freeform = scopedPatternsText
+        .split(/[\n,]+/)
+        .map((line) => line.trim())
+        .filter((line) => line.length > 0)
+        .filter((line) => {
+          if (line.includes("*") || line.includes("?")) return true;
+          const bare = (line.split(":")[0] ?? line).trim();
+          return !next.has(bare) && bare !== key && !bare.includes("/");
+        });
+      const exact = [...next];
+      setScopedPatternsText([...exact, ...freeform].join("\n"));
+      return next;
+    });
+  }
+
+  async function saveScopedModels(patterns: string[]) {
+    setScopedBusy(true);
+    try {
+      await props.onEnsureHost();
+      await window.pix.settings.patch({ enabledModels: patterns });
+      await refresh();
+      useShellStore.getState().setStatus(tr("models.scopedSaved"));
+    } catch (err) {
+      showError(err, tr("models.scopedSaveFailed"));
+    } finally {
+      setScopedBusy(false);
+    }
+  }
+
+  function patternsFromEditor(): string[] {
+    return scopedPatternsText
+      .split(/[\n,]+/)
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0);
   }
 
   useEffect(() => {
@@ -2528,21 +2586,11 @@ function ModelsSection(
     [filteredModels],
   );
 
-  /** Group built-in models by provider for secondary headers (auth-style). */
-  const builtinByProvider = useMemo(() => {
-    const map = new Map<string, ModelSummary[]>();
-    for (const model of builtinModels) {
-      const list = map.get(model.provider) ?? [];
-      list.push(model);
-      map.set(model.provider, list);
-    }
-    return [...map.entries()]
-      .sort(([a], [b]) => a.localeCompare(b))
-      .map(([provider, list]) => ({
-        provider,
-        models: list.slice().sort((a, b) => (a.name || a.id).localeCompare(b.name || b.id)),
-      }));
-  }, [builtinModels]);
+  /** Same grouping as composer model picker (brand-cased provider labels). */
+  const builtinProviderGroups = useMemo(
+    () => groupModelsByProvider(builtinModels, tr("models.group.custom")),
+    [builtinModels, props.locale],
+  );
 
   function renderModelRow(
     model: ModelSummary,
@@ -2630,70 +2678,40 @@ function ModelsSection(
 
   const searching = query.trim().length > 0;
 
-  function isBuiltinGroupOpen(provider: string): boolean {
-    // Search must always reveal matches — never leave groups collapsed while filtering.
-    if (searching) return true;
-    return expandedProviders.has(provider);
-  }
-
-  function toggleBuiltinGroup(provider: string) {
-    if (searching) return;
-    setExpandedProviders((prev) => {
-      const next = new Set(prev);
-      if (next.has(provider)) next.delete(provider);
-      else next.add(provider);
-      return next;
-    });
-  }
-
-  function renderBuiltinGrouped(emptyLabel: string) {
-    if (builtinByProvider.length === 0) {
+  /**
+   * Built-in providers as first-class settings groups (same chrome as other config cards).
+   * Models render as normal settings rows under each provider label.
+   */
+  function renderBuiltinProviderSections(emptyLabel: string) {
+    // builtinProviderGroups only contains non-custom (same as Settings list of catalog providers).
+    if (builtinProviderGroups.length === 0) {
       return (
-        <div className="models-provider-empty">
-          <div className="settings-row-desc m-0">{emptyLabel}</div>
-        </div>
+        <SettingsSectionBlock label={tr("models.group.builtin")} testId="models-builtin">
+          <div className="settings-row settings-row-last">
+            <div className="settings-row-desc">{emptyLabel}</div>
+          </div>
+        </SettingsSectionBlock>
       );
     }
     return (
-      <div className="models-provider-list" data-testid="models-list-builtin">
-        {builtinByProvider.map((group) => {
-          const open = isBuiltinGroupOpen(group.provider);
-          return (
-            <div
-              key={group.provider}
-              className="models-provider-group"
-              data-testid={`models-builtin-group-${group.provider}`}
-              data-open={open ? "true" : "false"}
-              data-searching={searching ? "true" : "false"}
-            >
-              <button
-                type="button"
-                className="models-provider-group-header"
-                data-testid={`models-builtin-group-toggle-${group.provider}`}
-                aria-expanded={open}
-                disabled={searching}
-                onClick={() => toggleBuiltinGroup(group.provider)}
-              >
-                <ChevronRight className="models-provider-group-chevron" strokeWidth={2} />
-                <span className="models-provider-group-name">{group.provider}</span>
-                <span className="models-provider-group-count">
-                  {tr("models.providerCount", { count: String(group.models.length) })}
-                </span>
-              </button>
-              {open ? (
-                <div className="models-provider-group-rows">
-                  {group.models.map((model, index) =>
-                    renderModelRow(model, {
-                      last: index === group.models.length - 1,
-                      hideProviderPrefix: true,
-                    }),
-                  )}
-                </div>
-              ) : null}
+      <>
+        {builtinProviderGroups.map((group) => (
+          <SettingsSectionBlock
+            key={group.key}
+            label={group.label}
+            testId={`models-builtin-group-${group.key}`}
+          >
+            <div data-testid={`models-list-${group.key}`}>
+              {group.models.map((model, index) =>
+                renderModelRow(model, {
+                  last: index === group.models.length - 1,
+                  hideProviderPrefix: true,
+                }),
+              )}
             </div>
-          );
-        })}
-      </div>
+          </SettingsSectionBlock>
+        ))}
+      </>
     );
   }
 
@@ -2724,6 +2742,111 @@ function ModelsSection(
         />
       </div>
 
+      <SettingsSectionBlock label={tr("models.group.scoped")} testId="models-scoped">
+        <div className="space-y-3 px-3 py-3">
+          <p className="text-[12px] leading-relaxed text-[var(--text-subtle)]">
+            {tr("models.scopedHint")}
+          </p>
+          {scopedModels.length > 0 ? (
+            <div data-testid="models-scoped-list">
+              <div className="mb-1 text-[11px] font-medium text-[var(--text-subtle)]">
+                {tr("models.scopedActive")}
+              </div>
+              <div className="space-y-1 text-xs">
+                {scopedModels.map((model) => (
+                  <div key={`${model.provider}/${model.id}`}>
+                    {model.provider}/{model.id}
+                    {model.name ? ` · ${model.name}` : ""}
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : (
+            <div className="text-xs opacity-60" data-testid="models-scoped-empty">
+              {tr("models.scopedEmpty")}
+            </div>
+          )}
+          <div>
+            <div className="mb-1 text-[11px] font-medium text-[var(--text-subtle)]">
+              {tr("models.scopedPatterns")}
+            </div>
+            <textarea
+              data-testid="models-scoped-patterns"
+              className="settings-select min-h-[88px] w-full resize-y font-mono text-[12px]"
+              value={scopedPatternsText}
+              onChange={(e) => setScopedPatternsText(e.target.value)}
+              placeholder={tr("models.scopedPatternsPh")}
+              disabled={loading || scopedBusy}
+            />
+            <div className="mt-1 text-[11px] opacity-60">
+              {tr("models.scopedCount", {
+                count: String(patternsFromEditor().length),
+              })}
+            </div>
+          </div>
+          <div>
+            <div className="mb-1.5 text-[11px] font-medium text-[var(--text-subtle)]">
+              {tr("models.scopedPick")}
+            </div>
+            <div
+              className="pix-scroll max-h-[220px] space-y-0.5 overflow-y-auto rounded-[var(--radius-control)] border border-[var(--border)] p-1"
+              data-testid="models-scoped-picker"
+            >
+              {models.length === 0 ? (
+                <div className="px-2 py-3 text-xs opacity-60">{tr("models.empty")}</div>
+              ) : (
+                models.map((model) => {
+                  const key = `${model.provider}/${model.id}`;
+                  const checked = scopedSelected.has(key);
+                  return (
+                    <label
+                      key={key}
+                      className={cn(
+                        "flex cursor-pointer items-center gap-2 rounded-[var(--radius-control)] px-2 py-1.5 text-[12px]",
+                        checked ? "bg-[var(--hover-fill)]" : "hover:bg-[var(--hover-fill)]",
+                      )}
+                    >
+                      <input
+                        type="checkbox"
+                        className="size-3.5 shrink-0"
+                        checked={checked}
+                        disabled={loading || scopedBusy}
+                        onChange={() => toggleScopedModel(model.provider, model.id)}
+                        data-testid={`models-scoped-check-${model.provider}-${model.id}`}
+                      />
+                      <span className="min-w-0 flex-1 truncate font-medium">
+                        {model.name || model.id}
+                      </span>
+                      <span className="shrink-0 truncate text-[11px] text-[var(--text-subtle)]">
+                        {model.provider}/{model.id}
+                      </span>
+                    </label>
+                  );
+                })
+              )}
+            </div>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <SettingsPillButton
+              label={scopedBusy ? tr("models.scopedSaving") : tr("models.scopedSave")}
+              testId="models-scoped-save"
+              disabled={loading || scopedBusy}
+              onClick={() => void saveScopedModels(patternsFromEditor())}
+            />
+            <SettingsPillButton
+              label={tr("models.scopedClear")}
+              testId="models-scoped-clear"
+              disabled={loading || scopedBusy}
+              onClick={() => {
+                setScopedPatternsText("");
+                setScopedSelected(new Set());
+                void saveScopedModels([]);
+              }}
+            />
+          </div>
+        </div>
+      </SettingsSectionBlock>
+
       <SettingsSectionBlock label={tr("models.group.custom")} testId="models-custom">
         <div data-testid="models-list-custom">
           {renderModelRows(
@@ -2734,12 +2857,9 @@ function ModelsSection(
         </div>
       </SettingsSectionBlock>
 
-      <section className="settings-section-block" data-testid="models-builtin">
-        <h2 className="settings-section-label">{tr("models.group.builtin")}</h2>
-        {renderBuiltinGrouped(
-          searching ? tr("models.searchEmpty") : tr("models.group.builtinEmpty"),
-        )}
-      </section>
+      {renderBuiltinProviderSections(
+        searching ? tr("models.searchEmpty") : tr("models.group.builtinEmpty"),
+      )}
 
       {dialogOpen && typeof document !== "undefined"
         ? createPortal(
@@ -3068,6 +3188,7 @@ function PiSettingsSection(
           control={
             <SettingsSelect
               testId="pi-default-thinking"
+              size="sm"
               value={String(view?.defaultThinkingLevel ?? "off")}
               onChange={(v) => void apply({ defaultThinkingLevel: v })}
               options={thinkingLevels.map((level) => ({ value: level, label: level }))}
@@ -3081,6 +3202,7 @@ function PiSettingsSection(
           control={
             <SettingsSelect
               testId="pi-default-trust"
+              size="md"
               value={String(view?.defaultProjectTrust ?? "ask")}
               onChange={(v) => void apply({ defaultProjectTrust: v as "ask" | "always" | "never" })}
               options={[
@@ -3109,6 +3231,46 @@ function PiSettingsSection(
           }
         />
         <SettingsRow
+          title={tr("piSettings.compactionReserve")}
+          description={tr("piSettings.compactionReserveHint")}
+          control={
+            <input
+              type="number"
+              min={1024}
+              step={1024}
+              className="settings-input settings-input-num"
+              data-testid="pi-compaction-reserve"
+              disabled={loading || !view}
+              value={view?.compactionReserveTokens ?? 16384}
+              onChange={(e) => {
+                const n = Number(e.target.value);
+                if (!Number.isFinite(n)) return;
+                void apply({ compactionReserveTokens: n });
+              }}
+            />
+          }
+        />
+        <SettingsRow
+          title={tr("piSettings.compactionKeepRecent")}
+          description={tr("piSettings.compactionKeepRecentHint")}
+          control={
+            <input
+              type="number"
+              min={1024}
+              step={1024}
+              className="settings-input settings-input-num"
+              data-testid="pi-compaction-keep"
+              disabled={loading || !view}
+              value={view?.compactionKeepRecentTokens ?? 20000}
+              onChange={(e) => {
+                const n = Number(e.target.value);
+                if (!Number.isFinite(n)) return;
+                void apply({ compactionKeepRecentTokens: n });
+              }}
+            />
+          }
+        />
+        <SettingsRow
           title={tr("piSettings.retry")}
           description={tr("piSettings.retryHint")}
           control={
@@ -3117,6 +3279,48 @@ function PiSettingsSection(
               onChange={(on) => void apply({ retryEnabled: on })}
               testId="pi-retry"
               disabled={loading || !view}
+            />
+          }
+        />
+        <SettingsRow
+          title={tr("piSettings.retryMax")}
+          description={tr("piSettings.retryMaxHint")}
+          control={
+            <input
+              type="number"
+              min={0}
+              max={20}
+              step={1}
+              className="settings-input settings-input-num settings-input-num-sm"
+              data-testid="pi-retry-max"
+              disabled={loading || !view}
+              value={view?.retryMaxRetries ?? 3}
+              onChange={(e) => {
+                const n = Number(e.target.value);
+                if (!Number.isFinite(n)) return;
+                void apply({ retryMaxRetries: n });
+              }}
+            />
+          }
+        />
+        <SettingsRow
+          title={tr("piSettings.retryBaseDelay")}
+          description={tr("piSettings.retryBaseDelayHint")}
+          control={
+            <input
+              type="number"
+              min={0}
+              max={60000}
+              step={100}
+              className="settings-input settings-input-num"
+              data-testid="pi-retry-base-delay"
+              disabled={loading || !view}
+              value={view?.retryBaseDelayMs ?? 2000}
+              onChange={(e) => {
+                const n = Number(e.target.value);
+                if (!Number.isFinite(n)) return;
+                void apply({ retryBaseDelayMs: n });
+              }}
             />
           }
         />
@@ -3131,9 +3335,181 @@ function PiSettingsSection(
               disabled={loading || !view}
             />
           }
+        />
+        <SettingsRow
+          title={tr("piSettings.thinkingBudgets")}
+          description={
+            view?.thinkingBudgets
+              ? JSON.stringify(view.thinkingBudgets)
+              : tr("piSettings.thinkingBudgetsEmpty")
+          }
+          control={<span className="text-xs opacity-60">{tr("piSettings.cliOnly")}</span>}
           last
         />
       </SettingsSectionBlock>
+
+      <SettingsSectionBlock label={tr("piSettings.queueSection")}>
+        <SettingsRow
+          title={tr("piSettings.steeringMode")}
+          description={tr("piSettings.steeringModeHint")}
+          control={
+            <SettingsSelect
+              testId="pi-steering-mode"
+              size="md"
+              value={String(view?.steeringMode ?? "all")}
+              onChange={(v) =>
+                void apply({ steeringMode: v as "all" | "one-at-a-time" })
+              }
+              options={[
+                { value: "all", label: tr("piSettings.queueModeAll") },
+                { value: "one-at-a-time", label: tr("piSettings.queueModeOne") },
+              ]}
+              disabled={loading || !view}
+            />
+          }
+        />
+        <SettingsRow
+          title={tr("piSettings.followUpMode")}
+          description={tr("piSettings.followUpModeHint")}
+          control={
+            <SettingsSelect
+              testId="pi-followup-mode"
+              size="md"
+              value={String(view?.followUpMode ?? "all")}
+              onChange={(v) =>
+                void apply({ followUpMode: v as "all" | "one-at-a-time" })
+              }
+              options={[
+                { value: "all", label: tr("piSettings.queueModeAll") },
+                { value: "one-at-a-time", label: tr("piSettings.queueModeOne") },
+              ]}
+              disabled={loading || !view}
+            />
+          }
+          last
+        />
+      </SettingsSectionBlock>
+
+      <SettingsSectionBlock label={tr("piSettings.navSection")}>
+        <SettingsRow
+          title={tr("piSettings.doubleEscape")}
+          description={tr("piSettings.doubleEscapeHint")}
+          control={
+            <SettingsSelect
+              testId="pi-double-escape"
+              size="md"
+              value={String(view?.doubleEscapeAction ?? "fork")}
+              onChange={(v) =>
+                void apply({ doubleEscapeAction: v as "fork" | "tree" | "none" })
+              }
+              options={[
+                { value: "fork", label: tr("piSettings.doubleEscapeFork") },
+                { value: "tree", label: tr("piSettings.doubleEscapeTree") },
+                { value: "none", label: tr("piSettings.doubleEscapeNone") },
+              ]}
+              disabled={loading || !view}
+            />
+          }
+        />
+        <SettingsRow
+          title={tr("piSettings.treeFilter")}
+          description={tr("piSettings.treeFilterHint")}
+          control={
+            <SettingsSelect
+              testId="pi-tree-filter"
+              size="lg"
+              value={String(view?.treeFilterMode ?? "default")}
+              onChange={(v) =>
+                void apply({
+                  treeFilterMode: v as
+                    | "default"
+                    | "no-tools"
+                    | "user-only"
+                    | "labeled-only"
+                    | "all",
+                })
+              }
+              options={[
+                { value: "default", label: tr("piSettings.treeFilterDefault") },
+                { value: "no-tools", label: tr("piSettings.treeFilterNoTools") },
+                { value: "user-only", label: tr("piSettings.treeFilterUserOnly") },
+                { value: "labeled-only", label: tr("piSettings.treeFilterLabeledOnly") },
+                { value: "all", label: tr("piSettings.treeFilterAll") },
+              ]}
+              disabled={loading || !view}
+            />
+          }
+          last
+        />
+      </SettingsSectionBlock>
+
+      <SettingsSectionBlock label={tr("piSettings.networkSection")}>
+        <SettingsRow
+          title={tr("piSettings.httpIdle")}
+          description={tr("piSettings.httpIdleHint")}
+          control={
+            <SettingsSelect
+              testId="pi-http-idle"
+              size="sm"
+              value={String(view?.httpIdleTimeoutMs ?? 60_000)}
+              onChange={(v) => void apply({ httpIdleTimeoutMs: Number(v) })}
+              options={[
+                { value: "30000", label: tr("piSettings.httpIdle30s") },
+                { value: "60000", label: tr("piSettings.httpIdle60s") },
+                { value: "120000", label: tr("piSettings.httpIdle120s") },
+              ]}
+              disabled={loading || !view}
+            />
+          }
+        />
+        <SettingsRow
+          title={tr("piSettings.installTelemetry")}
+          description={tr("piSettings.installTelemetryHint")}
+          control={
+            <SettingsToggle
+              checked={Boolean(view?.enableInstallTelemetry)}
+              onChange={(on) => void apply({ enableInstallTelemetry: on })}
+              testId="pi-install-telemetry"
+              disabled={loading || !view}
+            />
+          }
+        />
+        <SettingsRow
+          title={tr("piSettings.analytics")}
+          description={tr("piSettings.analyticsHint")}
+          control={
+            <SettingsToggle
+              checked={Boolean(view?.enableAnalytics)}
+              onChange={(on) => void apply({ enableAnalytics: on })}
+              testId="pi-analytics"
+              disabled={loading || !view}
+            />
+          }
+          last
+        />
+      </SettingsSectionBlock>
+
+      {view?.degradedCapabilities?.length ? (
+        <SettingsSectionBlock label={tr("piSettings.degradedSection")}>
+          <div className="px-3 py-2 text-xs opacity-70 space-y-1" data-testid="pi-degraded-list">
+            {view.degradedCapabilities.map((item) => {
+              const key =
+                item === "tui" || item.includes("TUI")
+                  ? "piSettings.degraded.tui"
+                  : item === "sandbox" || item.includes("sandbox") || item.includes("Container")
+                    ? "piSettings.degraded.sandbox"
+                    : item === "llama" || item.includes("llama")
+                      ? "piSettings.degraded.llama"
+                      : item === "gist" || item.includes("Gist")
+                        ? "piSettings.degraded.gist"
+                        : null;
+              return (
+                <div key={item}>• {key ? tr(key) : item}</div>
+              );
+            })}
+          </div>
+        </SettingsSectionBlock>
+      ) : null}
     </SettingsPageShell>
   );
 }

@@ -47,8 +47,11 @@
   --accent: var(--hover-fill);
   --accent-foreground: var(--hover-fill-foreground);
   --destructive: oklch(0.396 0.141 25.723);
-  --border: #3a3a3a;
-  --input: #3a3a3a;
+  /* Softer chrome borders / row dividers (cards, composer, env, settings). */
+  --border: #333333;
+  --border-subtle: color-mix(in srgb, #ffffff 7%, transparent);
+  --divider: color-mix(in srgb, #ffffff 6%, transparent);
+  --input: #333333;
   --ring: oklch(0.62 0.09 255);
   --sidebar: #151515;
   --sidebar-foreground: oklch(0.985 0.004 260);
@@ -68,7 +71,8 @@
   --text-muted: var(--muted-foreground);
   --text-subtle: #6e6e6e;
   --bg-composer: var(--surface-panel);
-  --composer-border: color-mix(in srgb, #ffffff 12%, var(--surface-panel));
+  --composer-border: color-mix(in srgb, #ffffff 7%, var(--surface-panel));
+  --composer-protrusion: #212121;
   --success: #3ecf8e;
   --warning: #f0a500;
   --danger: #e05555;
@@ -124,8 +128,10 @@
   --accent: var(--hover-fill);
   --accent-foreground: var(--hover-fill-foreground);
   --destructive: #dc2626;
-  --border: #d9dbe2;
-  --input: #d9dbe2;
+  --border: #e5e6eb;
+  --border-subtle: color-mix(in srgb, #9aa0ab 22%, #ffffff);
+  --divider: color-mix(in srgb, #9aa0ab 16%, #ffffff);
+  --input: #e5e6eb;
   --ring: #0a84ff;
   --sidebar: #f1f2f4;
   --sidebar-foreground: #171717;
@@ -144,7 +150,8 @@
   --text-muted: var(--muted-foreground);
   --text-subtle: #8a8a84;
   --bg-composer: var(--surface-panel);
-  --composer-border: color-mix(in srgb, #9aa0ab 45%, #ffffff);
+  --composer-border: color-mix(in srgb, #9aa0ab 28%, #ffffff);
+  --composer-protrusion: #f5f5f5;
   --bg-app: var(--canvas);
   --bg-sidebar: var(--sidebar);
   --bg-panel: var(--canvas);
@@ -244,19 +251,19 @@ body {
 }
 
 /*
- * True frosted rail:
- * - Thin tint (not 70%+ solid)
- * - backdrop-filter samples the native macOS window vibrancy
+ * Native frosted rail:
+ * - The web layer stays clear so macOS vibrancy is the only glass material
+ * - Avoid a second CSS tint/filter that makes the native material look opaque
  * - Opaque app chrome lives only in .shell-content (to the right of the rail)
  */
 .pix-sidebar-translucent {
-  background: color-mix(in srgb, var(--sidebar) 32%, transparent) !important;
-  border-color: color-mix(in srgb, var(--sidebar-border) 28%, transparent) !important;
-  -webkit-backdrop-filter: blur(48px) saturate(1.8) brightness(1.08);
-  backdrop-filter: blur(48px) saturate(1.8) brightness(1.08);
+  background: transparent !important;
+  border-color: color-mix(in srgb, var(--sidebar-border) 22%, transparent) !important;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
   box-shadow:
-    inset -1px 0 0 color-mix(in srgb, #fff 10%, transparent),
-    1px 0 0 color-mix(in srgb, #000 22%, transparent);
+    inset -1px 0 0 color-mix(in srgb, #fff 8%, transparent),
+    1px 0 0 color-mix(in srgb, #000 12%, transparent);
 }
 
 .pix-sidebar-opaque {
@@ -268,12 +275,10 @@ body {
 }
 
 [data-theme="light"] .pix-sidebar-translucent {
-  background: color-mix(in srgb, var(--sidebar) 18%, transparent) !important;
+  background: transparent !important;
   border-color: color-mix(in srgb, var(--sidebar-border) 24%, transparent) !important;
-  -webkit-backdrop-filter: blur(40px) saturate(1.45) brightness(1.02);
-  backdrop-filter: blur(40px) saturate(1.45) brightness(1.02);
   box-shadow:
-    inset -1px 0 0 color-mix(in srgb, #fff 80%, transparent),
+    inset -1px 0 0 color-mix(in srgb, #fff 52%, transparent),
     1px 0 0 color-mix(in srgb, #000 4%, transparent);
 }
 
@@ -345,7 +350,15 @@ body {
 }
 
 .sidebar-section-label {
-  @apply flex h-8 w-full min-w-0 items-center px-2.5 text-[13px] font-semibold tracking-wide;
+  display: flex;
+  height: 2rem;
+  width: 100%;
+  min-width: 0;
+  align-items: center;
+  padding: 0 0.625rem;
+  font-size: 13px;
+  font-weight: 400;
+  letter-spacing: normal;
   color: var(--text-subtle);
 }
 
@@ -502,35 +515,44 @@ body {
 }
 
 /*
- * Overlay scrollbar (pages + popups):
- * - Native scrollbar is ALWAYS fully suppressed → never steals content width
- *   (fixes shrink/expand when a classic thin bar toggles).
- * - A floating `.pix-scroll-thumb` paints on top while scrolling, stays visible
- *   while hovered or dragged, then fades out. Metrics never affect content width.
+ * Floating overlay scrollbars (all main surfaces + / @ menus):
+ * - Native bar fully suppressed → never reserves layout width
+ * - Floating .pix-scroll-thumb (no border) auto-hides; hover + drag supported
  */
 .pix-scroll,
 .timeline-scroll,
 .page-body,
-.settings-page-body {
-  @apply min-h-0 min-w-0 overflow-x-hidden overflow-y-auto;
+.settings-page-body,
+.composer-suggest-scroll {
+  min-height: 0;
+  min-width: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   scrollbar-gutter: auto;
-  scrollbar-width: none; /* constant — do not toggle with data-scrolling */
+  scrollbar-width: none;
   scrollbar-color: transparent transparent;
 }
 .pix-scroll::-webkit-scrollbar,
 .timeline-scroll::-webkit-scrollbar,
 .page-body::-webkit-scrollbar,
-.settings-page-body::-webkit-scrollbar {
+.settings-page-body::-webkit-scrollbar,
+.composer-suggest-scroll::-webkit-scrollbar {
   width: 0 !important;
   height: 0 !important;
   background: transparent;
   display: none;
 }
-/* Floating thumb on document.body — never affects scrollport content width. */
+
+/* Floating thumb on document.body — zero layout cost, no border. */
 .pix-scroll-thumb {
   position: fixed;
   z-index: 10050; /* above FloatingMenu (10000) */
   width: 12px;
+  box-sizing: border-box;
+  border: none;
+  outline: none;
+  background: transparent;
   pointer-events: none;
   opacity: 0;
   transition: opacity 0.16s ease;
@@ -542,9 +564,10 @@ body {
 .pix-scroll-thumb::before {
   content: "";
   position: absolute;
-  inset-block: 0;
+  inset-block: 2px;
   right: 2px;
   width: 6px;
+  border: none;
   border-radius: 999px;
   background: color-mix(in srgb, var(--muted-foreground) 48%, transparent);
   transition:
@@ -565,8 +588,50 @@ body {
 }
 
 /*
- * Soft fade at the bottom of the content scrollport (just above the in-flow composer).
- * Content area bottom edge = top of composer dock, not the window edge.
+ * Thread pane fills the app main column (right of project rail, under title).
+ * Scrollport is the *whole* pane — floating scrollbar track runs full height
+ * of the main column (not only the message stack above the input).
+ */
+.thread-pane {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+}
+.thread-pane-scroll {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+}
+
+/*
+ * Shared content column (messages + composer).
+ * Same max-width + padding so message edges and input card edges coincide.
+ */
+.thread-content-column {
+  box-sizing: border-box;
+  width: 100%;
+  max-width: var(--thread-max, 760px);
+  margin-left: auto;
+  margin-right: auto;
+  padding-left: 1.5rem; /* px-6 */
+  padding-right: 1.5rem;
+}
+/* Stack messages + sticky composer; min-height fills the full scroll viewport. */
+.thread-content-column-stack {
+  display: flex;
+  min-height: 100%;
+  flex-direction: column;
+}
+.thread-messages {
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+}
+
+/*
+ * Fade just above the sticky composer (still part of the full-height scrollport).
  */
 .composer-dock-fade {
   background: linear-gradient(
@@ -576,24 +641,29 @@ body {
     var(--canvas, var(--background)) 100%
   );
 }
+.composer-dock {
+  /* Keep solid canvas under the sticky input so scrolling messages don't show through. */
+  background: var(--canvas, var(--background));
+}
 
-/* Project protrusion: same fill as session hover/active; no border. */
+/* Project protrusion above the input card — slightly taller bar, theme fills. */
 .composer-protrusion {
   display: flex;
   width: 100%;
   min-width: 0;
+  min-height: 2rem; /* a bit taller than the previous 0.375rem padding-only bar */
   align-items: center;
   gap: 2rem;
   border: none;
   border-radius: var(--radius-panel) var(--radius-panel) 0 0;
-  background: var(--hover-fill);
-  padding: 0.375rem 0.75rem;
-  font-size: 12px;
-  font-weight: 500;
+  background: var(--composer-protrusion, var(--hover-fill));
+  padding: 0.5rem 0.85rem;
+  font-size: 13px; /* same as body / group labels */
+  font-weight: 400;
   color: var(--foreground);
   box-sizing: border-box;
 }
-/* Input card: light hairline border only. */
+/* Input card: very light hairline. */
 .composer-card {
   position: relative;
   overflow: hidden;
@@ -737,26 +807,157 @@ body {
   border-top: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
 }
 
+/* / and @ suggestion panels: flat card, NO outer shadow; only inner bottom fade. */
+.composer-suggest-menu,
 [data-testid="composer-slash-menu"],
-[data-testid="composer-attach-menu"] {
+[data-testid="composer-attach-menu"],
+[data-floating-menu][data-elevated="false"] {
   transform-origin: bottom center;
   animation: composer-menu-in 120ms ease-out;
+  overflow: hidden !important;
+  /* Kill every elevation source (FloatingMenu defaults + .project-context-menu). */
+  box-shadow: none !important;
+  filter: none !important;
+  -webkit-filter: none !important;
 }
 
 @keyframes composer-menu-in {
   from {
     opacity: 0;
-    transform: translateY(4px) scale(0.992);
+    transform: translateY(6px);
   }
   to {
     opacity: 1;
-    transform: translateY(0) scale(1);
+    transform: translateY(0);
   }
+}
+
+/* Scroll body + bottom fade (fade only when the list actually overflows). */
+.composer-suggest-body {
+  position: relative;
+  display: flex;
+  max-height: 360px;
+  min-height: 0;
+  flex-direction: column;
+  overflow: hidden;
+}
+.composer-suggest-scroll {
+  flex: 1 1 auto;
+  /* Tight bottom when content is short — no empty gap for a useless fade. */
+  padding-bottom: 0.25rem;
+  /* Overlay thumb paints on body; keep a little inner clearance for the hitbox. */
+  padding-right: 2px;
+}
+.composer-suggest-body[data-overflow="true"] .composer-suggest-scroll {
+  /* Room under last row so content can fade instead of hard-clipping. */
+  padding-bottom: 1.5rem;
+}
+.composer-suggest-fade {
+  display: none;
+  pointer-events: none;
+  position: absolute;
+  inset-inline: 0;
+  bottom: 0;
+  z-index: 2;
+  height: 2.5rem;
+  background: linear-gradient(
+    to top,
+    var(--surface-panel) 0%,
+    color-mix(in srgb, var(--surface-panel) 88%, transparent) 38%,
+    color-mix(in srgb, var(--surface-panel) 35%, transparent) 72%,
+    transparent 100%
+  );
+}
+.composer-suggest-body[data-overflow="true"] .composer-suggest-fade {
+  display: block;
+}
+.composer-suggest-group {
+  /* Sticky labels stick within the scrollport, not the page. */
+  position: relative;
+}
+.composer-suggest-group-label {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  margin: 0;
+  /* Match option row horizontal inset so titles and items share one left edge. */
+  padding: 0.4rem 0.625rem 0.25rem;
+  font-size: 13px;
+  font-weight: 400;
+  letter-spacing: normal;
+  line-height: 1.35;
+  color: var(--text-subtle);
+  background: var(--surface-panel);
+  text-align: left;
+}
+.composer-suggest-group-empty {
+  padding: 0.35rem 0.625rem 0.65rem;
+  font-size: 13px;
+  color: var(--text-subtle);
+  text-align: left;
+}
+.composer-suggest-item {
+  display: flex;
+  width: 100%;
+  height: 2rem; /* h-8 */
+  align-items: center;
+  gap: 0.625rem;
+  border-radius: var(--radius-control);
+  padding-left: 0.625rem;
+  padding-right: 0.625rem;
+  text-align: left;
+  font-size: 13px;
+  line-height: 1.25;
+  color: var(--foreground);
+  transition: background 0.1s ease;
+}
+.composer-suggest-item:hover,
+.composer-suggest-item[data-active="true"] {
+  background: var(--hover-fill);
+}
+.composer-suggest-item-main {
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+  font-weight: 500;
+}
+.composer-suggest-item-desc {
+  min-width: 0;
+  max-width: 46%;
+  flex-shrink: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--text-subtle);
+}
+
+/* Composer model picker — same group labels as Settings → Models. */
+.composer-model-group {
+  padding-bottom: 0.15rem;
+}
+.composer-model-group-label {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: 0.4rem 0.625rem 0.2rem;
+  font-size: 13px;
+  font-weight: 400;
+  letter-spacing: normal;
+  line-height: 1.35;
+  color: var(--text-subtle);
+  background: var(--surface-panel);
+  text-align: left;
 }
 
 /* Shared panel surface (env panel, dialogs, menus). */
 .surface-panel {
-  border: 1px solid var(--border);
+  border: 1px solid var(--border-subtle, var(--border));
   border-radius: var(--radius-panel);
   background: var(--surface-panel);
   color: var(--foreground);
@@ -764,7 +965,7 @@ body {
 }
 
 .timeline {
-  @apply mx-auto w-[min(760px,100%)] px-6 pt-6 pb-40;
+  @apply pt-6 pb-40;
 }
 
 .timeline.empty {
@@ -852,6 +1053,10 @@ body {
   justify-content: flex-end;
   margin: 4px 0 28px;
 }
+/* Edit mode: expand to full message column width (like Codex). */
+.timeline-user-row[data-editing="true"] {
+  justify-content: stretch;
+}
 .timeline-user-content {
   display: flex;
   width: min(78%, 30rem);
@@ -860,13 +1065,17 @@ body {
   align-items: stretch;
   gap: 8px;
 }
+.timeline-user-row[data-editing="true"] .timeline-user-content {
+  width: 100%;
+  max-width: 100%;
+}
 .timeline-user-bubble {
   align-self: flex-end;
   max-width: 100%;
-  border-radius: var(--radius-field);
+  border-radius: 999px;
   background: var(--user-bubble);
   color: var(--user-bubble-fg);
-  padding: 7px 12px;
+  padding: 10px 16px;
 }
 .timeline-user-bubble p {
   margin: 0;
@@ -874,6 +1083,147 @@ body {
   overflow-wrap: anywhere;
   font-size: 13px;
   line-height: 1.45;
+}
+.timeline-user-edit {
+  gap: 10px;
+  align-self: stretch;
+  width: 100%;
+}
+.timeline-user-edit-input {
+  display: block;
+  width: 100%;
+  min-height: 5.5rem;
+  resize: vertical;
+  border: none;
+  /* Match composer input card radius */
+  border-radius: var(--radius-panel);
+  background: var(--user-bubble);
+  color: var(--user-bubble-fg);
+  padding: 14px 18px;
+  font-size: 13px;
+  line-height: 1.45;
+  outline: none;
+  box-sizing: border-box;
+}
+.timeline-user-edit-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.timeline-user-edit-cancel,
+.timeline-user-edit-send {
+  height: 30px;
+  border-radius: var(--radius-panel);
+  padding: 0 14px;
+  font-size: 13px;
+  font-weight: 500;
+  border: none;
+  cursor: pointer;
+}
+.timeline-user-edit-cancel {
+  background: color-mix(in srgb, var(--muted-foreground) 16%, transparent);
+  color: var(--foreground);
+}
+.timeline-user-edit-send {
+  background: #f5f5f5;
+  color: #111;
+}
+[data-theme="light"] .timeline-user-edit-send {
+  background: #171717;
+  color: #fafafa;
+}
+.timeline-meta-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  opacity: 0;
+  transition: opacity 0.14s ease;
+  pointer-events: none;
+}
+.group\/msg:hover .timeline-meta-actions,
+.group\/msg:focus-within .timeline-meta-actions {
+  opacity: 1;
+  pointer-events: auto;
+}
+.timeline-meta-actions-user {
+  justify-content: flex-end;
+  margin-top: 4px;
+}
+.timeline-meta-actions-assistant {
+  justify-content: flex-start;
+  margin-top: 10px;
+}
+.timeline-meta-time {
+  font-size: 12px;
+  line-height: 1;
+  color: var(--text-subtle);
+  white-space: nowrap;
+}
+/* Icon actions: no chrome by default; hover = soft fill + composer radius */
+.timeline-meta-btn {
+  display: inline-flex;
+  height: 28px;
+  width: 28px;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: var(--radius-panel);
+  background: transparent;
+  color: var(--muted-foreground);
+  cursor: pointer;
+  transition:
+    background 0.12s ease,
+    color 0.12s ease;
+}
+.timeline-meta-btn:hover {
+  background: var(--hover-fill);
+  color: var(--foreground);
+}
+.timeline-meta-btn:active {
+  transform: scale(0.96);
+}
+.timeline-meta-btn-done {
+  color: #22c55e;
+}
+.timeline-meta-btn-done:hover {
+  background: color-mix(in srgb, #22c55e 12%, transparent);
+  color: #16a34a;
+}
+.timeline-process {
+  margin: 4px 0 18px;
+}
+.timeline-process-details {
+  border: none;
+}
+/* Full-width row + permanent hairline under “已处理” (open or closed). */
+.timeline-process-summary {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 4px;
+  list-style: none;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--text-subtle);
+  user-select: none;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--divider, var(--border));
+  box-sizing: border-box;
+}
+.timeline-process-summary::-webkit-details-marker {
+  display: none;
+}
+/* Collapsed → right; open → down */
+.timeline-process-chevron {
+  transition: transform 0.16s ease;
+}
+.timeline-process-details[open] > .timeline-process-summary .timeline-process-chevron {
+  transform: rotate(90deg);
+}
+.timeline-process-body {
+  margin-top: 10px;
+  padding-top: 2px;
+  border-top: none;
 }
 .timeline-assistant-row {
   width: 100%;
@@ -1708,6 +2058,183 @@ a.btn-secondary:focus-visible {
   color: var(--text-subtle);
 }
 
+/* Session tree — flat peer list (no indentation / branch connectors) */
+.session-tree-panel {
+  display: flex;
+  width: min(720px, 94vw);
+  max-height: min(78vh, 680px);
+  flex-direction: column;
+  overflow: hidden;
+}
+.session-tree-header {
+  display: flex;
+  shrink: 0;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+  border-bottom: 1px solid var(--border);
+  padding: 0.85rem 1rem;
+}
+.session-tree-list {
+  margin: 0;
+  list-style: none;
+  flex: 1 1 auto;
+  min-height: 240px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: 0.4rem 0.35rem 0.5rem;
+}
+.session-tree-empty {
+  padding: 2rem 1rem;
+  text-align: center;
+  font-size: 13px;
+  color: var(--text-subtle);
+}
+.session-tree-item {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 0.45rem;
+  border-radius: 10px;
+  padding: 0.45rem 0.6rem;
+  text-align: left;
+  font-size: 13px;
+  line-height: 1.35;
+  color: var(--foreground);
+  transition: background 0.1s ease;
+}
+.session-tree-item:hover {
+  background: var(--hover-fill);
+}
+/* Path tint only via data attribute for subtle branch cue — no default “user message” fill. */
+.session-tree-item-path {
+  background: transparent;
+}
+.session-tree-item-active,
+.session-tree-item[data-active="true"] {
+  background: color-mix(in srgb, var(--ring, #0a84ff) 10%, transparent);
+}
+
+/* Role chip: icon + short localized text */
+.session-tree-badge {
+  display: inline-flex;
+  max-width: 5.5rem;
+  shrink: 0;
+  align-items: center;
+  gap: 0.28rem;
+  border-radius: 999px;
+  padding: 0.18rem 0.5rem 0.18rem 0.38rem;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  line-height: 1.25;
+  white-space: nowrap;
+  background: transparent;
+}
+.session-tree-badge-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* User role: no fill background (was blue-tinted). */
+.session-tree-badge-user {
+  background: transparent;
+  color: var(--muted-foreground);
+}
+.session-tree-badge-assistant {
+  background: transparent;
+  color: var(--muted-foreground);
+}
+.session-tree-badge-tool {
+  background: transparent;
+  color: var(--muted-foreground);
+}
+.session-tree-badge-compaction {
+  background: transparent;
+  color: var(--muted-foreground);
+}
+.session-tree-badge-branch_summary {
+  background: transparent;
+  color: var(--muted-foreground);
+}
+.session-tree-badge-system,
+.session-tree-badge-other {
+  background: transparent;
+  color: var(--muted-foreground);
+}
+
+/* User-defined entry label (pi node.label) — chip, not raw [brackets] */
+.session-tree-user-label {
+  display: inline-flex;
+  max-width: 8rem;
+  shrink: 0;
+  align-items: center;
+  gap: 0.25rem;
+  border: 1px solid color-mix(in srgb, #f59e0b 28%, var(--border));
+  border-radius: 999px;
+  background: color-mix(in srgb, #f59e0b 10%, transparent);
+  padding: 0.14rem 0.45rem 0.14rem 0.35rem;
+  font-size: 11px;
+  font-weight: 600;
+  color: color-mix(in srgb, #d97706 92%, var(--foreground));
+  white-space: nowrap;
+}
+.session-tree-user-label-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.session-tree-preview {
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  color: var(--foreground);
+  /* Full text via native title tooltip on the row button. */
+}
+.session-tree-item-path .session-tree-preview {
+  color: color-mix(in srgb, var(--foreground) 88%, var(--ring, #0a84ff));
+}
+.session-tree-current {
+  shrink: 0;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--ring, #0a84ff) 16%, transparent);
+  padding: 0.14rem 0.48rem;
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+  color: var(--ring, #0a84ff);
+}
+.session-tree-path-chip {
+  shrink: 0;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--ring, #0a84ff) 8%, transparent);
+  padding: 0.12rem 0.42rem;
+  font-size: 10px;
+  font-weight: 550;
+  color: color-mix(in srgb, var(--ring, #0a84ff) 75%, var(--muted-foreground));
+}
+
+@media (max-width: 520px) {
+  .session-tree-badge-text {
+    display: none;
+  }
+  .session-tree-badge {
+    max-width: none;
+    padding: 0.28rem;
+  }
+  .session-tree-user-label-text {
+    max-width: 4.5rem;
+  }
+}
+.session-tree-footer {
+  border-top: 1px solid var(--border);
+  padding: 0.55rem 1rem;
+  font-size: 11px;
+  color: var(--text-subtle);
+}
+
 /* Settings · keyboard shortcut bind control */
 .shortcut-bind {
   display: inline-flex;
@@ -1850,6 +2377,16 @@ a.btn-secondary:focus-visible {
 .settings-page-sections {
   @apply flex flex-col gap-8;
 }
+/*
+ * Only one section block under this page (page title already names the area):
+ * hide the redundant group heading. :only-of-type ignores non-section siblings
+ * (toolbars, test buttons, search rows).
+ */
+.settings-page-sections:has(> .settings-section-block:only-of-type)
+  > .settings-section-block
+  > .settings-section-label {
+  display: none;
+}
 
 /* Archived sessions page (Codex-style grouped list) */
 .archived-toolbar {
@@ -1926,27 +2463,49 @@ a.btn-secondary:focus-visible {
   @apply flex flex-col gap-2;
 }
 .settings-section-label {
-  @apply m-0 px-0.5 text-[13px] font-normal text-[var(--muted-foreground)];
+  margin: 0;
+  padding: 0 0.125rem;
+  font-size: 13px;
+  font-weight: 400;
+  letter-spacing: normal;
+  line-height: 1.35;
+  color: var(--muted-foreground);
+}
+/* Provider id labels only (anthropic / openai / …) — monospaced codes. */
+.settings-section-label-code {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-weight: 400;
+  letter-spacing: normal;
+  color: var(--muted-foreground);
+  text-transform: none;
 }
 .settings-section-hint {
   @apply m-0;
 }
 .settings-card {
-  @apply overflow-hidden border;
+  overflow: hidden;
+  border: 1px solid var(--border-subtle, var(--border));
   border-radius: var(--radius-panel);
-  border-color: var(--border);
   background: var(--surface-panel);
 }
 .settings-row {
-  @apply flex items-start justify-between gap-6 border-b border-[var(--border)] px-4 py-3.5;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1.5rem;
+  border-bottom: 1px solid var(--divider, var(--border));
+  padding: 0.85rem 1rem;
 }
 /* Title-only rows: no reserved description space, vertically centered. */
 .settings-row-compact {
-  @apply items-center py-2.5;
+  align-items: center;
+  padding-top: 0.55rem;
+  padding-bottom: 0.55rem;
 }
 .settings-row-last,
 .settings-row:last-child {
-  @apply border-b-0;
+  border-bottom: 0;
 }
 .settings-row-title {
   @apply text-[13.5px] leading-snug font-medium text-[var(--foreground)];
@@ -2020,29 +2579,63 @@ a.btn-secondary:focus-visible {
 .settings-prompt-field:disabled {
   opacity: 0.5;
 }
+/* Slightly smaller than before (was 22×40 / knob 18). */
 .settings-toggle {
-  @apply relative h-[22px] w-[40px] shrink-0 rounded-full transition-colors;
+  position: relative;
+  width: 34px;
+  height: 20px;
+  flex-shrink: 0;
+  border-radius: 999px;
+  transition: background-color 0.15s ease;
 }
 .settings-toggle-on {
   background: #0a84ff;
 }
 .settings-toggle-off {
-  background: color-mix(in srgb, var(--muted-foreground) 28%, var(--border));
+  background: color-mix(in srgb, var(--muted-foreground) 22%, var(--border));
 }
 [data-theme="light"] .settings-toggle-off {
-  background: #d1d5db;
+  background: #d8dbe2;
 }
 .settings-toggle-knob {
-  @apply absolute top-[2px] left-[2px] h-[18px] w-[18px] rounded-full bg-white shadow-sm transition-transform;
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 999px;
+  background: #ffffff;
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.12);
+  transition: transform 0.15s ease;
 }
 .settings-toggle-on .settings-toggle-knob {
-  transform: translateX(18px);
+  transform: translateX(14px);
 }
 .settings-select {
-  @apply h-7 max-w-[160px] cursor-pointer appearance-none rounded-full border border-[var(--border)] bg-[var(--secondary,#f1f2f4)] px-3 pr-7 text-[12px] text-[var(--foreground)] outline-none;
+  @apply h-8 cursor-pointer appearance-none rounded-lg border border-[var(--border)] bg-[var(--secondary,#f1f2f4)] px-3 pr-8 text-[12.5px] text-[var(--foreground)] outline-none;
+  box-sizing: border-box;
+  min-width: 7.5rem;
+  max-width: 14rem;
+  width: auto;
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%235c5c57' stroke-width='2'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
   background-repeat: no-repeat;
-  background-position: right 8px center;
+  background-position: right 10px center;
+}
+/* Select sizes sized to typical label content (not one oversized fixed column). */
+.settings-select-sm {
+  width: 7rem;
+  min-width: 7rem;
+  max-width: 7rem;
+}
+.settings-select-md {
+  width: 8.5rem;
+  min-width: 8.5rem;
+  max-width: 8.5rem;
+}
+.settings-select-lg {
+  width: 9.5rem;
+  min-width: 9.5rem;
+  max-width: 9.5rem;
 }
 .settings-select:hover {
   background-color: var(--hover-fill);
@@ -2050,6 +2643,10 @@ a.btn-secondary:focus-visible {
 .settings-select:focus-visible {
   border-color: color-mix(in srgb, var(--ring, #0a84ff) 55%, var(--border));
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--ring, #0a84ff) 22%, transparent);
+}
+.settings-select:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 .settings-pill-btn {
   @apply inline-flex h-7 items-center justify-center rounded-full border border-[var(--border)] bg-[var(--secondary,#f1f2f4)] px-3 text-[12px] leading-none whitespace-nowrap text-[var(--foreground)] transition-colors hover:bg-[var(--hover-fill)] disabled:pointer-events-none disabled:opacity-40;
@@ -2078,10 +2675,36 @@ a.btn-secondary:focus-visible {
 }
 .settings-input {
   @apply h-8 w-full rounded-lg border border-[var(--border)] bg-transparent px-2.5 text-[13px] text-[var(--foreground)] outline-none;
+  box-sizing: border-box;
 }
 .settings-input:focus-visible {
   border-color: color-mix(in srgb, #0a84ff 55%, var(--border));
   box-shadow: 0 0 0 2px color-mix(in srgb, #0a84ff 18%, transparent);
+}
+.settings-input:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+/* Numeric fields: wide enough for values like 20000 / 16384, not full form column. */
+.settings-input-num {
+  width: 6.5rem;
+  min-width: 6.5rem;
+  max-width: 6.5rem;
+  padding-right: 0.5rem;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum";
+}
+.settings-input-num-sm {
+  width: 5rem;
+  min-width: 5rem;
+  max-width: 5rem;
+}
+
+/* Agent settings: right-align controls; keep natural control widths (no force-stretch). */
+[data-testid="settings-pi"] .settings-row-control {
+  min-width: 9.5rem;
+  justify-content: flex-end;
 }
 .settings-key-row {
   @apply flex w-full min-w-0 items-center gap-2;
@@ -2515,78 +3138,6 @@ a.btn-secondary:focus-visible {
   color: #30d158;
 }
 
-/*
- * Built-in models: each provider is its own quiet card.
- * Group name is muted; model titles use normal foreground.
- */
-.models-provider-list {
-  @apply flex flex-col gap-2;
-}
-.models-provider-group {
-  @apply overflow-hidden border;
-  border-radius: var(--radius-panel);
-  border-color: var(--border);
-  background: var(--surface-panel);
-}
-.models-provider-group-header {
-  @apply flex w-full min-h-[42px] items-center gap-2.5 px-3.5 text-left transition-colors;
-  background: transparent;
-  border: 0;
-  cursor: pointer;
-}
-.models-provider-group-header:hover:not(:disabled) {
-  background: var(--hover-fill);
-}
-.models-provider-group-header:disabled {
-  cursor: default;
-}
-.models-provider-group-header:focus-visible {
-  outline: none;
-  box-shadow: inset 0 0 0 2px color-mix(in srgb, #0a84ff 26%, transparent);
-}
-/* Match EnvPanel row chevron: size-3.5 opacity-50 */
-.models-provider-group-chevron {
-  @apply size-3.5 shrink-0 opacity-50 transition-transform duration-150 ease-out;
-  color: var(--foreground);
-}
-.models-provider-group[data-open="true"] .models-provider-group-chevron {
-  transform: rotate(90deg);
-}
-.models-provider-group-name {
-  @apply min-w-0 flex-1 truncate text-[13.5px] font-medium tracking-tight text-[var(--foreground)];
-}
-.models-provider-group-count {
-  @apply shrink-0 text-[12px] tabular-nums;
-  color: var(--text-subtle);
-}
-.models-provider-group-rows {
-  @apply flex flex-col;
-  /* no divider line above model rows */
-}
-.models-provider-group-rows .settings-row {
-  @apply gap-4 px-3.5 py-3;
-  border-color: color-mix(in srgb, var(--border) 70%, transparent);
-  background: transparent;
-}
-.models-provider-group-rows .settings-row:hover {
-  background: var(--hover-fill);
-}
-.models-provider-group-rows .settings-row:last-child {
-  @apply border-b-0;
-}
-.models-provider-group-rows .settings-row-title {
-  @apply text-[13px] text-[var(--foreground)];
-}
-.models-provider-group-rows .settings-row-desc {
-  @apply mt-0.5 font-mono text-[11.5px] text-[var(--muted-foreground)];
-}
-.models-provider-empty {
-  @apply overflow-hidden border px-4 py-3.5;
-  border-radius: var(--radius-panel);
-  border-color: var(--border);
-  background: var(--surface-panel);
-}
-
 /* Project / thread context menu — top-layer portal (fixed + z-index) */
 .project-context-menu {
   background: var(--surface-panel);
@@ -2617,7 +3168,12 @@ a.btn-secondary:focus-visible {
   background: color-mix(in srgb, var(--sidebar-foreground) 6%, transparent);
 }
 .settings-rail-group-label {
-  @apply px-2.5 pb-1 pt-3 text-[11px] font-normal text-[var(--text-subtle)];
+  padding: 0.75rem 0.625rem 0.25rem;
+  font-size: 13px;
+  font-weight: 400;
+  letter-spacing: normal;
+  line-height: 1.35;
+  color: var(--text-subtle);
 }
 .settings-rail-item {
   @apply flex h-[32px] w-full min-w-0 items-center gap-2.5 px-2.5 text-left text-[13px] font-normal transition-colors;

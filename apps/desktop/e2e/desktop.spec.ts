@@ -364,8 +364,8 @@ test.describe("Desktop shell Playwright E2E (macOS Electron)", () => {
     await expect
       .poll(() => pix.app.evaluate(({ nativeTheme }) => nativeTheme.themeSource))
       .toBe("light");
-    await expect.poll(async () => (await sidebarMaterial()).alpha).toBeLessThan(0.5);
-    await expect.poll(async () => (await sidebarMaterial()).backdrop).toContain("blur(");
+    await expect.poll(async () => (await sidebarMaterial()).alpha).toBe(0);
+    await expect.poll(async () => (await sidebarMaterial()).backdrop).toBe("none");
 
     await page.getByTestId("appearance-translucent").click();
     await expect(page.getByTestId("sidebar")).toHaveAttribute("data-translucent", "false");
@@ -379,8 +379,8 @@ test.describe("Desktop shell Playwright E2E (macOS Electron)", () => {
     await expect
       .poll(() => pix.app.evaluate(({ nativeTheme }) => nativeTheme.themeSource))
       .toBe("dark");
-    await expect.poll(async () => (await sidebarMaterial()).alpha).toBeLessThan(0.5);
-    await expect.poll(async () => (await sidebarMaterial()).backdrop).toContain("blur(");
+    await expect.poll(async () => (await sidebarMaterial()).alpha).toBe(0);
+    await expect.poll(async () => (await sidebarMaterial()).backdrop).toBe("none");
     await page.getByTestId("settings-back").click();
 
     await page.getByTestId("open-palette").click();
@@ -661,7 +661,7 @@ test.describe("Desktop shell Playwright E2E (macOS Electron)", () => {
       // shell-main is full-bleed under the frosted rail; content is inset via padding.
       expect(Math.abs(main!.x - app!.x)).toBeLessThan(8);
       expect(Math.abs(main!.x + main!.width - (app!.x + app!.width))).toBeLessThan(12);
-      // Composer is centered with min-width 630; left edge is within the padded content.
+      // Composer matches thread content width (min 760 / 100%); dock stays in padded content.
       expect(dock!.x).toBeGreaterThanOrEqual(main!.x - 2);
       expect(dock!.x + dock!.width).toBeLessThanOrEqual(main!.x + main!.width + 2);
       if (opts?.collapsed) {

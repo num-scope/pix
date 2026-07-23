@@ -26,11 +26,25 @@ export function SettingsPageShell(props: {
 export function SettingsSectionBlock(props: {
   label: string;
   testId?: string;
+  /** When false, never render the group heading (page title is enough). */
+  showLabel?: boolean;
+  /** `code` = monospaced identifier style (provider / custom / scoped). */
+  labelVariant?: "default" | "code";
   children: ReactNode;
 }) {
+  const showLabel = props.showLabel !== false;
   return (
     <section className="settings-section-block" data-testid={props.testId}>
-      <h2 className="settings-section-label">{props.label}</h2>
+      {showLabel ? (
+        <h2
+          className={cn(
+            "settings-section-label",
+            props.labelVariant === "code" && "settings-section-label-code",
+          )}
+        >
+          {props.label}
+        </h2>
+      ) : null}
       <div className="settings-card">{props.children}</div>
     </section>
   );
@@ -114,11 +128,20 @@ export function SettingsSelect(props: {
   options: Array<{ value: string; label: string }>;
   testId?: string;
   disabled?: boolean;
+  /** sm ≈ 7.5rem, md ≈ 11rem (default), lg ≈ 14rem for long i18n labels. */
+  size?: "sm" | "md" | "lg";
+  className?: string;
 }) {
+  const sizeClass =
+    props.size === "sm"
+      ? "settings-select-sm"
+      : props.size === "lg"
+        ? "settings-select-lg"
+        : "settings-select-md";
   return (
     <select
       data-testid={props.testId}
-      className="settings-select"
+      className={cn("settings-select", sizeClass, props.className)}
       value={props.value}
       disabled={props.disabled}
       onChange={(e) => props.onChange(e.target.value)}

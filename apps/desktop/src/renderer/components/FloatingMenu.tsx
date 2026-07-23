@@ -57,6 +57,15 @@ export function FloatingMenu(props: {
   zIndex?: number;
   /** When false, outside click / Escape still close unless nested menus handle it. Default true. */
   closeOnOutside?: boolean;
+  /** When true, menu width matches the anchor rect (e.g. composer card). */
+  matchAnchorWidth?: boolean;
+  /**
+   * When false, no drop shadow / elevated chrome (composer / and @ panels).
+   * Default true keeps project-context-menu elevation for other menus.
+   */
+  elevated?: boolean;
+  /** Gap in px between menu and anchor (default 6 above / 4 below). */
+  offsetPx?: number;
 }) {
   const ref = useRef<HTMLDivElement | null>(null);
   const [pos, setPos] = useState({ top: 0, left: 0, maxHeight: 0, ready: false });
@@ -64,6 +73,10 @@ export function FloatingMenu(props: {
   const placement = props.placement ?? "bottom";
   const zIndex = props.zIndex ?? 10_000;
   const closeOnOutside = props.closeOnOutside !== false;
+  const matchAnchorWidth = props.matchAnchorWidth === true;
+  const elevated = props.elevated !== false;
+  const matchedWidth =
+    matchAnchorWidth && props.anchor ? Math.max(minWidth, Math.round(props.anchor.width)) : undefined;
 
   useLayoutEffect(() => {
     if (!props.open || !props.anchor) {
@@ -73,8 +86,8 @@ export function FloatingMenu(props: {
     const anchor = props.anchor;
     const el = ref.current;
     const pad = 8;
-    const gap = 4;
-    const topGap = 6;
+    const gap = props.offsetPx ?? 4;
+    const topGap = props.offsetPx ?? 6;
     const minMenuH = 120;
     const spaceAbove = Math.max(0, anchor.top - pad - topGap);
     const spaceBelow = Math.max(0, window.innerHeight - anchor.bottom - pad - gap);
@@ -94,7 +107,7 @@ export function FloatingMenu(props: {
       el.style.maxHeight = `${maxHeight}px`;
     }
 
-    const menuW = Math.max(minWidth, el?.offsetWidth ?? minWidth);
+    const menuW = matchedWidth ?? Math.max(minWidth, el?.offsetWidth ?? minWidth);
     const menuH = el?.offsetHeight ?? Math.min(160, maxHeight);
 
     let top: number;
@@ -160,7 +173,7 @@ export function FloatingMenu(props: {
       top = Math.max(pad, Math.min(top, window.innerHeight - (el?.offsetHeight ?? menuH) - pad));
     }
     setPos({ top, left, maxHeight, ready: true });
-  }, [props.open, props.anchor, minWidth, placement]);
+  }, [props.open, props.anchor, minWidth, placement, matchedWidth, props.offsetPx]);
 
   useEffect(() => {
     if (!props.open || !closeOnOutside) return;
@@ -209,16 +222,25 @@ export function FloatingMenu(props: {
       role="menu"
       data-testid={props.testId}
       data-floating-menu=""
+      data-elevated={elevated ? "true" : "false"}
       className={cn(
-        "project-context-menu surface-panel fixed overflow-x-hidden overflow-y-auto py-1 shadow-2xl",
+        "surface-panel fixed overflow-x-hidden py-1",
+        elevated
+          ? "project-context-menu overflow-y-auto shadow-2xl"
+          : "composer-suggest-menu overflow-hidden shadow-none",
         !pos.ready && "invisible",
         props.className,
       )}
       style={{
         top: pos.top,
         left: pos.left,
-        minWidth,
+        minWidth: matchedWidth ?? minWidth,
+        ...(matchedWidth !== undefined ? { width: matchedWidth } : {}),
         ...(pos.maxHeight > 0 ? { maxHeight: pos.maxHeight } : {}),
+        // Hard-kill elevation for / and @ — CSS utilities can still fight with theme rules.
+        ...(elevated
+          ? {}
+          : { boxShadow: "none", filter: "none", WebkitFilter: "none" }),
         zIndex,
       }}
       onMouseDown={(e) => e.stopPropagation()}

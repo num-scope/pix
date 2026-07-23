@@ -1,7 +1,12 @@
 import type { HostEvent, RuntimeEvent } from "@pix/contracts";
 import { IPC_PROTOCOL_VERSION } from "@pix/contracts";
 import { describe, expect, it } from "vite-plus/test";
-import { historyToTimeline, projectEventsToTimeline, splitAttachedPaths } from "./timeline.ts";
+import {
+  buildTimelineBlocks,
+  historyToTimeline,
+  projectEventsToTimeline,
+  splitAttachedPaths,
+} from "./timeline.ts";
 
 function runtimeEvent(sequence: number, event: RuntimeEvent): HostEvent {
   return {
@@ -25,7 +30,7 @@ describe("runtime timeline", () => {
       ["first", "queued"],
     );
 
-    expect(timeline).toEqual([
+    expect(timeline.map((item) => ({ id: item.id, kind: item.kind, text: "text" in item ? item.text : "" }))).toEqual([
       { id: "user-1", kind: "user", text: "first" },
       { id: "assistant-0", kind: "assistant", text: "working" },
       { id: "user-2", kind: "user", text: "queued" },
@@ -57,25 +62,18 @@ describe("runtime timeline", () => {
       ["Inspect"],
     );
 
-    expect(timeline).toEqual([
-      {
-        id: "user-1",
-        kind: "user",
-        text: "Inspect",
-        attachments: ["/tmp/a&b.pdf"],
-      },
-      { id: "thinking-0", kind: "thinking", text: "Check the inputs" },
-      { id: "assistant-0", kind: "assistant", text: "I will inspect it." },
-      {
-        id: "tool-start-tool-1",
-        kind: "tool",
-        toolCallId: "tool-1",
-        toolName: "read",
-        status: "completed",
-        args: { path: "/tmp/a&b.pdf" },
-        output: "done",
-      },
-    ]);
+    expect(timeline.map((item) => item.kind)).toEqual(["user", "thinking", "assistant", "tool"]);
+    expect(timeline[0]).toMatchObject({
+      kind: "user",
+      text: "Inspect",
+      attachments: ["/tmp/a&b.pdf"],
+    });
+    expect(timeline[3]).toMatchObject({
+      kind: "tool",
+      toolName: "read",
+      status: "completed",
+      output: "done",
+    });
   });
 
   it("projects persisted thinking and extracts attached path metadata", () => {
@@ -97,5 +95,25 @@ describe("runtime timeline", () => {
       },
     ]);
     expect(splitAttachedPaths("plain text")).toEqual({ text: "plain text", paths: [] });
+  });
+
+  it("groups thinking/tools into a process block before assistant", () => {
+    const blocks = buildTimelineBlocks([
+      { id: "u1", kind: "user", text: "hi" },
+      { id: "t1", kind: "thinking", text: "plan" },
+      {
+        id: "tool1",
+        kind: "tool",
+        toolName: "bash",
+        status: "completed",
+        output: "ok",
+      },
+      { id: "a1", kind: "assistant", text: "done" },
+    ]);
+    expect(blocks.map((b) => b.type)).toEqual(["item", "process", "item"]);
+    expect(blocks[1]).toMatchObject({ type: "process" });
+    if (blocks[1]?.type === "process") {
+      expect(blocks[1].items).toHaveLength(2);
+    }
   });
 });

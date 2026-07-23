@@ -160,14 +160,12 @@ export function partitionProjects(
   pinned: readonly string[],
   archived: readonly string[],
 ): { pinned: string[]; rest: string[] } {
-  const seen = new Set<string>();
   const byKey = new Map<string, string>();
   for (const raw of paths) {
     if (!raw?.trim()) continue;
     const key = normalizePath(raw);
     if (isArchivedProject(raw, archived)) continue;
     if (!byKey.has(key)) byKey.set(key, raw);
-    seen.add(key);
   }
   // Pinned keys that are not in paths still show (caller should also pass pinned into paths).
   for (const p of pinned) {
@@ -193,6 +191,49 @@ export function partitionProjects(
     rest.push(raw);
   }
   return { pinned: orderedPinned, rest };
+}
+
+export type ProjectSortMode = "priority" | "recent";
+
+/**
+ * Order projects in the 项目 section (pinned live in 置顶 and are not passed here).
+ * - priority: alphabetical by folder name
+ * - recent: follow recentOrder (most recent first); unknowns last
+ */
+export function sortProjectPaths(
+  paths: readonly string[],
+  mode: ProjectSortMode,
+  options?: {
+    recentOrder?: readonly string[];
+  },
+): string[] {
+  const list = [...paths];
+  if (list.length <= 1) return list;
+
+  if (mode === "recent") {
+    const recentIndex = new Map(
+      (options?.recentOrder ?? []).map((p, i) => [normalizePath(p), i]),
+    );
+    return list.sort((a, b) => {
+      const ai = recentIndex.has(normalizePath(a))
+        ? (recentIndex.get(normalizePath(a)) ?? Number.MAX_SAFE_INTEGER)
+        : Number.MAX_SAFE_INTEGER;
+      const bi = recentIndex.has(normalizePath(b))
+        ? (recentIndex.get(normalizePath(b)) ?? Number.MAX_SAFE_INTEGER)
+        : Number.MAX_SAFE_INTEGER;
+      if (ai !== bi) return ai - bi;
+      return normalizePath(a).localeCompare(normalizePath(b));
+    });
+  }
+
+  // priority — alphabetical by folder name, then full path
+  return list.sort((a, b) => {
+    const an = normalizePath(a).split("/").pop() ?? a;
+    const bn = normalizePath(b).split("/").pop() ?? b;
+    const byName = an.localeCompare(bn, undefined, { sensitivity: "base" });
+    if (byName !== 0) return byName;
+    return normalizePath(a).localeCompare(normalizePath(b));
+  });
 }
 
 /** Thread display aliases (desktop-only; does not rewrite session files). */
@@ -345,26 +386,23 @@ export function sortThreadsWithPins<T extends { id: string; modifiedAt: string }
   return sortThreadsByMode(threads, "priority", pinned);
 }
 
-export type ThreadSortMode = "priority" | "recent" | "manual";
+export type ThreadSortMode = "priority" | "recent";
 
 /**
  * Sort sidebar threads/conversations.
  * - priority: pinned first (pin order), then modifiedAt desc
  * - recent: modifiedAt desc only
- * - manual: pinned first (pin order), then manualOrder, then modifiedAt for unknowns
  */
 export function sortThreadsByMode<T extends { id: string; modifiedAt: string }>(
   threads: T[],
   mode: ThreadSortMode,
   pinned: readonly string[],
-  manualOrder: readonly string[] = [],
 ): T[] {
   if (mode === "recent") {
     return [...threads].sort((a, b) => b.modifiedAt.localeCompare(a.modifiedAt));
   }
 
   const pinIndex = new Map(pinned.map((id, i) => [id, i]));
-  const manualIndex = new Map(manualOrder.map((id, i) => [id, i]));
 
   return [...threads].sort((a, b) => {
     const ap = pinIndex.has(a.id);
@@ -372,36 +410,6 @@ export function sortThreadsByMode<T extends { id: string; modifiedAt: string }>(
     if (ap && bp) return (pinIndex.get(a.id) ?? 0) - (pinIndex.get(b.id) ?? 0);
     if (ap) return -1;
     if (bp) return 1;
-
-    if (mode === "manual") {
-      const ao = manualIndex.has(a.id) ? (manualIndex.get(a.id) ?? 0) : Number.MAX_SAFE_INTEGER;
-      const bo = manualIndex.has(b.id) ? (manualIndex.get(b.id) ?? 0) : Number.MAX_SAFE_INTEGER;
-      if (ao !== bo) return ao - bo;
-    }
     return b.modifiedAt.localeCompare(a.modifiedAt);
   });
-}
-
-/**
- * Merge current thread ids into a manual order: keep existing order, append new ids at end.
- * Returns the next order (always includes every id in `threadIds` once).
- */
-export function mergeManualThreadOrder(
-  previous: readonly string[],
-  threadIds: readonly string[],
-): string[] {
-  const alive = new Set(threadIds);
-  const next: string[] = [];
-  const seen = new Set<string>();
-  for (const id of previous) {
-    if (!alive.has(id) || seen.has(id)) continue;
-    seen.add(id);
-    next.push(id);
-  }
-  for (const id of threadIds) {
-    if (seen.has(id)) continue;
-    seen.add(id);
-    next.push(id);
-  }
-  return next;
 }

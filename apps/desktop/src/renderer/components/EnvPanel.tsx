@@ -376,7 +376,7 @@ export function EnvPanel(props: {
           )}
         </div>
         {canCreateBranch ? (
-          <div className="border-t border-[var(--border)]">
+          <div className="border-t border-[var(--divider,var(--border))]">
             <button
               type="button"
               role="menuitem"
@@ -507,7 +507,7 @@ export function EnvPanel(props: {
     <aside
       className={cn(
         // grid: header auto + body scrolls when card hits max-height (avoids zero-height flex bugs).
-        "env-panel surface-panel z-20 grid max-h-[calc(100%-16px)] shrink-0 grid-rows-[auto_minmax(0,1fr)] overflow-hidden shadow-lg",
+        "env-panel surface-panel z-20 grid max-h-[calc(100%-16px)] shrink-0 grid-rows-[auto_minmax(0,1fr)] overflow-hidden shadow-none",
         // float: overlay in the right gutter (height follows content, capped by max-h).
         // dock: in-flow sibling that squeezes the conversation column.
         layout === "float"
@@ -521,7 +521,7 @@ export function EnvPanel(props: {
     >
       {/* Group header (same size as sidebar「项目」) + settings gear */}
       <div className="flex h-9 shrink-0 items-center gap-1 px-2.5 pt-1.5">
-        <span className="min-w-0 flex-1 truncate text-[13px] font-semibold tracking-wide text-[var(--text-subtle)]">
+        <span className="min-w-0 flex-1 truncate text-[13px] font-normal text-[var(--text-subtle)]">
           {tr("env.title")}
         </span>
         {props.onOpenSettings ? (

@@ -1,33 +1,32 @@
 /**
- * Pix brand mark — white plate + black three-bar π (matches build/icon.svg).
+ * Pix brand mark — matches apps/desktop/build/icon.svg (white plate + black π).
+ * Used in sidebar, empty hero, and any in-app chrome. Keep geometry in sync with icon.svg.
  */
 import { cn } from "../lib/utils.ts";
 
+/**
+ * Source art is 1024×1024. Bars are expressed in that space and scaled via viewBox.
+ * - plate rx 229
+ * - crossbar (250,298) 524×104 rx52
+ * - left stem (308,350) 100×378 rx50
+ * - right stem (548,350) 100×300 rx50
+ */
 export function PixLogo(props: { className?: string; title?: string }) {
   return (
     <svg
       xmlns="http://www.w3.org/2000/svg"
-      viewBox="0 0 32 32"
+      viewBox="0 0 1024 1024"
       fill="none"
       className={cn("size-5 shrink-0", props.className)}
       role="img"
       aria-label={props.title ?? "Pix"}
     >
-      <rect width="32" height="32" rx="8" fill="#FFFFFF" />
-      <rect
-        x="0.5"
-        y="0.5"
-        width="31"
-        height="31"
-        rx="7.5"
-        fill="none"
-        stroke="#E4E4E7"
-        strokeWidth="1"
-      />
+      <title>{props.title ?? "Pix"}</title>
+      <rect width="1024" height="1024" rx="229" ry="229" fill="#FFFFFF" />
       <g fill="#0A0A0A">
-        <rect x="7.75" y="9.15" width="16.5" height="3.3" rx="1.65" />
-        <rect x="9.5" y="10.7" width="3.15" height="12.1" rx="1.575" />
-        <rect x="17.1" y="10.7" width="3.15" height="9.6" rx="1.575" />
+        <rect x="250" y="298" width="524" height="104" rx="52" />
+        <rect x="308" y="350" width="100" height="378" rx="50" />
+        <rect x="548" y="350" width="100" height="300" rx="50" />
       </g>
     </svg>
   );

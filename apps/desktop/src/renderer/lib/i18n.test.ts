@@ -21,4 +21,15 @@ describe("i18n", () => {
     expect(t("zh", "resources.title")).toBe("资源");
     expect(t("en", "resources.emptyTitle")).toBe("No resources loaded");
   });
+
+  it("localizes session parity and pi settings surfaces", () => {
+    expect(t("zh", "sessionTree.title")).toBe("会话树");
+    expect(t("en", "sessionTree.title")).toBe("Session tree");
+    expect(t("zh", "sessionInfo.exportJsonl")).toBe("导出 JSONL");
+    expect(t("en", "sessionInfo.exportJsonl")).toBe("Export JSONL");
+    expect(t("zh", "piSettings.steeringMode")).toBe("引导模式");
+    expect(t("en", "piSettings.steeringMode")).toBe("Steering mode");
+    expect(t("zh", "slash.builtin.tree")).toContain("会话树");
+    expect(t("en", "slash.builtin.tree").toLowerCase()).toContain("tree");
+  });
 });

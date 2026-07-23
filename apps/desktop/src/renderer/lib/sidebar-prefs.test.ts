@@ -23,7 +23,7 @@ describe("sidebar prefs helpers", () => {
 
   it("defaults translucency on and matches OpenCowork dark hex", () => {
     expect(SIDEBAR_DEFAULT_TRANSLUCENT).toBe(true);
-    expect(SIDEBAR_TRANSLUCENT_MIX_PERCENT).toBe(32);
+    expect(SIDEBAR_TRANSLUCENT_MIX_PERCENT).toBe(0);
     expect(OPENCOWORK_DARK.background).toBe("#191919");
     expect(OPENCOWORK_DARK.sidebar).toBe("#151515");
     expect(OPENCOWORK_DARK.sidebarAccent).toBe("#252525");

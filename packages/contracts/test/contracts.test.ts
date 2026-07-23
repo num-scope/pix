@@ -150,6 +150,122 @@ describe("host contract validation", () => {
     ).toBe(false);
   });
 
+  it("accepts session parity commands and settings expansion", () => {
+    expect(
+      isHostCommand({
+        protocolVersion: IPC_PROTOCOL_VERSION,
+        type: "session.tree",
+        requestId: "tree-1",
+      }),
+    ).toBe(true);
+    expect(
+      isHostCommand({
+        protocolVersion: IPC_PROTOCOL_VERSION,
+        type: "session.navigateTree",
+        requestId: "nav-1",
+        targetId: "entry-1",
+      }),
+    ).toBe(true);
+    expect(
+      isHostCommand({
+        protocolVersion: IPC_PROTOCOL_VERSION,
+        type: "session.compact",
+        requestId: "c-1",
+        instructions: "summarize",
+      }),
+    ).toBe(true);
+    expect(
+      isHostCommand({
+        protocolVersion: IPC_PROTOCOL_VERSION,
+        type: "session.setName",
+        requestId: "n-1",
+        name: "demo",
+      }),
+    ).toBe(true);
+    expect(
+      isHostCommand({
+        protocolVersion: IPC_PROTOCOL_VERSION,
+        type: "session.export",
+        requestId: "e-1",
+        format: "jsonl",
+      }),
+    ).toBe(true);
+    expect(
+      isHostCommand({
+        protocolVersion: IPC_PROTOCOL_VERSION,
+        type: "session.bash",
+        requestId: "b-1",
+        command: "echo hi",
+        excludeFromContext: true,
+      }),
+    ).toBe(true);
+    expect(
+      isHostCommand({
+        protocolVersion: IPC_PROTOCOL_VERSION,
+        type: "runtime.reload",
+        requestId: "r-1",
+      }),
+    ).toBe(true);
+    expect(
+      isHostCommand({
+        protocolVersion: IPC_PROTOCOL_VERSION,
+        type: "settings.patch",
+        requestId: "s-1",
+        patch: { steeringMode: "one-at-a-time", followUpMode: "all" },
+      }),
+    ).toBe(true);
+    expect(
+      isHostEvent({
+        protocolVersion: IPC_PROTOCOL_VERSION,
+        type: "session.tree",
+        tree: {
+          sessionId: "s",
+          filterMode: "default",
+          nodes: [
+            {
+              id: "a",
+              role: "user",
+              preview: "hi",
+              depth: 0,
+              leaf: true,
+              active: true,
+            },
+          ],
+        },
+      }),
+    ).toBe(true);
+    expect(
+      isHostEvent({
+        protocolVersion: IPC_PROTOCOL_VERSION,
+        type: "settings.view",
+        settings: {
+          agentDir: "/tmp/agent",
+          defaultProjectTrust: "ask",
+          compactionEnabled: true,
+          compactionReserveTokens: 16384,
+          compactionKeepRecentTokens: 20000,
+          retryEnabled: true,
+          retryMaxRetries: 3,
+          retryBaseDelayMs: 2000,
+          hideThinkingBlock: false,
+          quietStartup: false,
+          enableSkillCommands: true,
+          availableThinkingLevels: ["off", "low"],
+          steeringMode: "all",
+          followUpMode: "one-at-a-time",
+          doubleEscapeAction: "fork",
+          treeFilterMode: "default",
+          enableInstallTelemetry: false,
+          enableAnalytics: false,
+          httpIdleTimeoutMs: 60000,
+          enabledModels: ["claude-*", "gpt-4o"],
+          readOnlyFields: ["thinkingBudgets"],
+          degradedCapabilities: ["tui"],
+        },
+      }),
+    ).toBe(true);
+  });
+
   it("accepts providers list command and non-secret events", () => {
     expect(
       isHostCommand({

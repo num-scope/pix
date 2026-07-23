@@ -17,15 +17,18 @@ export type NotificationPrefs = {
   sound: boolean;
 };
 
-const KEY = "pix.notifications.prefs";
+/** Bumped when defaults change so stale localStorage does not keep broken prefs. */
+const KEY = "pix.notifications.prefs.v2";
 
 export const DEFAULT_NOTIFICATION_PREFS: NotificationPrefs = {
   enabled: true,
   onComplete: true,
   onError: true,
   onHostCrash: true,
-  onlyWhenUnfocused: true,
-  sound: false,
+  // Default off so task complete/error notifications work while using the app.
+  // Users can enable "only when unfocused" in Settings → Notifications.
+  onlyWhenUnfocused: false,
+  sound: true,
 };
 
 export function loadNotificationPrefs(): NotificationPrefs {
@@ -38,8 +41,10 @@ export function loadNotificationPrefs(): NotificationPrefs {
       onComplete: parsed.onComplete !== false,
       onError: parsed.onError !== false,
       onHostCrash: parsed.onHostCrash !== false,
-      onlyWhenUnfocused: parsed.onlyWhenUnfocused !== false,
-      sound: parsed.sound === true,
+      // Prefer explicit false; missing key follows new default (off).
+      onlyWhenUnfocused: parsed.onlyWhenUnfocused === true,
+      // Prefer explicit false; missing key enables sound (helps macOS banner visibility).
+      sound: parsed.sound !== false,
     };
   } catch {
     return { ...DEFAULT_NOTIFICATION_PREFS };

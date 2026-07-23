@@ -21,8 +21,13 @@ import {
   type ProviderAuthSummary,
   type ProviderUsageSnapshot,
   type ResourceSummary,
+  type ScopedModelView,
+  type SessionBashResult,
+  type SessionExportResult,
   type SessionHistoryMessage,
+  type SessionInfoView,
   type SessionThreadSummary,
+  type SessionTreeView,
   type UpsertCustomProviderInput,
   isHostEvent,
 } from "@pix/contracts";
@@ -120,6 +125,108 @@ async function runGit(cwd: string, args: string[]): Promise<string> {
   // git writes some progress to stderr; only treat as failure when exit would have thrown.
   void err;
   return String(stdout ?? "");
+}
+
+const WORKSPACE_SEARCH_SKIP = new Set([
+  "node_modules",
+  ".git",
+  "dist",
+  "build",
+  "coverage",
+  ".next",
+  ".turbo",
+  "release",
+]);
+
+/**
+ * Paths for the `@` mention menu: prefer `git ls-files`, fall back to a shallow walk.
+ */
+async function searchWorkspacePaths(
+  cwd: string,
+  query: string,
+  limit = 24,
+): Promise<Array<{ path: string; relative: string; kind: "file" | "folder" }>> {
+  if (!cwd || !existsSync(cwd)) return [];
+  const needle = query.trim().toLocaleLowerCase();
+  const cap = Math.max(1, Math.min(limit, 80));
+
+  let candidates: string[] = [];
+  try {
+    const tracked = await runGit(cwd, ["ls-files", "-z"]);
+    const others = await runGit(cwd, ["ls-files", "-z", "--others", "--exclude-standard"]);
+    const seen = new Set<string>();
+    for (const block of [tracked, others]) {
+      for (const rel of block.split("\0")) {
+        const r = rel.trim().replace(/\\/g, "/");
+        if (!r || seen.has(r)) continue;
+        seen.add(r);
+        candidates.push(r);
+      }
+    }
+  } catch {
+    candidates = [];
+  }
+
+  if (candidates.length === 0) {
+    // Shallow fallback walk (depth-limited).
+    const walk = (dir: string, prefix: string, depth: number) => {
+      if (depth > 4 || candidates.length >= 2000) return;
+      let entries: string[] = [];
+      try {
+        entries = readdirSync(dir);
+      } catch {
+        return;
+      }
+      for (const name of entries) {
+        if (name.startsWith(".") || WORKSPACE_SEARCH_SKIP.has(name)) continue;
+        const rel = prefix ? `${prefix}/${name}` : name;
+        const abs = join(dir, name);
+        let isDir = false;
+        try {
+          isDir = lstatSync(abs).isDirectory();
+        } catch {
+          continue;
+        }
+        candidates.push(rel.replace(/\\/g, "/"));
+        if (isDir) walk(abs, rel.replace(/\\/g, "/"), depth + 1);
+      }
+    };
+    walk(cwd, "", 0);
+  }
+
+  const scored = candidates
+    .filter((rel) => {
+      if (!needle) return true;
+      return rel.toLocaleLowerCase().includes(needle);
+    })
+    .map((rel) => {
+      const base = rel.split("/").pop() ?? rel;
+      const lower = rel.toLocaleLowerCase();
+      const baseLower = base.toLocaleLowerCase();
+      let score = 2;
+      if (needle) {
+        if (baseLower.startsWith(needle)) score = 0;
+        else if (baseLower.includes(needle)) score = 1;
+        else if (lower.includes(needle)) score = 2;
+      }
+      return { rel, score, base };
+    })
+    .sort((a, b) => a.score - b.score || a.rel.localeCompare(b.rel))
+    .slice(0, cap);
+
+  const out: Array<{ path: string; relative: string; kind: "file" | "folder" }> = [];
+  for (const item of scored) {
+    const abs = resolve(cwd, item.rel);
+    if (!existsSync(abs)) continue;
+    let kind: "file" | "folder" = "file";
+    try {
+      kind = lstatSync(abs).isDirectory() ? "folder" : "file";
+    } catch {
+      continue;
+    }
+    out.push({ path: abs, relative: item.rel, kind });
+  }
+  return out;
 }
 
 function resolveWorkspaceCwd(cwd: string | undefined, fallback?: string): string {
@@ -1862,6 +1969,244 @@ class HostSupervisor {
     return { snapshot: event.snapshot, threads: event.threads, history: event.history };
   }
 
+  async sessionTree(): Promise<SessionTreeView> {
+    if (!this.#host) await this.start();
+    const event = await this.#request({
+      protocolVersion: IPC_PROTOCOL_VERSION,
+      type: "session.tree",
+      requestId: randomUUID(),
+    });
+    if (event.type !== "session.tree")
+      throw new Error("Agent Host returned an unexpected session.tree response");
+    return event.tree;
+  }
+
+  async navigateSessionTree(
+    targetId: string,
+    options?: { summarize?: boolean; customInstructions?: string },
+  ): Promise<{
+    snapshot: HostSnapshot;
+    threads: SessionThreadSummary[];
+    history: SessionHistoryMessage[];
+    cancelled: boolean;
+  }> {
+    if (!this.#host) await this.start();
+    const command: HostCommand = {
+      protocolVersion: IPC_PROTOCOL_VERSION,
+      type: "session.navigateTree",
+      requestId: randomUUID(),
+      targetId,
+    };
+    if (options?.summarize !== undefined) command.summarize = options.summarize;
+    if (options?.customInstructions) command.customInstructions = options.customInstructions;
+    const event = await this.#request(command);
+    if (event.type !== "session.opened")
+      throw new Error("Agent Host returned an unexpected session.navigateTree response");
+    this.#acceptSnapshot(event.snapshot);
+    return {
+      snapshot: event.snapshot,
+      threads: event.threads,
+      history: event.history,
+      cancelled: false,
+    };
+  }
+
+  async compactSession(instructions?: string): Promise<HostSnapshot> {
+    if (!this.#host) await this.start();
+    const command: HostCommand = {
+      protocolVersion: IPC_PROTOCOL_VERSION,
+      type: "session.compact",
+      requestId: randomUUID(),
+    };
+    if (instructions !== undefined) command.instructions = instructions;
+    const event = await this.#request(command);
+    if (event.type !== "runtime.snapshot")
+      throw new Error("Agent Host returned an unexpected session.compact response");
+    this.#acceptSnapshot(event.snapshot);
+    return event.snapshot;
+  }
+
+  async setSessionName(name: string): Promise<HostSnapshot> {
+    if (!this.#host) await this.start();
+    const event = await this.#request({
+      protocolVersion: IPC_PROTOCOL_VERSION,
+      type: "session.setName",
+      requestId: randomUUID(),
+      name,
+    });
+    if (event.type !== "runtime.snapshot")
+      throw new Error("Agent Host returned an unexpected session.setName response");
+    this.#acceptSnapshot(event.snapshot);
+    return event.snapshot;
+  }
+
+  async cloneSession(): Promise<{
+    snapshot: HostSnapshot;
+    threads: SessionThreadSummary[];
+    history: SessionHistoryMessage[];
+  }> {
+    if (!this.#host) await this.start();
+    const event = await this.#request({
+      protocolVersion: IPC_PROTOCOL_VERSION,
+      type: "session.clone",
+      requestId: randomUUID(),
+    });
+    if (event.type !== "session.opened")
+      throw new Error("Agent Host returned an unexpected session.clone response");
+    this.#acceptSnapshot(event.snapshot);
+    return { snapshot: event.snapshot, threads: event.threads, history: event.history };
+  }
+
+  async sessionInfo(): Promise<SessionInfoView> {
+    if (!this.#host) await this.start();
+    const event = await this.#request({
+      protocolVersion: IPC_PROTOCOL_VERSION,
+      type: "session.info",
+      requestId: randomUUID(),
+    });
+    if (event.type !== "session.info")
+      throw new Error("Agent Host returned an unexpected session.info response");
+    return event.info;
+  }
+
+  async exportSession(
+    format: "html" | "jsonl",
+    outputPath?: string,
+  ): Promise<SessionExportResult> {
+    if (!this.#host) await this.start();
+    const command: HostCommand = {
+      protocolVersion: IPC_PROTOCOL_VERSION,
+      type: "session.export",
+      requestId: randomUUID(),
+      format,
+    };
+    if (outputPath !== undefined) command.outputPath = outputPath;
+    const event = await this.#request(command);
+    if (event.type !== "session.export")
+      throw new Error("Agent Host returned an unexpected session.export response");
+    return event.result;
+  }
+
+  async importSession(inputPath: string): Promise<{
+    snapshot: HostSnapshot;
+    threads: SessionThreadSummary[];
+    history: SessionHistoryMessage[];
+  }> {
+    if (!this.#host) await this.start();
+    const event = await this.#request({
+      protocolVersion: IPC_PROTOCOL_VERSION,
+      type: "session.import",
+      requestId: randomUUID(),
+      inputPath,
+    });
+    if (event.type !== "session.opened")
+      throw new Error("Agent Host returned an unexpected session.import response");
+    this.#acceptSnapshot(event.snapshot);
+    return { snapshot: event.snapshot, threads: event.threads, history: event.history };
+  }
+
+  async sessionBash(
+    commandText: string,
+    options?: { excludeFromContext?: boolean },
+  ): Promise<{ result: SessionBashResult; snapshot: HostSnapshot }> {
+    if (!this.#host) await this.start();
+    const command: HostCommand = {
+      protocolVersion: IPC_PROTOCOL_VERSION,
+      type: "session.bash",
+      requestId: randomUUID(),
+      command: commandText,
+    };
+    if (options?.excludeFromContext !== undefined) {
+      command.excludeFromContext = options.excludeFromContext;
+    }
+    const event = await this.#request(command);
+    if (event.type !== "session.bash")
+      throw new Error("Agent Host returned an unexpected session.bash response");
+    this.#acceptSnapshot(event.snapshot);
+    return { result: event.result, snapshot: event.snapshot };
+  }
+
+  async copyLastAssistant(): Promise<string | undefined> {
+    if (!this.#host) await this.start();
+    const event = await this.#request({
+      protocolVersion: IPC_PROTOCOL_VERSION,
+      type: "session.copyLast",
+      requestId: randomUUID(),
+    });
+    if (event.type !== "session.copyLast")
+      throw new Error("Agent Host returned an unexpected session.copyLast response");
+    return event.text;
+  }
+
+  async reloadRuntime(): Promise<HostSnapshot> {
+    if (!this.#host) await this.start();
+    const event = await this.#request({
+      protocolVersion: IPC_PROTOCOL_VERSION,
+      type: "runtime.reload",
+      requestId: randomUUID(),
+    });
+    if (event.type !== "runtime.snapshot")
+      throw new Error("Agent Host returned an unexpected runtime.reload response");
+    this.#acceptSnapshot(event.snapshot);
+    return event.snapshot;
+  }
+
+  async exportSessionPick(format: "html" | "jsonl"): Promise<SessionExportResult | undefined> {
+    if (!mainWindow || mainWindow.isDestroyed()) return undefined;
+    const result = await dialog.showSaveDialog(mainWindow, {
+      title: format === "html" ? "Export session HTML" : "Export session JSONL",
+      defaultPath: format === "html" ? "session.html" : "session.jsonl",
+      filters:
+        format === "html"
+          ? [{ name: "HTML", extensions: ["html", "htm"] }]
+          : [{ name: "JSONL", extensions: ["jsonl"] }],
+    });
+    if (result.canceled || !result.filePath) return undefined;
+    return this.exportSession(format, result.filePath);
+  }
+
+  async importSessionPick(): Promise<
+    | {
+        snapshot: HostSnapshot;
+        threads: SessionThreadSummary[];
+        history: SessionHistoryMessage[];
+      }
+    | undefined
+  > {
+    if (!mainWindow || mainWindow.isDestroyed()) return undefined;
+    const result = await dialog.showOpenDialog(mainWindow, {
+      title: "Import session JSONL",
+      properties: ["openFile"],
+      filters: [{ name: "JSONL", extensions: ["jsonl"] }],
+    });
+    if (result.canceled || !result.filePaths[0]) return undefined;
+    return this.importSession(result.filePaths[0]);
+  }
+
+  async listScopedModels(): Promise<ScopedModelView[]> {
+    if (!this.#host) await this.start();
+    const event = await this.#request({
+      protocolVersion: IPC_PROTOCOL_VERSION,
+      type: "models.scoped.list",
+      requestId: randomUUID(),
+    });
+    if (event.type !== "models.scoped")
+      throw new Error("Agent Host returned an unexpected models.scoped.list response");
+    return event.models;
+  }
+
+  async refreshModelCatalog(): Promise<ModelSummary[]> {
+    if (!this.#host) await this.start();
+    const event = await this.#request({
+      protocolVersion: IPC_PROTOCOL_VERSION,
+      type: "models.refresh",
+      requestId: randomUUID(),
+    });
+    if (event.type !== "model.list")
+      throw new Error("Agent Host returned an unexpected models.refresh response");
+    return event.models;
+  }
+
   async listPackages(): Promise<PackageSummary[]> {
     if (!this.#host) await this.start();
     const event = await this.#request({
@@ -2555,7 +2900,7 @@ function packageRoot(): string {
 
 function resolveAppIconPath(): string | undefined {
   const root = packageRoot();
-  // Prefer PNG for dock.setIcon (full-bleed square). Packaged .app uses .icns from builder.
+  // Prefer PNG for dock / About / window chrome. Packaged .app also ships .icns via builder.
   for (const rel of ["build/icon.png", "build/icon.icns"]) {
     const path = join(root, rel);
     if (existsSync(path)) return path;
@@ -2572,11 +2917,42 @@ function resolveAppIconPath(): string | undefined {
 function applyDockIcon(iconPath: string | undefined): void {
   if (process.platform !== "darwin" || !iconPath || !app.dock) return;
   const image = nativeImage.createFromPath(iconPath);
-  if (image.isEmpty()) return;
+  if (image.isEmpty()) {
+    console.warn("[pix] dock icon empty:", iconPath);
+    return;
+  }
   // Normalize to a square bitmap so Dock scaling matches other apps.
   const size = Math.max(image.getSize().width, image.getSize().height, 128);
   const squared = image.resize({ width: size, height: size, quality: "best" });
   app.dock.setIcon(squared);
+}
+
+/**
+ * Product branding for About dialog, Dock, and window chrome (dev + packaged).
+ * About panel needs an explicit iconPath or macOS falls back to Electron's icon.
+ */
+function applyAppBranding(): void {
+  app.setName("Pix");
+  if (process.platform === "win32") {
+    app.setAppUserModelId("dev.pix.app");
+  }
+  const iconPath = resolveAppIconPath();
+  applyDockIcon(iconPath);
+  if (iconPath) {
+    try {
+      app.setAboutPanelOptions({
+        applicationName: "Pix",
+        applicationVersion: app.getVersion(),
+        version: app.getVersion(),
+        copyright: "Pix",
+        iconPath,
+      });
+    } catch (error) {
+      console.warn("[pix] setAboutPanelOptions failed:", error);
+    }
+  } else {
+    console.warn("[pix] app icon not found under build/icon.png|icns");
+  }
 }
 
 async function createWindow(): Promise<void> {
@@ -2589,7 +2965,7 @@ async function createWindow(): Promise<void> {
   };
 
   const iconPath = resolveAppIconPath();
-  applyDockIcon(iconPath);
+  applyAppBranding();
 
   const savedWindow = resolveWindowCreateOptions(loadDesktopPrefs().window);
 
@@ -2641,45 +3017,124 @@ async function createWindow(): Promise<void> {
   }
 }
 
-// Windows Action Center groups notifications by AppUserModelID.
+// Identity early (before ready). Full branding (About icon/Dock) re-applied in whenReady.
 if (process.platform === "win32") {
   app.setAppUserModelId("dev.pix.app");
 }
-// Prefer product name over "Electron" in notification center (dev + packaged).
 app.setName("Pix");
+
+function openSystemNotificationSettings(): void {
+  if (process.platform === "darwin") {
+    // Ventura+ Settings app
+    void shell.openExternal(
+      "x-apple.systempreferences:com.apple.Notifications-Settings.extension",
+    ).catch(() => {
+      void shell.openExternal(
+        "x-apple.systempreferences:com.apple.preference.notifications",
+      );
+    });
+    return;
+  }
+  if (process.platform === "win32") {
+    void shell.openExternal("ms-settings:notifications");
+    return;
+  }
+  // Linux: no single standard deep-link.
+  void shell.openExternal("https://wiki.archlinux.org/title/Desktop_notifications").catch(() => undefined);
+}
 
 /** Keep Notification instances alive until closed (GC otherwise drops them before show). */
 const liveOsNotifications = new Set<InstanceType<typeof Notification>>();
 
-function showOsNotification(payload: { title: string; body?: string; silent?: boolean }): boolean {
+export type ShowOsNotificationPayload = {
+  title: string;
+  body?: string;
+  silent?: boolean;
+  /** Always attempt (settings test). */
+  force?: boolean;
+  /** Skip when the main window is focused (checked in main — not renderer hasFocus). */
+  requireUnfocused?: boolean;
+};
+
+function focusMainWindow(): void {
+  const win = mainWindow;
+  if (!win || win.isDestroyed()) return;
+  if (win.isMinimized()) win.restore();
+  win.show();
+  win.focus();
+}
+
+/**
+ * Post a desktop OS notification from the main process.
+ * Returns whether the OS accepted/showed it (listens for `show` / `failed`).
+ */
+async function showOsNotification(payload: ShowOsNotificationPayload): Promise<boolean> {
   try {
-    if (!Notification.isSupported()) return false;
+    if (!Notification.isSupported()) {
+      console.warn("[pix] notifications unsupported on this platform");
+      return false;
+    }
     const title = payload?.title?.trim();
     if (!title) return false;
-    const body = payload.body?.trim();
+
+    if (!payload.force && payload.requireUnfocused) {
+      const focused = Boolean(mainWindow && !mainWindow.isDestroyed() && mainWindow.isFocused());
+      if (focused) return false;
+    }
+
+    // Some hosts suppress empty-body banners; always provide a body string.
+    const body = payload.body?.trim() || title;
     const iconPath = resolveAppIconPath();
-    const options: {
-      title: string;
-      body?: string;
-      silent?: boolean;
-      icon?: string;
-    } = {
+    const options: Electron.NotificationConstructorOptions = {
       title,
+      body,
       silent: payload.silent === true,
-      ...(body ? { body } : {}),
     };
-    // macOS uses the app icon; Windows/Linux benefit from an explicit icon.
+    // macOS uses the app bundle icon; Windows/Linux need an explicit path.
     if (iconPath && process.platform !== "darwin") {
       options.icon = iconPath;
     }
+    if (process.platform === "linux") {
+      options.urgency = "normal";
+    }
+
     const n = new Notification(options);
     liveOsNotifications.add(n);
+
     const drop = () => liveOsNotifications.delete(n);
     n.once("close", drop);
-    n.once("click", drop);
-    n.show();
-    return true;
-  } catch {
+    n.once("click", () => {
+      focusMainWindow();
+      drop();
+    });
+
+    const shown = await new Promise<boolean>((resolve) => {
+      let settled = false;
+      const finish = (ok: boolean) => {
+        if (settled) return;
+        settled = true;
+        resolve(ok);
+      };
+      n.once("show", () => finish(true));
+      n.once("failed", (_event, error) => {
+        console.warn("[pix] notification failed:", error);
+        drop();
+        finish(false);
+      });
+      // Linux / some macOS builds never emit `show`; treat no-failure as success.
+      setTimeout(() => finish(true), 800);
+      try {
+        n.show();
+      } catch (error) {
+        console.warn("[pix] notification show() threw:", error);
+        drop();
+        finish(false);
+      }
+    });
+
+    return shown;
+  } catch (error) {
+    console.warn("[pix] notification error:", error);
     return false;
   }
 }
@@ -2687,8 +3142,8 @@ function showOsNotification(payload: { title: string; body?: string; silent?: bo
 void app
   .whenReady()
   .then(async () => {
-    // Set Dock icon as early as possible (dev: Electron binary; packaged: .icns in bundle).
-    applyDockIcon(resolveAppIconPath());
+    // Name + About/Dock icon (must be after ready for About panel iconPath on some builds).
+    applyAppBranding();
     // Default Electron File/Edit/View/Window menu is English-only and not product chrome.
     // macOS keeps a minimal app menu (required for standard shortcuts / system UX).
     if (process.platform === "darwin") {
@@ -2879,6 +3334,20 @@ void app
       });
       return result.canceled ? [] : result.filePaths;
     });
+    ipcMain.handle(
+      "pix:workspace:search-paths",
+      async (_event, query?: string, options?: { cwd?: string; limit?: number }) => {
+        const fromOpts =
+          typeof options?.cwd === "string" && options.cwd.trim() ? options.cwd.trim() : undefined;
+        const resolved = fromOpts ?? supervisor?.getWorkspaceCwd();
+        if (!resolved || !existsSync(resolved)) return [];
+        return searchWorkspacePaths(
+          resolved,
+          typeof query === "string" ? query : "",
+          options?.limit ?? 24,
+        );
+      },
+    );
     ipcMain.handle("pix:trust:get", () => supervisor?.getTrust());
     ipcMain.handle("pix:trust:set", (_event, trusted: boolean) => supervisor?.setTrust(trusted));
     ipcMain.handle("pix:models:list", () => supervisor?.listModels());
@@ -2951,6 +3420,44 @@ void app
     ipcMain.handle("pix:session:fork", (_event, entryId?: string) =>
       supervisor?.forkSession(entryId),
     );
+    ipcMain.handle("pix:session:tree", () => supervisor?.sessionTree());
+    ipcMain.handle(
+      "pix:session:navigate-tree",
+      (
+        _event,
+        targetId: string,
+        options?: { summarize?: boolean; customInstructions?: string },
+      ) => supervisor?.navigateSessionTree(targetId, options),
+    );
+    ipcMain.handle("pix:session:compact", (_event, instructions?: string) =>
+      supervisor?.compactSession(instructions),
+    );
+    ipcMain.handle("pix:session:set-name", (_event, name: string) =>
+      supervisor?.setSessionName(name),
+    );
+    ipcMain.handle("pix:session:clone", () => supervisor?.cloneSession());
+    ipcMain.handle("pix:session:info", () => supervisor?.sessionInfo());
+    ipcMain.handle(
+      "pix:session:export",
+      (_event, format: "html" | "jsonl", outputPath?: string) =>
+        supervisor?.exportSession(format, outputPath),
+    );
+    ipcMain.handle("pix:session:export-pick", (_event, format: "html" | "jsonl") =>
+      supervisor?.exportSessionPick(format),
+    );
+    ipcMain.handle("pix:session:import", (_event, inputPath: string) =>
+      supervisor?.importSession(inputPath),
+    );
+    ipcMain.handle("pix:session:import-pick", () => supervisor?.importSessionPick());
+    ipcMain.handle(
+      "pix:session:bash",
+      (_event, command: string, options?: { excludeFromContext?: boolean }) =>
+        supervisor?.sessionBash(command, options),
+    );
+    ipcMain.handle("pix:session:copy-last", () => supervisor?.copyLastAssistant());
+    ipcMain.handle("pix:runtime:reload", () => supervisor?.reloadRuntime());
+    ipcMain.handle("pix:models:list-scoped", () => supervisor?.listScopedModels());
+    ipcMain.handle("pix:models:refresh-catalog", () => supervisor?.refreshModelCatalog());
     ipcMain.handle("pix:packages:list", () => supervisor?.listPackages());
     ipcMain.handle("pix:packages:install", (_event, source: string, scope: "global" | "project") =>
       supervisor?.installPackage(source, scope),
@@ -2976,9 +3483,11 @@ void app
 
     ipcMain.handle(
       "pix:notifications:show",
-      (_event, payload: { title: string; body?: string; silent?: boolean }) =>
-        showOsNotification(payload),
+      (_event, payload: ShowOsNotificationPayload) => showOsNotification(payload ?? { title: "" }),
     );
+    ipcMain.handle("pix:notifications:open-system-settings", () => {
+      openSystemNotificationSettings();
+    });
 
     if (process.env.PIX_AUTO_START === "1") {
       const snapshot = await supervisor?.start();

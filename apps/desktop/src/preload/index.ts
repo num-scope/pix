@@ -24,6 +24,8 @@ const api: PixDesktopApi = {
     openPath: (cwd, options) => ipcRenderer.invoke("pix:workspace:open-path", cwd, options),
     pickFolder: () => ipcRenderer.invoke("pix:workspace:pick-folder"),
     pickAttachments: () => ipcRenderer.invoke("pix:workspace:pick-attachments"),
+    searchPaths: (query, options) =>
+      ipcRenderer.invoke("pix:workspace:search-paths", query ?? "", options),
     ensureDefault: () => ipcRenderer.invoke("pix:workspace:ensure-default"),
     ensureConversation: () => ipcRenderer.invoke("pix:workspace:ensure-conversation"),
     removeRecent: (cwd) => ipcRenderer.invoke("pix:workspace:remove-recent", cwd),
@@ -68,6 +70,8 @@ const api: PixDesktopApi = {
     removeCustomProvider: (provider) => ipcRenderer.invoke("pix:models:remove-custom", provider),
     openConfig: () => ipcRenderer.invoke("pix:models:open-config"),
     revealConfig: () => ipcRenderer.invoke("pix:models:reveal-config"),
+    listScoped: () => ipcRenderer.invoke("pix:models:list-scoped"),
+    refreshCatalog: () => ipcRenderer.invoke("pix:models:refresh-catalog"),
   },
   thinking: {
     set: (level) => ipcRenderer.invoke("pix:thinking:set", level),
@@ -112,6 +116,22 @@ const api: PixDesktopApi = {
     create: () => ipcRenderer.invoke("pix:session:new"),
     switch: (sessionPath) => ipcRenderer.invoke("pix:session:switch", sessionPath),
     fork: (entryId) => ipcRenderer.invoke("pix:session:fork", entryId),
+    tree: () => ipcRenderer.invoke("pix:session:tree"),
+    navigateTree: (targetId, options) =>
+      ipcRenderer.invoke("pix:session:navigate-tree", targetId, options),
+    compact: (instructions) => ipcRenderer.invoke("pix:session:compact", instructions),
+    setName: (name) => ipcRenderer.invoke("pix:session:set-name", name),
+    clone: () => ipcRenderer.invoke("pix:session:clone"),
+    info: () => ipcRenderer.invoke("pix:session:info"),
+    export: (format, outputPath) => ipcRenderer.invoke("pix:session:export", format, outputPath),
+    exportPick: (format) => ipcRenderer.invoke("pix:session:export-pick", format),
+    import: (inputPath) => ipcRenderer.invoke("pix:session:import", inputPath),
+    importPick: () => ipcRenderer.invoke("pix:session:import-pick"),
+    bash: (command, options) => ipcRenderer.invoke("pix:session:bash", command, options),
+    copyLastAssistant: () => ipcRenderer.invoke("pix:session:copy-last"),
+  },
+  runtime: {
+    reload: () => ipcRenderer.invoke("pix:runtime:reload"),
   },
   packages: {
     list: () => ipcRenderer.invoke("pix:packages:list"),
@@ -131,7 +151,17 @@ const api: PixDesktopApi = {
     crashHost: () => ipcRenderer.invoke("pix:test:crash-host"),
   },
   notifications: {
-    show: (payload) => ipcRenderer.invoke("pix:notifications:show", payload),
+    show: (payload) =>
+      ipcRenderer.invoke("pix:notifications:show", {
+        title: payload?.title ?? "",
+        ...(payload?.body !== undefined ? { body: payload.body } : {}),
+        ...(payload?.silent !== undefined ? { silent: payload.silent } : {}),
+        ...(payload?.force !== undefined ? { force: payload.force } : {}),
+        ...(payload?.requireUnfocused !== undefined
+          ? { requireUnfocused: payload.requireUnfocused }
+          : {}),
+      }),
+    openSystemSettings: () => ipcRenderer.invoke("pix:notifications:open-system-settings"),
   },
 };
 

@@ -16,6 +16,9 @@ test-results/
 playwright-report/
 blob-report/
 
+# pi session exports / accidental test cwd dumps (exportToJsonl default path)
+session-*.jsonl
+
 # Local environment
 .env
 .env.*

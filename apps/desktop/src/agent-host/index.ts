@@ -430,6 +430,168 @@ async function handleCommand(command: HostCommand): Promise<void> {
         });
         break;
       }
+      case "session.tree": {
+        if (!handle) throw new Error("Agent Host is not ready");
+        post({
+          protocolVersion: IPC_PROTOCOL_VERSION,
+          type: "session.tree",
+          requestId: command.requestId,
+          tree: handle.getSessionTree(),
+        });
+        break;
+      }
+      case "session.navigateTree": {
+        if (!handle) throw new Error("Agent Host is not ready");
+        const nav = await handle.navigateTree(command.targetId, {
+          ...(command.summarize !== undefined ? { summarize: command.summarize } : {}),
+          ...(command.customInstructions
+            ? { customInstructions: command.customInstructions }
+            : {}),
+        });
+        sequence = 0;
+        post({
+          protocolVersion: IPC_PROTOCOL_VERSION,
+          type: "session.opened",
+          requestId: command.requestId,
+          snapshot: { ...nav.snapshot, sequence },
+          threads: await handle.listSessions(),
+          history: handle.historyMessages(),
+        });
+        break;
+      }
+      case "session.compact": {
+        if (!handle) throw new Error("Agent Host is not ready");
+        const snapshot = await handle.compact(command.instructions);
+        post({
+          protocolVersion: IPC_PROTOCOL_VERSION,
+          type: "runtime.snapshot",
+          requestId: command.requestId,
+          snapshot: { ...snapshot, sequence: ++sequence },
+        });
+        break;
+      }
+      case "session.setName": {
+        if (!handle) throw new Error("Agent Host is not ready");
+        const snapshot = handle.setSessionName(command.name);
+        post({
+          protocolVersion: IPC_PROTOCOL_VERSION,
+          type: "runtime.snapshot",
+          requestId: command.requestId,
+          snapshot: { ...snapshot, sequence: ++sequence },
+        });
+        break;
+      }
+      case "session.clone": {
+        if (!handle) throw new Error("Agent Host is not ready");
+        const result = await handle.cloneSession();
+        if (result.cancelled) throw new Error("Session clone was cancelled");
+        sequence = 0;
+        bindRuntimeEvents(handle);
+        post({
+          protocolVersion: IPC_PROTOCOL_VERSION,
+          type: "session.opened",
+          requestId: command.requestId,
+          snapshot: handle.snapshot(sequence),
+          threads: await handle.listSessions(),
+          history: handle.historyMessages(),
+        });
+        break;
+      }
+      case "session.info": {
+        if (!handle) throw new Error("Agent Host is not ready");
+        post({
+          protocolVersion: IPC_PROTOCOL_VERSION,
+          type: "session.info",
+          requestId: command.requestId,
+          info: handle.getSessionInfo(),
+        });
+        break;
+      }
+      case "session.export": {
+        if (!handle) throw new Error("Agent Host is not ready");
+        post({
+          protocolVersion: IPC_PROTOCOL_VERSION,
+          type: "session.export",
+          requestId: command.requestId,
+          result: await handle.exportSession(command.format, command.outputPath),
+        });
+        break;
+      }
+      case "session.import": {
+        if (!handle) throw new Error("Agent Host is not ready");
+        const result = await handle.importSession(command.inputPath);
+        if (result.cancelled) throw new Error("Session import was cancelled");
+        sequence = 0;
+        bindRuntimeEvents(handle);
+        post({
+          protocolVersion: IPC_PROTOCOL_VERSION,
+          type: "session.opened",
+          requestId: command.requestId,
+          snapshot: handle.snapshot(sequence),
+          threads: await handle.listSessions(),
+          history: handle.historyMessages(),
+        });
+        break;
+      }
+      case "session.bash": {
+        if (!handle) throw new Error("Agent Host is not ready");
+        const bashOpts =
+          command.excludeFromContext !== undefined
+            ? { excludeFromContext: command.excludeFromContext }
+            : undefined;
+        const bash = await handle.executeBash(command.command, bashOpts);
+        post({
+          protocolVersion: IPC_PROTOCOL_VERSION,
+          type: "session.bash",
+          requestId: command.requestId,
+          result: bash.result,
+          snapshot: { ...bash.snapshot, sequence: ++sequence },
+        });
+        break;
+      }
+      case "session.copyLast": {
+        if (!handle) throw new Error("Agent Host is not ready");
+        const text = handle.getLastAssistantText();
+        const event: HostEvent = {
+          protocolVersion: IPC_PROTOCOL_VERSION,
+          type: "session.copyLast",
+          requestId: command.requestId,
+        };
+        if (text !== undefined) event.text = text;
+        post(event);
+        break;
+      }
+      case "runtime.reload": {
+        if (!handle) throw new Error("Agent Host is not ready");
+        await handle.reload();
+        post({
+          protocolVersion: IPC_PROTOCOL_VERSION,
+          type: "runtime.snapshot",
+          requestId: command.requestId,
+          snapshot: handle.snapshot(++sequence),
+        });
+        break;
+      }
+      case "models.scoped.list": {
+        if (!handle) throw new Error("Agent Host is not ready");
+        post({
+          protocolVersion: IPC_PROTOCOL_VERSION,
+          type: "models.scoped",
+          requestId: command.requestId,
+          models: handle.listScopedModels(),
+        });
+        break;
+      }
+      case "models.refresh": {
+        if (!handle) throw new Error("Agent Host is not ready");
+        post({
+          protocolVersion: IPC_PROTOCOL_VERSION,
+          type: "model.list",
+          requestId: command.requestId,
+          models: await handle.refreshModelCatalog(),
+        });
+        break;
+      }
       case "trust.get": {
         if (!handle) throw new Error("Agent Host is not ready");
         post({
@@ -603,7 +765,7 @@ async function handleCommand(command: HostCommand): Promise<void> {
           protocolVersion: IPC_PROTOCOL_VERSION,
           type: "settings.view",
           requestId: command.requestId,
-          settings: handle.patchPiSettings(command.patch),
+          settings: await handle.patchPiSettings(command.patch),
         });
         break;
       }

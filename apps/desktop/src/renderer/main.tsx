@@ -4,7 +4,9 @@ import type {
   HostSnapshot,
   PackageSummary,
   ResourceSummary,
+  SessionInfoView,
   SessionThreadSummary,
+  SessionTreeView,
 } from "@pix/contracts";
 import {
   StrictMode,
@@ -22,6 +24,11 @@ import { AppSidebar } from "./components/AppSidebar.tsx";
 import { CommandPalette } from "./components/CommandPalette.tsx";
 import { Composer, type SpeedMode } from "./components/Composer.tsx";
 import { ErrorDialog } from "./components/ErrorDialog.tsx";
+import {
+  SessionInfoPanel,
+  SessionTreePanel,
+} from "./components/SessionParityPanels.tsx";
+import { RenameDialog } from "./components/RenameDialog.tsx";
 import { SettingsPage } from "./components/settings/SettingsPage.tsx";
 import {
   EnvPanel,
@@ -30,9 +37,15 @@ import {
 } from "./components/EnvPanel.tsx";
 import { PixLogo } from "./components/PixLogo.tsx";
 import { ThreadHeader } from "./components/ThreadHeader.tsx";
-import { TimelineRow } from "./components/TimelineRow.tsx";
+import { TimelineProcessBlock, TimelineRow } from "./components/TimelineRow.tsx";
 import { buildShellCommands } from "./lib/commands.ts";
 import { promptWithAttachedPaths } from "./lib/composer-suggestions.ts";
+import {
+  buildUnifiedSlashCatalog,
+  parseShellInjection,
+  parseSlashLine,
+  resolveBuiltinSlash,
+} from "./lib/slash-parity.ts";
 import { applyDocumentTheme, colorModeFromPiTheme, piThemeLabel } from "./lib/theme.ts";
 import { cn } from "./lib/utils.ts";
 import { t, type Locale } from "./lib/i18n.ts";
@@ -48,7 +61,7 @@ import {
   type AccessVisibility,
 } from "./lib/settings-prefs.ts";
 import { loadNotificationPrefs } from "./lib/notification-prefs.ts";
-import { installOverlayScroll } from "./lib/overlay-scroll.ts";
+import { installOverlayScroll, syncOverlayScroll } from "./lib/overlay-scroll.ts";
 import { sidebarRailWidth } from "./lib/sidebar-prefs.ts";
 import { matchShortcut } from "./lib/shortcuts.ts";
 import {
@@ -58,7 +71,13 @@ import {
   prependRecentPath,
   workspaceLabel,
 } from "./lib/workspace.ts";
-import { deriveRunState, historyToTimeline, projectEventsToTimeline } from "./lib/timeline.ts";
+import {
+  buildTimelineBlocks,
+  deriveRunState,
+  historyToTimeline,
+  projectEventsToTimeline,
+  type TimelineItem,
+} from "./lib/timeline.ts";
 import { classifyRuntimeEventDelivery, useShellStore } from "./store/shell-store.ts";
 import "./styles.css";
 
@@ -75,7 +94,6 @@ function maybeNotify(kind: "complete" | "error" | "crash", body?: string): void 
   if (kind === "complete" && !prefs.onComplete) return;
   if (kind === "error" && !prefs.onError) return;
   if (kind === "crash" && !prefs.onHostCrash) return;
-  if (prefs.onlyWhenUnfocused && document.hasFocus()) return;
   const locale = useShellStore.getState().locale;
   const title =
     kind === "complete"
@@ -83,11 +101,15 @@ function maybeNotify(kind: "complete" | "error" | "crash", body?: string): void 
       : kind === "error"
         ? t(locale, "notify.errorTitle")
         : t(locale, "notify.crashTitle");
-  void window.pix.notifications.show({
-    title,
-    ...(body?.trim() ? { body: body.trim() } : {}),
-    silent: !prefs.sound,
-  });
+  // Focus check runs in main via requireUnfocused (document.hasFocus is unreliable in Electron).
+  void window.pix.notifications
+    .show({
+      title,
+      body: body?.trim() || title,
+      silent: !prefs.sound,
+      requireUnfocused: prefs.onlyWhenUnfocused,
+    })
+    .catch(() => undefined);
 }
 
 function record(value: unknown): Record<string, unknown> | undefined {
@@ -180,6 +202,17 @@ function App() {
   const [envPanelFits, setEnvPanelFits] = useState(true);
   /** float = overlay without squeeze; dock = flex squeeze. */
   const [envPanelLayout, setEnvPanelLayout] = useState<Exclude<EnvPanelLayoutMode, "none">>("dock");
+  const [sessionTreeOpen, setSessionTreeOpen] = useState(false);
+  const [sessionTree, setSessionTree] = useState<SessionTreeView | undefined>();
+  const [sessionTreeLoading, setSessionTreeLoading] = useState(false);
+  const [sessionTreeError, setSessionTreeError] = useState<string | undefined>();
+  const [sessionInfoOpen, setSessionInfoOpen] = useState(false);
+  const [sessionInfo, setSessionInfo] = useState<SessionInfoView | undefined>();
+  const [sessionInfoLoading, setSessionInfoLoading] = useState(false);
+  const [sessionInfoError, setSessionInfoError] = useState<string | undefined>();
+  /** `/name` with no args → rename dialog for pi session display name. */
+  const [sessionNameDialogOpen, setSessionNameDialogOpen] = useState(false);
+  const lastEscapeAtRef = useRef(0);
   const threadColumnRef = useRef<HTMLElement | null>(null);
   const setSidebarOpen = useShellStore((s) => s.setSidebarOpen);
   const setLastFailure = useShellStore((s) => s.setLastFailure);
@@ -336,11 +369,14 @@ function App() {
   /** Session identity — used to pin scroll + remount timeline rows on switch. */
   const sessionKey = snapshot?.sessionFile ?? snapshot?.sessionId ?? "";
   const timeline = useMemo(() => {
-    const items = [...historyToTimeline(history), ...projectEventsToTimeline(events, sentPrompts)];
+    const items = [...historyToTimeline(history), ...projectEventsToTimeline(events, sentPrompts)].filter(
+      (item) => !(snapshot?.hideThinkingBlock && item.kind === "thinking"),
+    );
     // Prefix ids with session so React does not reuse rows across switches.
     if (!sessionKey) return items;
     return items.map((item) => ({ ...item, id: `${sessionKey}:${item.id}` }));
-  }, [history, events, sentPrompts, sessionKey]);
+  }, [history, events, sentPrompts, sessionKey, snapshot?.hideThinkingBlock]);
+  const timelineBlocks = useMemo(() => buildTimelineBlocks(timeline), [timeline]);
   const hasActivity = timeline.length > 0;
   const activeThread = threads.find((thread) => thread.active);
   const threadTitle =
@@ -396,6 +432,23 @@ function App() {
     });
   }
 
+  /**
+   * Prefetch pure-conversation sessions (Documents/Pix/conversations) so the
+   * 对话 rail stays populated even while a project host is active.
+   */
+  async function refreshConversationSessions() {
+    try {
+      const convCwd = await window.pix.workspace.ensureConversation();
+      const threads = await window.pix.session.listForCwd(convCwd);
+      setThreadsByCwd((prev) => ({
+        ...prev,
+        [normalizeCwdKey(convCwd)]: threads,
+      }));
+    } catch {
+      // Host may be stopped or conversation home unavailable.
+    }
+  }
+
   useEffect(() => {
     applyDocumentTheme(colorMode);
   }, [colorMode]);
@@ -448,6 +501,8 @@ function App() {
   useEffect(() => {
     const paths = [...(workspacePath ? [workspacePath] : []), ...recentWorkspaces];
     void refreshProjectSessions(paths);
+    // Always refresh pure conversations for the 对话 section.
+    void refreshConversationSessions();
   }, [workspacePath, recentWorkspaces]);
 
   // Cold start: recent projects + pi packages/resources regardless of open project.
@@ -457,6 +512,8 @@ function App() {
       await refreshRecentWorkspaces();
       if (cancelled) return;
       await refreshPiStatus({ ensure: true });
+      if (cancelled) return;
+      await refreshConversationSessions();
     })();
     return () => {
       cancelled = true;
@@ -564,6 +621,9 @@ function App() {
     } else {
       el.scrollTop = maxTop;
     }
+    // Programmatic pins do not always keep the floating thumb in sync — force it.
+    syncOverlayScroll(el, { show: true });
+    requestAnimationFrame(() => syncOverlayScroll(el, { show: true }));
   }
 
   function scrollTimelineToBottom(behavior: ScrollBehavior = "smooth") {
@@ -784,6 +844,7 @@ function App() {
           provider: model.provider,
           id: model.id,
           name: model.name,
+          ...(model.source ? { source: model.source } : {}),
         })),
     );
   }
@@ -824,6 +885,175 @@ function App() {
     }
   }
 
+  async function refreshSessionTree() {
+    setSessionTreeLoading(true);
+    setSessionTreeError(undefined);
+    try {
+      if (!useShellStore.getState().snapshot) await ensureHost();
+      setSessionTree(await window.pix.session.tree());
+    } catch (error) {
+      setSessionTreeError(error instanceof Error ? error.message : "Failed to load session tree");
+    } finally {
+      setSessionTreeLoading(false);
+    }
+  }
+
+  async function openSessionTree() {
+    setSessionTreeOpen(true);
+    await refreshSessionTree();
+  }
+
+  async function refreshSessionInfo() {
+    setSessionInfoLoading(true);
+    setSessionInfoError(undefined);
+    try {
+      if (!useShellStore.getState().snapshot) await ensureHost();
+      setSessionInfo(await window.pix.session.info());
+    } catch (error) {
+      setSessionInfoError(error instanceof Error ? error.message : "Failed to load session info");
+    } finally {
+      setSessionInfoLoading(false);
+    }
+  }
+
+  async function openSessionInfo() {
+    setSessionInfoOpen(true);
+    await refreshSessionInfo();
+  }
+
+  async function runBuiltinSlash(name: string, args: string): Promise<boolean> {
+    const action = resolveBuiltinSlash(name, args);
+    switch (action.type) {
+      case "new":
+        await newBlankTask();
+        return true;
+      case "model":
+        setSettingsSection("models");
+        setView("settings");
+        return true;
+      case "settings":
+        setSettingsSection("piSettings");
+        setView("settings");
+        return true;
+      case "session":
+        await openSessionInfo();
+        return true;
+      case "name": {
+        const nextName = action.name.trim();
+        if (!nextName) {
+          // No argument → open rename dialog (visual /name, like CLI prompting for a name).
+          setSessionNameDialogOpen(true);
+          return true;
+        }
+        acceptSnapshot(await window.pix.session.setName(nextName));
+        setStatus(t(locale, "session.parity.named", { name: nextName }));
+        await refreshThreads();
+        return true;
+      }
+      case "tree":
+        await openSessionTree();
+        return true;
+      case "fork":
+        await forkThread();
+        return true;
+      case "clone": {
+        const opened = await window.pix.session.clone();
+        markSessionOpenForBottomScroll();
+        applySessionOpen(opened);
+        setStatus(t(locale, "session.parity.cloned"));
+        return true;
+      }
+      case "compact": {
+        acceptSnapshot(await window.pix.session.compact(action.instructions));
+        setStatus(t(locale, "session.parity.compacted"));
+        await refreshThreads();
+        return true;
+      }
+      case "export": {
+        const result = await window.pix.session.exportPick(action.format);
+        if (!result) return true;
+        setStatus(
+          t(locale, "session.parity.exported", {
+            format: action.format,
+            path: result.path,
+          }),
+        );
+        return true;
+      }
+      case "import": {
+        const opened = await window.pix.session.importPick();
+        if (!opened) return true;
+        markSessionOpenForBottomScroll();
+        applySessionOpen(opened);
+        setStatus(t(locale, "session.parity.imported"));
+        return true;
+      }
+      case "copy": {
+        const text = await window.pix.session.copyLastAssistant();
+        if (!text) {
+          reportAppError(
+            new Error(t(locale, "session.parity.copyFailed")),
+            t(locale, "session.parity.copyFailed"),
+          );
+          return true;
+        }
+        await navigator.clipboard.writeText(text);
+        setStatus(t(locale, "session.parity.copied"));
+        return true;
+      }
+      case "reload": {
+        acceptSnapshot(await window.pix.runtime.reload());
+        setStatus(t(locale, "session.parity.reloaded"));
+        return true;
+      }
+      case "hotkeys":
+        setSettingsSection("shortcuts");
+        setView("settings");
+        return true;
+      case "upcoming":
+        reportAppError(
+          new Error(t(locale, "session.parity.commandUpcoming", { name: action.name })),
+          t(locale, "session.parity.commandUnavailable"),
+        );
+        return true;
+      case "runtime":
+      case "unknown":
+        return false;
+      default:
+        return false;
+    }
+  }
+
+  /**
+   * Codex-style edit: fork before the original user entry (when known), then resend text.
+   */
+  async function editUserAndResend(
+    item: Extract<TimelineItem, { kind: "user" }>,
+    text: string,
+  ) {
+    const next = text.trim();
+    if (!next || running) return;
+    try {
+      if (item.entryId) {
+        markSessionOpenForBottomScroll();
+        const opened = await window.pix.session.fork(item.entryId);
+        applySessionOpen(opened);
+        requestContentReveal();
+      }
+      setPrompt(next);
+      setAttachments(item.attachments ? [...item.attachments] : []);
+      // Defer so state commits before sendPrompt reads it.
+      await new Promise<void>((resolve) => {
+        window.setTimeout(() => resolve(), 0);
+      });
+      await sendPrompt(undefined);
+    } catch (error) {
+      reportAppError(error, t(locale, "timeline.editFailed"));
+      setTimelineReady(true);
+      pendingScrollBottomRef.current = false;
+    }
+  }
+
   async function sendPrompt(event?: FormEvent, streamingBehavior?: "steer" | "followUp") {
     event?.preventDefault();
     const draft = prompt;
@@ -832,14 +1062,60 @@ function App() {
       draft.trim() || (attachedPaths.length > 0 ? t(locale, "composer.attach.defaultPrompt") : "");
     if (!displayMessage) return;
 
-    const queueBehavior = running ? (streamingBehavior ?? "steer") : undefined;
-    const message = promptWithAttachedPaths(displayMessage, attachedPaths);
     try {
       if (!useShellStore.getState().snapshot) await ensureHost();
     } catch (error) {
       reportAppError(error, "无法启动 Agent");
       return;
     }
+
+    // Built-in slash commands (do not hit the model unless unresolved).
+    const slash = parseSlashLine(displayMessage);
+    if (slash && attachedPaths.length === 0) {
+      try {
+        const handled = await runBuiltinSlash(slash.name, slash.args);
+        if (handled) {
+          setPrompt("");
+          return;
+        }
+      } catch (error) {
+        reportAppError(error, t(locale, "session.parity.slashFailed"));
+        return;
+      }
+    }
+
+    // pi `!cmd` / `!!cmd` shell injection.
+    const shell = parseShellInjection(displayMessage);
+    if (shell.kind !== "none" && attachedPaths.length === 0) {
+      if (!shell.command.trim()) return;
+      setPrompt("");
+      setRunning(true);
+      setStatus(
+        shell.kind === "hidden-shell"
+          ? t(locale, "session.parity.shellHidden")
+          : t(locale, "session.parity.shellRunning"),
+      );
+      try {
+        const result = await window.pix.session.bash(shell.command, {
+          excludeFromContext: shell.kind === "hidden-shell",
+        });
+        acceptSnapshot(result.snapshot);
+        setStatus(
+          result.result.exitCode === 0
+            ? t(locale, "session.parity.shellDone")
+            : t(locale, "session.parity.shellExit", { code: String(result.result.exitCode) }),
+        );
+      } catch (error) {
+        setPrompt(draft);
+        reportAppError(error, t(locale, "session.parity.shellFailed"));
+      } finally {
+        setRunning(false);
+      }
+      return;
+    }
+
+    const queueBehavior = running ? (streamingBehavior ?? "steer") : undefined;
+    const message = promptWithAttachedPaths(displayMessage, attachedPaths);
 
     // If the user switches sessions mid-request, ignore late host results.
     const sessionAtStart =
@@ -1236,6 +1512,7 @@ function App() {
       setPendingPureConversation(false);
       setStatus("Agent Host ready");
       await refreshThreads();
+      await refreshConversationSessions();
       await refreshRecentWorkspaces();
     } catch (error) {
       pendingPureConversationRef.current = false;
@@ -1461,6 +1738,18 @@ function App() {
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
       void sendPrompt(undefined, running && event.altKey ? "followUp" : undefined);
+      return;
+    }
+    // doubleEscapeAction from pi settings: tree | fork | none
+    if (event.key === "Escape" && !event.metaKey && !event.ctrlKey && !event.altKey) {
+      const now = Date.now();
+      const double = now - lastEscapeAtRef.current < 450;
+      lastEscapeAtRef.current = now;
+      if (!double) return;
+      event.preventDefault();
+      const action = snapshot?.doubleEscapeAction ?? "fork";
+      if (action === "tree") void openSessionTree();
+      else if (action === "fork") void forkThread();
     }
   }
 
@@ -1689,38 +1978,54 @@ function App() {
             */}
             <div className="relative flex min-h-0 min-w-0 flex-1 flex-row">
               {/*
-                Column layout: scrollport ends at the composer top (not the window bottom).
-                Composer is in normal flow below the content area.
+                Scrollport = full main column (below title, full right pane height).
+                Floating scrollbar track spans the whole app content column — not just
+                the message stack above the composer.
+                Messages + composer share one `.thread-content-column` (same width/edges).
+                Composer is sticky to the bottom of that full-height scrollport.
               */}
-              <div className="relative flex min-h-0 min-w-0 flex-1 flex-col">
-                <div className="relative min-h-0 min-w-0 flex-1">
-                  <div
-                    className={cn(
-                      "timeline-scroll absolute inset-0",
-                      // Hold fully blank while switching — empty-hero must not flash either.
-                      !timelineReady && "invisible pointer-events-none",
-                    )}
-                    ref={timelineScrollRef}
-                    aria-busy={!timelineReady}
-                    data-ready={timelineReady ? "true" : "false"}
-                  >
+              <div className="thread-pane">
+                <div
+                  className={cn(
+                    "timeline-scroll thread-pane-scroll",
+                    !timelineReady && "invisible pointer-events-none",
+                  )}
+                  ref={timelineScrollRef}
+                  aria-busy={!timelineReady}
+                  data-ready={timelineReady ? "true" : "false"}
+                >
+                  <div className="thread-content-column thread-content-column-stack">
                     <div
                       className={cn(
-                        "mx-auto w-[min(760px,100%)] px-6",
-                        hasActivity ? "pt-6 pb-4" : "empty flex min-h-full flex-col p-0",
+                        "thread-messages",
+                        hasActivity ? "pt-6 pb-4" : "empty flex min-h-0 flex-1 flex-col",
                       )}
                       data-testid="timeline"
                     >
                       {hasActivity ? (
                         <>
-                          {timeline.map((item) => (
-                            <TimelineRow
-                              key={item.id}
-                              item={item}
-                              locale={locale}
-                              workspacePath={workspacePath}
-                            />
-                          ))}
+                          {timelineBlocks.map((block) =>
+                            block.type === "process" ? (
+                              <TimelineProcessBlock
+                                key={block.id}
+                                locale={locale}
+                                items={block.items}
+                                {...(block.durationLabel
+                                  ? { durationLabel: block.durationLabel }
+                                  : {})}
+                                {...(workspacePath ? { workspacePath } : {})}
+                              />
+                            ) : (
+                              <TimelineRow
+                                key={block.item.id}
+                                item={block.item}
+                                locale={locale}
+                                workspacePath={workspacePath}
+                                editingLocked={running}
+                                onEditUser={(item, text) => void editUserAndResend(item, text)}
+                              />
+                            ),
+                          )}
                           <div ref={timelineEndRef} className="h-px w-full shrink-0" aria-hidden />
                         </>
                       ) : timelineReady ? (
@@ -1736,7 +2041,6 @@ function App() {
                                 ? t(locale, "empty.titleConversation")
                                 : t(locale, "empty.titleNoWorkspace")}
                           </h1>
-                          {/* Workspace empty state has title only — no subtitle under「构建什么？」. */}
                           {!workspacePath ? (
                             <p className="mt-3 max-w-md text-[13px] text-[var(--muted-foreground)]">
                               {isPureConversation || snapshot || pendingPureConversation
@@ -1747,100 +2051,117 @@ function App() {
                         </div>
                       ) : null}
                     </div>
-                  </div>
-                  {/* Soft fade at the content area bottom edge (just above composer). */}
-                  {hasActivity && timelineReady ? (
-                    <div
-                      className="composer-dock-fade pointer-events-none absolute inset-x-0 bottom-0 z-[1] h-10"
-                      aria-hidden
-                    />
-                  ) : null}
-                </div>
 
-                <div
-                  ref={composerDockRef}
-                  className="composer-dock pointer-events-none relative z-[2] shrink-0 bg-[var(--canvas)] px-6 pt-1 pb-6"
-                  data-mode="flow"
-                  data-testid="composer-dock"
-                >
-                  {/*
-                    Jump chip: absolutely overlaid on the horizontal center of the composer,
-                    just above it. Must not participate in layout — otherwise showing it
-                    grows the dock and shifts the content fade range.
-                  */}
-                  {showScrollToBottom && timelineReady && hasActivity ? (
                     <div
-                      className="pointer-events-none absolute inset-x-0 top-0 z-20 flex -translate-y-[calc(100%+20px)] justify-center"
-                      data-testid="scroll-to-bottom-wrap"
+                      ref={composerDockRef}
+                      className="composer-dock pointer-events-none sticky bottom-0 z-[2] w-full bg-[var(--canvas)] pt-1 pb-6"
+                      data-mode="sticky"
+                      data-testid="composer-dock"
                     >
-                      <button
-                        type="button"
-                        data-testid="scroll-to-bottom"
-                        title={t(locale, "thread.scrollToBottom")}
-                        aria-label={t(locale, "thread.scrollToBottom")}
-                        className={cn(
-                          // Match send button: h-7 w-7 circle; ArrowDown is inverse of send's ArrowUp.
-                          "pointer-events-auto inline-flex h-7 w-7 items-center justify-center rounded-full",
-                          "border border-[var(--border)] bg-[var(--popover)] text-[var(--foreground)]",
-                          "shadow-[0_4px_16px_rgb(0_0_0/0.28)] transition-colors",
-                          "hover:bg-[var(--hover-fill)]",
-                        )}
-                        onClick={() => scrollTimelineToBottom("smooth")}
-                      >
-                        <ArrowDown className="h-3.5 w-3.5" strokeWidth={2.25} />
-                      </button>
+                      {hasActivity && timelineReady ? (
+                        <div
+                          className="composer-dock-fade pointer-events-none absolute inset-x-0 top-0 z-[1] h-10 -translate-y-full"
+                          aria-hidden
+                        />
+                      ) : null}
+                      {showScrollToBottom && timelineReady && hasActivity ? (
+                        <div
+                          className="pointer-events-none absolute inset-x-0 top-0 z-20 flex -translate-y-[calc(100%+12px)] justify-center"
+                          data-testid="scroll-to-bottom-wrap"
+                        >
+                          <button
+                            type="button"
+                            data-testid="scroll-to-bottom"
+                            title={t(locale, "thread.scrollToBottom")}
+                            aria-label={t(locale, "thread.scrollToBottom")}
+                            className={cn(
+                              "pointer-events-auto inline-flex h-7 w-7 items-center justify-center rounded-full",
+                              "border border-[var(--border)] bg-[var(--popover)] text-[var(--foreground)]",
+                              "shadow-[0_4px_16px_rgb(0_0_0/0.28)] transition-colors",
+                              "hover:bg-[var(--hover-fill)]",
+                            )}
+                            onClick={() => scrollTimelineToBottom("smooth")}
+                          >
+                            <ArrowDown className="h-3.5 w-3.5" strokeWidth={2.25} />
+                          </button>
+                        </div>
+                      ) : null}
+                      <Composer
+                        locale={locale}
+                        prompt={prompt}
+                        onPromptChange={setPrompt}
+                        onSubmit={(event) => void sendPrompt(event)}
+                        onAbort={() => void abort()}
+                        onKeyDown={onComposerKeyDown}
+                        running={running}
+                        composerRef={composerRef}
+                        workspacePath={workspacePath}
+                        recentWorkspaces={recentWorkspaces}
+                        onOpenProject={(path) =>
+                          void openWorkspacePath(path, { resumeRecent: true })
+                        }
+                        onAddProject={() => void openWorkspacePicker()}
+                        showProjectBar={timelineReady && !hasActivity}
+                        accessMode={accessMode}
+                        onAccessMode={applyAccessMode}
+                        accessVisibility={accessVisibility}
+                        modelOptions={modelOptions}
+                        modelValue={
+                          displayModel ? `${displayModel.provider}/${displayModel.id}` : ""
+                        }
+                        onModelChange={(provider, id) => void changeModel(provider, id)}
+                        thinkingLevel={displayThinkingLevel}
+                        thinkingLevels={displayThinkingLevels}
+                        onThinkingChange={(level) => void changeThinking(level)}
+                        speedMode={speedMode}
+                        onSpeedMode={(mode) => {
+                          setSpeedMode(mode);
+                          try {
+                            localStorage.setItem("pix.composer.speed", mode);
+                          } catch {
+                            // ignore
+                          }
+                        }}
+                        contextPercent={snapshot?.usage?.context?.percent ?? undefined}
+                        contextTokens={
+                          snapshot?.usage?.context?.tokens ??
+                          snapshot?.usage?.tokens.total ??
+                          undefined
+                        }
+                        showContextUsage={showContextUsage}
+                        projectTrusted={snapshot?.projectTrusted}
+                        runState={runState}
+                        piThemeLabel={piThemeLabel(snapshot)}
+                        attachments={attachments}
+                        onPickAttachments={pickComposerAttachments}
+                        onRemoveAttachment={(path) =>
+                          setAttachments((current) => current.filter((item) => item !== path))
+                        }
+                        onAddAttachments={(paths) =>
+                          setAttachments((current) =>
+                            [...new Set([...current, ...paths])].slice(0, 12),
+                          )
+                        }
+                        packages={packages}
+                        slashCommands={buildUnifiedSlashCatalog(snapshot, locale).map((item) => ({
+                          name: item.name,
+                          description: item.upcoming
+                            ? `${item.description}${t(locale, "slash.upcomingSuffix")}`
+                            : item.description,
+                          source:
+                            item.source === "skill" ||
+                            item.source === "prompt" ||
+                            item.source === "extension" ||
+                            item.source === "builtin"
+                              ? item.source
+                              : "builtin",
+                          ...(item.argumentHint ? { argumentHint: item.argumentHint } : {}),
+                        }))}
+                        queuedMessages={queuedMessages}
+                        onClearQueue={() => void clearQueuedMessages()}
+                      />
                     </div>
-                  ) : null}
-                  <Composer
-                    locale={locale}
-                    prompt={prompt}
-                    onPromptChange={setPrompt}
-                    onSubmit={(event) => void sendPrompt(event)}
-                    onAbort={() => void abort()}
-                    onKeyDown={onComposerKeyDown}
-                    running={running}
-                    composerRef={composerRef}
-                    workspacePath={workspacePath}
-                    recentWorkspaces={recentWorkspaces}
-                    onOpenProject={(path) => void openWorkspacePath(path, { resumeRecent: true })}
-                    onAddProject={() => void openWorkspacePicker()}
-                    // Project protrusion only when empty chrome is settled (never mid-switch).
-                    showProjectBar={timelineReady && !hasActivity}
-                    accessMode={accessMode}
-                    onAccessMode={applyAccessMode}
-                    accessVisibility={accessVisibility}
-                    modelOptions={modelOptions}
-                    modelValue={displayModel ? `${displayModel.provider}/${displayModel.id}` : ""}
-                    onModelChange={(provider, id) => void changeModel(provider, id)}
-                    thinkingLevel={displayThinkingLevel}
-                    thinkingLevels={displayThinkingLevels}
-                    onThinkingChange={(level) => void changeThinking(level)}
-                    speedMode={speedMode}
-                    onSpeedMode={(mode) => {
-                      setSpeedMode(mode);
-                      try {
-                        localStorage.setItem("pix.composer.speed", mode);
-                      } catch {
-                        // ignore
-                      }
-                    }}
-                    contextPercent={snapshot?.usage?.context?.percent ?? undefined}
-                    contextTokens={
-                      snapshot?.usage?.context?.tokens ?? snapshot?.usage?.tokens.total ?? undefined
-                    }
-                    showContextUsage={showContextUsage}
-                    projectTrusted={snapshot?.projectTrusted}
-                    runState={runState}
-                    piThemeLabel={piThemeLabel(snapshot)}
-                    attachments={attachments}
-                    onPickAttachments={pickComposerAttachments}
-                    onRemoveAttachment={(path) =>
-                      setAttachments((current) => current.filter((item) => item !== path))
-                    }
-                    slashCommands={snapshot?.slashCommands ?? []}
-                    queuedMessages={queuedMessages}
-                    onClearQueue={() => void clearQueuedMessages()}
-                  />
+                  </div>
                 </div>
               </div>
 
@@ -1950,6 +2271,106 @@ function App() {
         open={paletteOpen}
         commands={commands}
         onClose={() => setPaletteOpen(false)}
+      />
+      <SessionTreePanel
+        open={sessionTreeOpen}
+        locale={locale}
+        tree={sessionTree}
+        loading={sessionTreeLoading}
+        error={sessionTreeError}
+        onClose={() => setSessionTreeOpen(false)}
+        onRefresh={() => void refreshSessionTree()}
+        onNavigate={async (node) => {
+          try {
+            const opened = await window.pix.session.navigateTree(node.id);
+            markSessionOpenForBottomScroll();
+            applySessionOpen({
+              snapshot: opened.snapshot,
+              threads: opened.threads,
+              history: opened.history,
+            });
+            setSessionTreeOpen(false);
+            setStatus(t(locale, "session.parity.treeNavigated"));
+          } catch (error) {
+            reportAppError(error, t(locale, "session.parity.treeFailed"));
+          }
+        }}
+      />
+      <SessionInfoPanel
+        open={sessionInfoOpen}
+        locale={locale}
+        info={sessionInfo}
+        loading={sessionInfoLoading}
+        error={sessionInfoError}
+        onClose={() => setSessionInfoOpen(false)}
+        onRefresh={() => void refreshSessionInfo()}
+        onRename={async (name) => {
+          if (!name) return;
+          try {
+            acceptSnapshot(await window.pix.session.setName(name));
+            await refreshSessionInfo();
+            await refreshThreads();
+          } catch (error) {
+            reportAppError(error, t(locale, "session.parity.renameFailed"));
+          }
+        }}
+        onExport={async (format) => {
+          try {
+            const result = await window.pix.session.exportPick(format);
+            if (!result) return;
+            setStatus(
+              t(locale, "session.parity.exported", { format, path: result.path }),
+            );
+          } catch (error) {
+            reportAppError(error, t(locale, "session.parity.exportFailed"));
+          }
+        }}
+        onClone={async () => {
+          try {
+            const opened = await window.pix.session.clone();
+            markSessionOpenForBottomScroll();
+            applySessionOpen(opened);
+            setSessionInfoOpen(false);
+            setStatus(t(locale, "session.parity.cloned"));
+          } catch (error) {
+            reportAppError(error, t(locale, "session.parity.cloneFailed"));
+          }
+        }}
+        onCompact={async () => {
+          try {
+            acceptSnapshot(await window.pix.session.compact());
+            await refreshSessionInfo();
+            setStatus(t(locale, "session.parity.compacted"));
+          } catch (error) {
+            reportAppError(error, t(locale, "session.parity.compactFailed"));
+          }
+        }}
+      />
+
+      <RenameDialog
+        open={sessionNameDialogOpen}
+        title={t(locale, "session.renameTitle")}
+        label={t(locale, "sessionInfo.name")}
+        initialValue={snapshot?.sessionName ?? ""}
+        confirmLabel={t(locale, "common.confirm")}
+        cancelLabel={t(locale, "common.cancel")}
+        testId="session-name-dialog"
+        onCancel={() => setSessionNameDialogOpen(false)}
+        onConfirm={(value) => {
+          setSessionNameDialogOpen(false);
+          const name = value.trim();
+          if (!name) return;
+          void (async () => {
+            try {
+              if (!useShellStore.getState().snapshot) await ensureHost();
+              acceptSnapshot(await window.pix.session.setName(name));
+              setStatus(t(locale, "session.parity.named", { name }));
+              await refreshThreads();
+            } catch (error) {
+              reportAppError(error, t(locale, "session.parity.renameFailed"));
+            }
+          })();
+        }}
       />
 
       <ErrorDialog
@@ -2449,10 +2870,21 @@ function ResourcesPage(props: {
                     <div className="meta">
                       {item.path || "—"}
                       {item.source ? ` · ${item.source}` : ""}
+                      {item.kind === "context" ? tr("resources.contextHint") : ""}
                     </div>
                   </div>
-                  <div className="badges">
+                  <div className="badges flex items-center gap-2">
                     <span className="chip">{item.kind}</span>
+                    {item.path ? (
+                      <button
+                        type="button"
+                        className="btn-ghost text-xs"
+                        data-testid={`resource-open-${item.kind}-${item.name}`}
+                        onClick={() => void window.pix.workspace.openFile(item.path)}
+                      >
+                        {tr("resources.open")}
+                      </button>
+                    ) : null}
                   </div>
                 </article>
               ))}

@@ -13,7 +13,8 @@ export function addResourceQuery(value: string): string | undefined {
 export function filterSlashCommands(
   commands: SlashCommandSummary[],
   query: string,
-  limit = 18,
+  /** Soft cap only — keep high so skills are not truncated by a flat global slice. */
+  limit = 200,
 ): SlashCommandSummary[] {
   const needle = query.trim().toLocaleLowerCase();
   return commands
@@ -32,16 +33,16 @@ export function filterSlashCommands(
     .slice(0, limit);
 }
 
+/**
+ * `@` is for attaching workspace paths / files only — never pi slash / skill / prompt / extension.
+ * Kept for API stability; always returns an empty list so callers only show the file-picker row.
+ */
 export function filterResourceCommands(
-  commands: SlashCommandSummary[],
-  query: string,
-  limit = 12,
+  _commands: SlashCommandSummary[],
+  _query: string,
+  _limit = 12,
 ): SlashCommandSummary[] {
-  return filterSlashCommands(
-    commands.filter((command) => command.source !== "skill"),
-    query,
-    limit,
-  );
+  return [];
 }
 
 export function attachmentLabel(path: string): string {

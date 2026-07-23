@@ -65,8 +65,8 @@ import {
   partitionProjects,
   projectDisplayName,
   setProjectAlias,
-  mergeManualThreadOrder,
   setThreadAlias,
+  sortProjectPaths,
   sortThreadsByMode,
   sortThreadsWithPins,
   threadDisplayTitle,
@@ -76,13 +76,11 @@ import {
   unarchiveThread,
 } from "../lib/project-prefs.ts";
 import {
-  loadConversationManualOrder,
   loadConversationSortMode,
   loadGroupMode,
   loadProjectsSectionOpen,
   loadSortMode,
   loadThreadsSectionOpen,
-  saveConversationManualOrder,
   saveConversationSortMode,
   saveGroupMode,
   saveProjectsSectionOpen,
@@ -135,9 +133,6 @@ export function ProjectList(props: ProjectListProps) {
   const [sortMode, setSortMode] = useState<SortMode>(loadSortMode);
   const [conversationSortMode, setConversationSortMode] =
     useState<SortMode>(loadConversationSortMode);
-  const [conversationManualOrder, setConversationManualOrder] = useState(
-    loadConversationManualOrder,
-  );
   const [projectsOpen, setProjectsOpen] = useState(loadProjectsSectionOpen);
   const [threadsOpen, setThreadsOpen] = useState(loadThreadsSectionOpen);
   const [listVisible, setListVisible] = useState(PROJECT_THREADS_PAGE);
@@ -183,9 +178,18 @@ export function ProjectList(props: ProjectListProps) {
     return list;
   }, [props.workspacePath, props.recentWorkspaces, pinned]);
 
-  const { pinned: pinnedPaths, rest: restPaths } = useMemo(
+  const { pinned: pinnedPaths, rest: restPathsRaw } = useMemo(
     () => partitionProjects(allPaths, pinned, archived),
     [allPaths, pinned, archived],
+  );
+
+  // Apply project sort mode (pinned stay in 置顶; only 项目 rest is reordered).
+  const restPaths = useMemo(
+    () =>
+      sortProjectPaths(restPathsRaw, sortMode, {
+        recentOrder: props.recentWorkspaces,
+      }),
+    [restPathsRaw, sortMode, props.recentWorkspaces],
   );
 
   /** Normalized paths that count as "projects" in the rail (置顶 + 项目). */
@@ -812,7 +816,7 @@ export function ProjectList(props: ProjectListProps) {
       seen.add(t.id);
       all.push(t);
     }
-    return sortThreadsByMode(all, conversationSortMode, pinnedThreads, conversationManualOrder);
+    return sortThreadsByMode(all, conversationSortMode, pinnedThreads);
   }, [
     props.threadsByCwd,
     props.threads,
@@ -821,32 +825,9 @@ export function ProjectList(props: ProjectListProps) {
     deletedThreads,
     pinnedThreads,
     conversationSortMode,
-    conversationManualOrder,
   ]);
 
-  // In manual mode, append newly appeared conversation ids so order stays stable.
-  useEffect(() => {
-    if (conversationSortMode !== "manual") return;
-    const ids = conversationList.map((t) => t.id);
-    const next = mergeManualThreadOrder(conversationManualOrder, ids);
-    if (
-      next.length === conversationManualOrder.length &&
-      next.every((id, i) => id === conversationManualOrder[i])
-    ) {
-      return;
-    }
-    setConversationManualOrder(next);
-    saveConversationManualOrder(next);
-  }, [conversationList, conversationSortMode, conversationManualOrder]);
-
   function setConversationSort(mode: SortMode) {
-    if (mode === "manual") {
-      // Seed manual order from current visual list so order stays stable after switch.
-      const ids = conversationList.map((t) => t.id);
-      const next = mergeManualThreadOrder(conversationManualOrder, ids);
-      setConversationManualOrder(next);
-      saveConversationManualOrder(next);
-    }
     setConversationSortMode(mode);
     saveConversationSortMode(mode);
     closeMenus();
@@ -856,7 +837,11 @@ export function ProjectList(props: ProjectListProps) {
   const conversationHasMore = conversationList.length > listVisible;
 
   return (
-    <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-0.5" data-testid="project-list">
+    // Single scroll for 置顶/项目/对话 — avoid flex-squeezing 对话 to zero height.
+    <div
+      className="pix-scroll flex min-h-0 min-w-0 flex-1 flex-col gap-0.5"
+      data-testid="project-list"
+    >
       {/* ── 置顶（独立分组，始终在项目上方） ── */}
       {pinnedPaths.length > 0 ? (
         <div data-testid="pinned-projects" className="mb-1 min-w-0">
@@ -866,11 +851,11 @@ export function ProjectList(props: ProjectListProps) {
       ) : null}
 
       {/* ── 项目 ── */}
-      <div className="relative min-w-0">
+      <div className="relative min-w-0 shrink-0">
         <div className="sidebar-section-head group/section">
           <button
             type="button"
-            className="flex min-w-0 flex-1 items-center gap-1 truncate text-left text-[13px] font-semibold tracking-wide text-[var(--text-subtle)]"
+            className="flex min-w-0 flex-1 items-center gap-1 truncate text-left text-[13px] font-normal text-[var(--text-subtle)]"
             data-testid="projects-section-toggle"
             aria-expanded={projectsOpen}
             onClick={toggleProjects}
@@ -929,21 +914,16 @@ export function ProjectList(props: ProjectListProps) {
       </div>
 
       {/* ── 对话 ── */}
-      <div className="mt-0.5 flex min-h-0 min-w-0 flex-1 flex-col">
+      <div className="mt-0.5 min-w-0 shrink-0">
         <div className="sidebar-section-head group/section">
           <button
             type="button"
-            className="flex min-w-0 flex-1 items-center gap-1 truncate text-left text-[13px] font-semibold tracking-wide text-[var(--text-subtle)]"
+            className="flex min-w-0 flex-1 items-center gap-1 truncate text-left text-[13px] font-normal text-[var(--text-subtle)]"
             data-testid="threads-section-toggle"
             aria-expanded={threadsOpen}
             onClick={toggleThreads}
           >
             <span className="min-w-0 truncate">{tr("section.threads")}</span>
-            {conversationList.length > 0 ? (
-              <span className="shrink-0 font-normal tracking-normal opacity-70">
-                ({conversationList.length})
-              </span>
-            ) : null}
             <ChevronRight
               className={cn(
                 "size-4 shrink-0 opacity-70 transition-transform duration-150",
@@ -980,7 +960,7 @@ export function ProjectList(props: ProjectListProps) {
 
         {threadsOpen ? (
           <div
-            className="pix-scroll flex min-h-0 min-w-0 flex-1 flex-col gap-0.5 px-0"
+            className="flex min-w-0 flex-col gap-0.5 px-0"
             data-testid="conversations-list"
             data-kind="conversation"
           >
@@ -1206,12 +1186,6 @@ export function ProjectList(props: ProjectListProps) {
           onClick={() => setSort("recent")}
           testId="organize-sort-recent"
         />
-        <CheckItem
-          label={tr("organize.sortManual")}
-          checked={sortMode === "manual"}
-          onClick={() => setSort("manual")}
-          testId="organize-sort-manual"
-        />
       </FloatingMenu>
 
       <FloatingMenu
@@ -1235,12 +1209,6 @@ export function ProjectList(props: ProjectListProps) {
           checked={conversationSortMode === "recent"}
           onClick={() => setConversationSort("recent")}
           testId="threads-organize-sort-recent"
-        />
-        <CheckItem
-          label={tr("organize.sortManual")}
-          checked={conversationSortMode === "manual"}
-          onClick={() => setConversationSort("manual")}
-          testId="threads-organize-sort-manual"
         />
       </FloatingMenu>
 

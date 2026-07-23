@@ -7,6 +7,7 @@
  */
 import {
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -20,16 +21,19 @@ import { createPortal } from "react-dom";
 import type {
   GitBranchInfo,
   GitContextInfo,
+  PackageSummary,
   QueuedMessages,
   SlashCommandSummary,
 } from "@pix/contracts";
 import {
-  AtSign,
   ArrowUp,
   Check,
   ChevronDown,
   ChevronRight,
-  Command,
+  ClipboardCopy,
+  Copy,
+  Cpu,
+  Download,
   File,
   FileArchive,
   FileCode2,
@@ -41,17 +45,33 @@ import {
   FolderOpen,
   Gauge,
   GitBranch,
+  GitFork,
+  Info,
+  Keyboard,
   ListPlus,
+  MessageSquareText,
+  Minimize2,
   Monitor,
+  Network,
+  Package,
   Plus,
+  PlusCircle,
   Presentation,
+  Puzzle,
+  RefreshCw,
   Search,
+  Settings,
+  Share2,
   Shield,
   ShieldAlert,
   ShieldCheck,
+  Slash,
   Sparkles,
   Square,
+  Tag,
   Trash2,
+  Upload,
+  Wand2,
   X,
 } from "lucide-react";
 import {
@@ -63,11 +83,11 @@ import {
 import { Button } from "./ui/button.tsx";
 import { Textarea } from "./ui/textarea.tsx";
 import { t, type Locale } from "../lib/i18n.ts";
+import { groupModelsByProvider } from "../lib/model-groups.ts";
 import {
   addResourceQuery,
   attachmentLabel,
   attachmentPresentation,
-  filterResourceCommands,
   filterSlashCommands,
   slashCommandQuery,
   type AttachmentKind,
@@ -85,6 +105,8 @@ export interface ComposerModelOption {
   provider: string;
   id: string;
   name: string;
+  /** Aligns with model settings: "custom" vs built-in catalog providers. */
+  source?: string;
 }
 
 export interface ComposerProps {
@@ -123,7 +145,11 @@ export interface ComposerProps {
   attachments: string[];
   onPickAttachments: () => Promise<void>;
   onRemoveAttachment: (path: string) => void;
+  /** Add paths chosen from `@` file suggestions. */
+  onAddAttachments?: (paths: string[]) => void;
   slashCommands: SlashCommandSummary[];
+  /** Installed packages shown under `@` → 插件. */
+  packages?: PackageSummary[];
   queuedMessages: QueuedMessages;
   onClearQueue: () => void;
   /**
@@ -390,10 +416,143 @@ function formatContext(percent: number | undefined, tokens: number | undefined):
   return "0%";
 }
 
+const ICON_SM = { className: "size-4 shrink-0", strokeWidth: 1.75 } as const;
+
+/** Icons for `/` catalog — source groups + well-known builtin command names. */
 function commandSourceIcon(command: SlashCommandSummary) {
-  if (command.source === "skill") return <Sparkles className="size-4" strokeWidth={1.75} />;
-  if (command.source === "prompt") return <FileText className="size-4" strokeWidth={1.75} />;
-  return <Command className="size-4" strokeWidth={1.75} />;
+  if (command.source === "skill" || command.name.startsWith("skill:")) {
+    return <Wand2 {...ICON_SM} />;
+  }
+  if (command.source === "prompt") {
+    return <MessageSquareText {...ICON_SM} />;
+  }
+  if (command.source === "extension") {
+    return <Puzzle {...ICON_SM} />;
+  }
+  // builtin (and legacy names mapped as builtin)
+  switch (command.name) {
+    case "new":
+      return <PlusCircle {...ICON_SM} />;
+    case "model":
+    case "models":
+      return <Cpu {...ICON_SM} />;
+    case "settings":
+      return <Settings {...ICON_SM} />;
+    case "session":
+      return <Info {...ICON_SM} />;
+    case "name":
+      return <Tag {...ICON_SM} />;
+    case "tree":
+      return <Network {...ICON_SM} />;
+    case "fork":
+      return <GitFork {...ICON_SM} />;
+    case "clone":
+      return <Copy {...ICON_SM} />;
+    case "compact":
+      return <Minimize2 {...ICON_SM} />;
+    case "export":
+      return <Download {...ICON_SM} />;
+    case "import":
+      return <Upload {...ICON_SM} />;
+    case "share":
+      return <Share2 {...ICON_SM} />;
+    case "copy":
+      return <ClipboardCopy {...ICON_SM} />;
+    case "reload":
+      return <RefreshCw {...ICON_SM} />;
+    case "hotkeys":
+    case "keybindings":
+      return <Keyboard {...ICON_SM} />;
+    default:
+      return <Slash {...ICON_SM} />;
+  }
+}
+
+/** `/` menu: 命令 (builtins/prompts/extensions) + 技能 (skills). */
+type SlashGroupId = "command" | "skill";
+
+const SLASH_GROUP_ORDER: SlashGroupId[] = ["command", "skill"];
+
+function slashGroupId(command: SlashCommandSummary): SlashGroupId {
+  if (command.source === "skill" || command.name.startsWith("skill:")) return "skill";
+  return "command";
+}
+
+function groupSlashCommands(commands: SlashCommandSummary[]): Array<{
+  id: SlashGroupId;
+  items: Array<{ command: SlashCommandSummary; flatIndex: number }>;
+}> {
+  const buckets: Record<SlashGroupId, SlashCommandSummary[]> = {
+    command: [],
+    skill: [],
+  };
+  for (const command of commands) {
+    buckets[slashGroupId(command)].push(command);
+  }
+  let flatIndex = 0;
+  // Only show groups that still have matches after filtering.
+  const groups: Array<{
+    id: SlashGroupId;
+    items: Array<{ command: SlashCommandSummary; flatIndex: number }>;
+  }> = [];
+  for (const id of SLASH_GROUP_ORDER) {
+    const list = buckets[id];
+    if (list.length === 0) continue;
+    groups.push({
+      id,
+      items: list.map((command) => {
+        const row = { command, flatIndex };
+        flatIndex += 1;
+        return row;
+      }),
+    });
+  }
+  return groups;
+}
+
+function filterPackages(packages: PackageSummary[], query: string, limit = 24): PackageSummary[] {
+  const needle = query.trim().toLocaleLowerCase();
+  const list = packages.filter((pkg) => {
+    if (!needle) return true;
+    return (
+      pkg.source.toLocaleLowerCase().includes(needle) ||
+      pkg.kind.toLocaleLowerCase().includes(needle) ||
+      pkg.scope.toLocaleLowerCase().includes(needle)
+    );
+  });
+  return list
+    .slice()
+    .sort((a, b) => a.source.localeCompare(b.source))
+    .slice(0, limit);
+}
+
+/** Track whether a suggest list overflows so we only reserve fade padding when needed. */
+function useSuggestOverflow(open: boolean, deps: unknown[]) {
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const [overflows, setOverflows] = useState(false);
+
+  useLayoutEffect(() => {
+    const el = scrollRef.current;
+    if (!open || !el) {
+      setOverflows(false);
+      return;
+    }
+    const measure = () => {
+      setOverflows(el.scrollHeight > el.clientHeight + 1);
+    };
+    measure();
+    const ro =
+      typeof ResizeObserver !== "undefined" ? new ResizeObserver(() => measure()) : undefined;
+    ro?.observe(el);
+    // Children size changes (filter results) also need remeasure.
+    for (const child of el.children) {
+      if (child instanceof HTMLElement) ro?.observe(child);
+    }
+    return () => ro?.disconnect();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- deps are intentional content keys
+  }, [open, ...deps]);
+
+  return { scrollRef, overflows };
 }
 
 function attachmentKindIcon(kind: AttachmentKind) {
@@ -431,8 +590,11 @@ export function Composer(props: ComposerProps) {
   const [modelFlyout, setModelFlyout] = useState<"thinking" | "speed" | null>(null);
   const modelFlyoutCloseTimer = useRef<number | null>(null);
   const rootRef = useRef<HTMLDivElement | null>(null);
+  /** Main input card only — slash/@ menus overlay this, ignoring project-bar protrusion height. */
+  const composerCardRef = useRef<HTMLFormElement | null>(null);
   const [suggestionAnchor, setSuggestionAnchor] = useState<AnchorRect | null>(null);
-  const [suggestionIndex, setSuggestionIndex] = useState(0);
+  /** -1 = no highlighted option (no default selected background). */
+  const [suggestionIndex, setSuggestionIndex] = useState(-1);
   const [suggestionsDismissed, setSuggestionsDismissed] = useState(false);
   const workspace = workspaceLabel(props.workspacePath);
   const [gitContext, setGitContext] = useState<GitContextInfo>({});
@@ -554,30 +716,81 @@ export function Composer(props: ComposerProps) {
     return found?.name || id || tr("composer.model.none");
   }, [props.modelValue, props.modelOptions, props.locale]);
 
+  const modelGroups = useMemo(
+    () => groupModelsByProvider(props.modelOptions, tr("models.group.custom")),
+    [props.modelOptions, props.locale],
+  );
+
   const slashQuery = slashCommandQuery(props.prompt);
   const resourceQuery = addResourceQuery(props.prompt);
   const slashSuggestions = useMemo(
     () => filterSlashCommands(props.slashCommands, slashQuery ?? ""),
     [props.slashCommands, slashQuery],
   );
-  const resourceSuggestions = useMemo(
-    () => filterResourceCommands(props.slashCommands, resourceQuery ?? ""),
-    [props.slashCommands, resourceQuery],
+  const slashGroups = useMemo(() => groupSlashCommands(slashSuggestions), [slashSuggestions]);
+  const packageSuggestions = useMemo(
+    () => filterPackages(props.packages ?? [], resourceQuery ?? ""),
+    [props.packages, resourceQuery],
   );
+  const [pathSuggestions, setPathSuggestions] = useState<
+    Array<{ path: string; relative: string; kind: "file" | "folder" }>
+  >([]);
+  // `@` → 添加 (picker + project paths) + 插件 (packages, only if any).
   const slashPanelOpen = menu === null && !suggestionsDismissed && slashQuery !== undefined;
   const resourcePanelOpen =
     menu === "attach" || (menu === null && !suggestionsDismissed && resourceQuery !== undefined);
+  /** Flat `@` nav: 0 = picker, then paths, then packages. */
+  const resourceItemCount = 1 + pathSuggestions.length + packageSuggestions.length;
+  const slashOverflow = useSuggestOverflow(slashPanelOpen, [
+    slashQuery,
+    slashSuggestions.length,
+    props.slashCommands.length,
+  ]);
+  const resourceOverflow = useSuggestOverflow(resourcePanelOpen, [
+    resourceQuery,
+    pathSuggestions.length,
+    packageSuggestions.length,
+    props.packages?.length ?? 0,
+  ]);
+
+  useEffect(() => {
+    if (!resourcePanelOpen) {
+      setPathSuggestions([]);
+      return;
+    }
+    // Menu opened via + button still searches; typed `@q` filters paths.
+    const q = resourceQuery ?? "";
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      void window.pix.workspace
+        .searchPaths(q, {
+          ...(props.workspacePath ? { cwd: props.workspacePath } : {}),
+          limit: 24,
+        })
+        .then((rows) => {
+          if (!cancelled) setPathSuggestions(rows);
+        })
+        .catch(() => {
+          if (!cancelled) setPathSuggestions([]);
+        });
+    }, 80);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [resourcePanelOpen, resourceQuery, props.workspacePath]);
 
   useEffect(() => {
     if (!slashPanelOpen && !resourcePanelOpen) {
       setSuggestionAnchor(null);
       return;
     }
-    setSuggestionAnchor(anchorFromElement(rootRef.current));
-  }, [slashPanelOpen, resourcePanelOpen, props.prompt]);
+    // Anchor to the card surface so the menu covers protrusion instead of clearing its full height.
+    setSuggestionAnchor(anchorFromElement(composerCardRef.current ?? rootRef.current));
+  }, [slashPanelOpen, resourcePanelOpen, props.prompt, props.showProjectBar, props.attachments.length]);
 
   useEffect(() => {
-    setSuggestionIndex(0);
+    setSuggestionIndex(-1);
   }, [slashQuery, resourceQuery, menu]);
 
   function closeMenu() {
@@ -599,7 +812,9 @@ export function Composer(props: ComposerProps) {
     }
     setMenu(kind);
     setAnchor(
-      kind === "attach" ? anchorFromElement(rootRef.current) : anchorFromEvent(event.currentTarget),
+      kind === "attach"
+        ? anchorFromElement(composerCardRef.current ?? rootRef.current)
+        : anchorFromEvent(event.currentTarget),
     );
   }
 
@@ -631,16 +846,42 @@ export function Composer(props: ComposerProps) {
     props.onPromptChange(value);
   }
 
+  function clearAtTokenFromPrompt() {
+    // Drop a trailing `@query` token after picking a resource.
+    const next = props.prompt.replace(/@[^\s]*$/, "").trimEnd();
+    props.onPromptChange(next ? `${next} ` : "");
+  }
+
+  function selectPackage(pkg: PackageSummary) {
+    // Insert package source as an @ mention and close the menu.
+    props.onPromptChange(`@${pkg.source} `);
+    setSuggestionsDismissed(true);
+    closeMenu();
+    requestAnimationFrame(() => props.composerRef.current?.focus());
+  }
+
+  function selectProjectPath(absPath: string) {
+    clearAtTokenFromPrompt();
+    props.onAddAttachments?.([absPath]);
+    setSuggestionsDismissed(true);
+    closeMenu();
+    requestAnimationFrame(() => props.composerRef.current?.focus());
+  }
+
   function handleComposerKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
     const panel = slashPanelOpen ? "slash" : resourcePanelOpen ? "resource" : undefined;
     if (panel) {
-      const itemCount =
-        panel === "slash" ? slashSuggestions.length : resourceSuggestions.length + 1;
+      // `/` → commands+skills; `@` → picker + project paths + packages.
+      const itemCount = panel === "slash" ? slashSuggestions.length : resourceItemCount;
       if (event.key === "ArrowDown" || event.key === "ArrowUp") {
         event.preventDefault();
         if (itemCount > 0) {
           const delta = event.key === "ArrowDown" ? 1 : -1;
-          setSuggestionIndex((current) => (current + delta + itemCount) % itemCount);
+          setSuggestionIndex((current) => {
+            // No selection yet → first Down picks 0, first Up picks last.
+            if (current < 0) return event.key === "ArrowDown" ? 0 : itemCount - 1;
+            return (current + delta + itemCount) % itemCount;
+          });
         }
         return;
       }
@@ -649,15 +890,20 @@ export function Composer(props: ComposerProps) {
         dismissSuggestions();
         return;
       }
-      if (event.key === "Enter" && !event.shiftKey && itemCount > 0) {
+      // Only commit a menu choice when something is highlighted (keyboard or hover).
+      if (event.key === "Enter" && !event.shiftKey && itemCount > 0 && suggestionIndex >= 0) {
         event.preventDefault();
-        if (panel === "resource" && suggestionIndex === 0) {
-          void selectAttachments();
+        if (panel === "resource") {
+          if (suggestionIndex === 0) void selectAttachments();
+          else if (suggestionIndex <= pathSuggestions.length) {
+            const hit = pathSuggestions[suggestionIndex - 1];
+            if (hit) selectProjectPath(hit.path);
+          } else {
+            const pkg = packageSuggestions[suggestionIndex - 1 - pathSuggestions.length];
+            if (pkg) selectPackage(pkg);
+          }
         } else {
-          const command =
-            panel === "slash"
-              ? slashSuggestions[suggestionIndex]
-              : resourceSuggestions[suggestionIndex - 1];
+          const command = slashSuggestions[suggestionIndex];
           if (command) selectCommand(command);
         }
         return;
@@ -790,8 +1036,8 @@ export function Composer(props: ComposerProps) {
   return (
     <div
       ref={rootRef}
-      // Default width is also the minimum — do not shrink below 630px.
-      className="pointer-events-auto relative mx-auto w-[630px] min-w-[630px] max-w-full"
+      // Parent is `.thread-content-column` (same as timeline) — fill it completely.
+      className="pointer-events-auto relative w-full min-w-0 max-w-full"
       data-testid="composer-root"
     >
       {queuedItems.length > 0 ? (
@@ -899,6 +1145,7 @@ export function Composer(props: ComposerProps) {
 
       {/* Full card border; joins the protrusion tab when present. */}
       <form
+        ref={composerCardRef}
         className={cn("composer-card", showProjectBar && "composer-card-with-protrusion")}
         onSubmit={(event) => props.onSubmit(event)}
       >
@@ -1117,46 +1364,70 @@ export function Composer(props: ComposerProps) {
         placement="top"
         testId="composer-slash-menu"
         minWidth={320}
-        className="w-[min(630px,calc(100vw-16px))] !rounded-[var(--radius-panel)] !border-[var(--border)] !bg-[var(--surface-panel)] !py-1 shadow-[var(--shadow-soft)]"
+        matchAnchorWidth
+        elevated={false}
+        offsetPx={2}
+        className="!rounded-[var(--radius-panel)] !border-[var(--border)] !bg-[var(--surface-panel)] !py-0"
       >
-        <div className="pix-scroll max-h-[360px] overscroll-contain px-1">
-          {slashSuggestions.length === 0 ? (
-            <p className="px-3 py-4 text-[12px] text-[var(--text-subtle)]">
-              {tr("composer.slash.empty")}
-            </p>
-          ) : (
-            slashSuggestions.map((command, index) => (
-              <button
-                key={`${command.source}:${command.name}`}
-                type="button"
-                role="menuitem"
-                data-testid="composer-slash-item"
-                className={cn(
-                  "flex w-full items-center gap-2.5 rounded-[var(--radius-control)] px-2.5 py-2 text-left transition-colors",
-                  index === suggestionIndex
-                    ? "bg-[var(--hover-fill)]"
-                    : "hover:bg-[var(--hover-fill)]",
-                )}
-                onMouseEnter={() => setSuggestionIndex(index)}
-                onClick={() => selectCommand(command)}
-              >
-                <span className="inline-flex size-4 shrink-0 text-[var(--muted-foreground)]">
-                  {commandSourceIcon(command)}
-                </span>
-                <span className="min-w-0 flex-1 truncate text-[13px] font-medium text-[var(--foreground)]">
-                  /{command.name}
-                  {command.argumentHint ? (
-                    <span className="ml-1 font-normal text-[var(--text-subtle)]">
-                      {command.argumentHint}
-                    </span>
-                  ) : null}
-                </span>
-                <span className="max-w-[46%] shrink truncate text-right text-[12px] text-[var(--text-subtle)]">
-                  {command.description}
-                </span>
-              </button>
-            ))
-          )}
+        <div
+          className="composer-suggest-body"
+          data-overflow={slashOverflow.overflows ? "true" : "false"}
+        >
+          <div
+            ref={slashOverflow.scrollRef}
+            className="composer-suggest-scroll pt-0"
+          >
+            {slashGroups.length === 0 ? (
+              <p className="px-2.5 py-3 text-left text-[13px] text-[var(--text-subtle)]">
+                {tr("composer.slash.empty")}
+              </p>
+            ) : (
+              slashGroups.map((group) => (
+                <div
+                  key={group.id}
+                  className="composer-suggest-group"
+                  data-testid={`composer-slash-group-${group.id}`}
+                >
+                  <div className="composer-suggest-group-label">
+                    {tr(
+                      group.id === "skill"
+                        ? "composer.slash.group.skill"
+                        : "composer.slash.group.command",
+                    )}
+                  </div>
+                  {group.items.map(({ command, flatIndex }) => (
+                    <button
+                      key={`${command.source}:${command.name}`}
+                      type="button"
+                      role="menuitem"
+                      data-testid="composer-slash-item"
+                      data-active={
+                        suggestionIndex >= 0 && flatIndex === suggestionIndex ? "true" : "false"
+                      }
+                      className="composer-suggest-item"
+                      onMouseEnter={() => setSuggestionIndex(flatIndex)}
+                      onMouseLeave={() => setSuggestionIndex(-1)}
+                      onClick={() => selectCommand(command)}
+                    >
+                      <span className="inline-flex size-4 shrink-0 text-[var(--muted-foreground)]">
+                        {commandSourceIcon(command)}
+                      </span>
+                      <span className="composer-suggest-item-main">
+                        /{command.name}
+                        {command.argumentHint ? (
+                          <span className="ml-1 font-normal text-[var(--text-subtle)]">
+                            {command.argumentHint}
+                          </span>
+                        ) : null}
+                      </span>
+                      <span className="composer-suggest-item-desc">{command.description}</span>
+                    </button>
+                  ))}
+                </div>
+              ))
+            )}
+          </div>
+          <div className="composer-suggest-fade" aria-hidden />
         </div>
       </FloatingMenu>
 
@@ -1167,82 +1438,101 @@ export function Composer(props: ComposerProps) {
         placement="top"
         testId="composer-attach-menu"
         minWidth={320}
-        className="w-[min(630px,calc(100vw-16px))] !rounded-[var(--radius-panel)] !border-[var(--border)] !bg-[var(--surface-panel)] !py-0 shadow-[var(--shadow-soft)]"
+        matchAnchorWidth
+        elevated={false}
+        offsetPx={2}
+        className="!rounded-[var(--radius-panel)] !border-[var(--border)] !bg-[var(--surface-panel)] !py-0"
       >
-        <div className="flex items-center gap-2 px-3 pb-1 pt-3 text-[12px] font-medium text-[var(--text-subtle)]">
-          <AtSign className="size-3.5" strokeWidth={1.75} />
-          {tr("composer.add.title")}
-        </div>
-        <div className="px-1 pb-1">
-          <button
-            type="button"
-            role="menuitem"
-            data-testid="composer-attach-files"
-            className={cn(
-              "flex w-full items-center gap-2.5 rounded-[var(--radius-control)] px-2.5 py-2.5 text-left transition-colors",
-              suggestionIndex === 0 ? "bg-[var(--hover-fill)]" : "hover:bg-[var(--hover-fill)]",
-            )}
-            onMouseEnter={() => setSuggestionIndex(0)}
-            onClick={() => void selectAttachments()}
+        <div
+          className="composer-suggest-body"
+          data-overflow={resourceOverflow.overflows ? "true" : "false"}
+        >
+          <div
+            ref={resourceOverflow.scrollRef}
+            className="composer-suggest-scroll pt-0"
           >
-            <FolderOpen
-              className="size-4 shrink-0 text-[var(--muted-foreground)]"
-              strokeWidth={1.75}
-            />
-            <span className="min-w-0 flex-1 text-[13px] font-medium">
-              {tr("composer.attach.filesAndFolders")}
-            </span>
-          </button>
-        </div>
-        {resourceSuggestions.length > 0 ? (
-          <>
-            <div className="border-t border-[var(--border)] px-3 pb-1 pt-2 text-[11px] font-medium text-[var(--text-subtle)]">
-              {tr("composer.add.commands")}
-            </div>
-            <div className="pix-scroll max-h-[280px] overscroll-contain px-1 pb-1">
-              {resourceSuggestions.map((command, index) => {
-                const itemIndex = index + 1;
-                const sourceLabel =
-                  command.source === "skill"
-                    ? tr("composer.slash.skill")
-                    : command.source === "prompt"
-                      ? tr("composer.slash.prompt")
-                      : tr("composer.slash.extension");
+            <div className="composer-suggest-group" data-testid="composer-attach-group-add">
+              <div className="composer-suggest-group-label">{tr("composer.add.title")}</div>
+              <button
+                type="button"
+                role="menuitem"
+                data-testid="composer-attach-files"
+                data-active={suggestionIndex === 0 ? "true" : "false"}
+                className="composer-suggest-item"
+                onMouseEnter={() => setSuggestionIndex(0)}
+                onMouseLeave={() => setSuggestionIndex(-1)}
+                onClick={() => void selectAttachments()}
+              >
+                <FolderOpen
+                  className="size-4 shrink-0 text-[var(--muted-foreground)]"
+                  strokeWidth={1.75}
+                />
+                <span className="composer-suggest-item-main">
+                  {tr("composer.attach.filesAndFolders")}
+                </span>
+              </button>
+              {pathSuggestions.map((item, index) => {
+                const flatIndex = index + 1;
                 return (
                   <button
-                    key={`${command.source}:${command.name}`}
+                    key={item.path}
                     type="button"
                     role="menuitem"
-                    data-testid="composer-resource-command"
-                    className={cn(
-                      "flex w-full items-center gap-2.5 rounded-[var(--radius-control)] px-2.5 py-2 text-left transition-colors",
-                      suggestionIndex === itemIndex
-                        ? "bg-[var(--hover-fill)]"
-                        : "hover:bg-[var(--hover-fill)]",
-                    )}
-                    onMouseEnter={() => setSuggestionIndex(itemIndex)}
-                    onClick={() => selectCommand(command)}
+                    data-testid="composer-attach-path"
+                    data-active={suggestionIndex === flatIndex ? "true" : "false"}
+                    className="composer-suggest-item"
+                    onMouseEnter={() => setSuggestionIndex(flatIndex)}
+                    onMouseLeave={() => setSuggestionIndex(-1)}
+                    onClick={() => selectProjectPath(item.path)}
+                    title={item.path}
                   >
-                    <span className="inline-flex size-4 shrink-0 text-[var(--muted-foreground)]">
-                      {commandSourceIcon(command)}
-                    </span>
-                    <span className="min-w-0 flex-1">
-                      <span className="block truncate text-[13px] font-medium">
-                        /{command.name}
-                      </span>
-                      <span className="block truncate text-[11px] text-[var(--text-subtle)]">
-                        {command.description}
-                      </span>
-                    </span>
-                    <span className="shrink-0 text-[10px] text-[var(--text-subtle)]">
-                      {sourceLabel}
-                    </span>
+                    {item.kind === "folder" ? (
+                      <Folder
+                        className="size-4 shrink-0 text-[var(--muted-foreground)]"
+                        strokeWidth={1.75}
+                      />
+                    ) : (
+                      <File
+                        className="size-4 shrink-0 text-[var(--muted-foreground)]"
+                        strokeWidth={1.75}
+                      />
+                    )}
+                    <span className="composer-suggest-item-main">{item.relative}</span>
                   </button>
                 );
               })}
             </div>
-          </>
-        ) : null}
+            {packageSuggestions.length > 0 ? (
+              <div className="composer-suggest-group" data-testid="composer-attach-group-plugins">
+                <div className="composer-suggest-group-label">{tr("composer.add.plugins")}</div>
+                {packageSuggestions.map((pkg, index) => {
+                  const flatIndex = 1 + pathSuggestions.length + index;
+                  return (
+                    <button
+                      key={`${pkg.scope}:${pkg.source}`}
+                      type="button"
+                      role="menuitem"
+                      data-testid={`composer-attach-package-${pkg.source}`}
+                      data-active={suggestionIndex === flatIndex ? "true" : "false"}
+                      className="composer-suggest-item"
+                      onMouseEnter={() => setSuggestionIndex(flatIndex)}
+                      onMouseLeave={() => setSuggestionIndex(-1)}
+                      onClick={() => selectPackage(pkg)}
+                    >
+                      <Package
+                        className="size-4 shrink-0 text-[var(--muted-foreground)]"
+                        strokeWidth={1.75}
+                      />
+                      <span className="composer-suggest-item-main">{pkg.source}</span>
+                      <span className="composer-suggest-item-desc">{pkg.scope}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            ) : null}
+          </div>
+          <div className="composer-suggest-fade" aria-hidden />
+        </div>
       </FloatingMenu>
 
       {/* Project menu — simple list, opens upward above the pill (matches reference). */}
@@ -1516,30 +1806,36 @@ export function Composer(props: ComposerProps) {
         minWidth={220}
         className="flex w-[min(15rem,calc(100vw-2rem))] flex-col !overflow-hidden !py-0"
       >
-        <div className="shrink-0 px-2.5 pb-1 pt-2 text-[11px] font-medium tracking-wide text-[var(--text-subtle)]">
-          {tr("composer.model.models")}
-        </div>
-        <div className="pix-scroll min-h-0 flex-1 overscroll-contain max-h-[min(280px,calc(100vh-14rem))]">
-          {props.modelOptions.length === 0 ? (
-            <p className="px-2.5 py-1.5 text-[12px] text-[var(--text-subtle)]">
+        <div className="pix-scroll min-h-0 flex-1 overscroll-contain max-h-[min(320px,calc(100vh-14rem))] py-1">
+          {modelGroups.length === 0 ? (
+            <p className="px-2.5 py-1.5 text-left text-[13px] text-[var(--text-subtle)]">
               {tr("composer.model.none")}
             </p>
           ) : (
-            props.modelOptions.map((model) => {
-              const value = `${model.provider}/${model.id}`;
-              return (
-                <MenuRow
-                  key={value}
-                  label={model.name || model.id}
-                  active={props.modelValue === value}
-                  testId={`composer-model-${model.id}`}
-                  onClick={() => {
-                    props.onModelChange(model.provider, model.id);
-                    closeMenu();
-                  }}
-                />
-              );
-            })
+            modelGroups.map((group) => (
+              <div
+                key={group.key}
+                className="composer-model-group"
+                data-testid={`composer-model-group-${group.key}`}
+              >
+                <div className="composer-model-group-label">{group.label}</div>
+                {group.models.map((model) => {
+                  const value = `${model.provider}/${model.id}`;
+                  return (
+                    <MenuRow
+                      key={value}
+                      label={model.name || model.id}
+                      active={props.modelValue === value}
+                      testId={`composer-model-${model.id}`}
+                      onClick={() => {
+                        props.onModelChange(model.provider, model.id);
+                        closeMenu();
+                      }}
+                    />
+                  );
+                })}
+              </div>
+            ))
           )}
         </div>
         <div className="shrink-0 border-t border-[var(--border)] py-1">
