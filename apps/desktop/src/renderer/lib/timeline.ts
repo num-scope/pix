@@ -128,10 +128,23 @@ export function historyToTimeline(history: SessionHistoryMessage[]): TimelineIte
       });
       continue;
     }
+    if (item.role === "shell") {
+      const commandPrefix = item.excludeFromContext ? "!!" : "!";
+      items.push({
+        id: `history-shell-${index}`,
+        kind: "system",
+        title: `${commandPrefix} ${item.command ?? ""}`.trimEnd(),
+        text: shellOutputMarkdown(item.text, item.exitCode ?? 0),
+        tone: (item.exitCode ?? 0) === 0 ? "info" : "error",
+        ...(item.timestamp ? { timestamp: item.timestamp } : {}),
+      });
+      continue;
+    }
     items.push({
       id: `history-system-${index}`,
       kind: "system",
       text: item.text,
+      ...(item.title ? { title: item.title } : {}),
       ...(item.timestamp ? { timestamp: item.timestamp } : {}),
     });
   }
@@ -241,6 +254,39 @@ export function projectEventsToTimeline(events: HostEvent[], prompts: string[]):
             timestamp: now(),
           });
         }
+      } else if (runtimeEvent.type === "shell.completed") {
+        flushMessage();
+        const commandPrefix = runtimeEvent.excludeFromContext ? "!!" : "!";
+        items.push({
+          id: `shell-${items.length}`,
+          kind: "system",
+          title: `${commandPrefix} ${runtimeEvent.command}`,
+          text: shellOutputMarkdown(runtimeEvent.output, runtimeEvent.exitCode),
+          tone: runtimeEvent.exitCode === 0 ? "info" : "error",
+          timestamp: now(),
+        });
+      } else if (runtimeEvent.type === "compaction.started") {
+        flushMessage();
+        items.push({
+          id: `compaction-start-${items.length}`,
+          kind: "system",
+          title: "Compaction",
+          text: `Compaction started (${runtimeEvent.reason})`,
+          tone: "info",
+          timestamp: now(),
+        });
+      } else if (runtimeEvent.type === "compaction.completed") {
+        flushMessage();
+        items.push({
+          id: `compaction-end-${items.length}`,
+          kind: "system",
+          title: "Compaction",
+          text:
+            runtimeEvent.errorMessage ??
+            (runtimeEvent.aborted ? "Compaction aborted" : "Compaction completed"),
+          tone: runtimeEvent.errorMessage || runtimeEvent.aborted ? "error" : "info",
+          timestamp: now(),
+        });
       } else if (runtimeEvent.type === "custom.message") {
         flushMessage();
         items.push({
@@ -286,6 +332,11 @@ export function projectEventsToTimeline(events: HostEvent[], prompts: string[]):
 
   flushMessage();
   return items;
+}
+
+function shellOutputMarkdown(output: string, exitCode: number): string {
+  const body = output || `(exit ${exitCode})`;
+  return `\`\`\`text\n${body.trimEnd()}\n\`\`\``;
 }
 
 /**
@@ -358,4 +409,3 @@ function summarizeData(value: unknown): string {
     return "[unserializable value]";
   }
 }
-

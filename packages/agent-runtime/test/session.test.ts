@@ -136,6 +136,7 @@ describe("R02 session replacement", () => {
 
       const forkResult = await handle.fork(userEntry.id);
       expect(forkResult.cancelled).toBe(false);
+      expect(forkResult.selectedText).toBe("hello for fork");
       expect(handle.runtime.session.sessionId).not.toBe(secondSessionId);
 
       // Switch back to the first session file.

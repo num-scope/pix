@@ -1,3 +1,4 @@
+import { IPC_PROTOCOL_VERSION } from "@pix/contracts";
 import type {
   CatalogPackage,
   HostEvent,
@@ -24,10 +25,7 @@ import { AppSidebar } from "./components/AppSidebar.tsx";
 import { CommandPalette } from "./components/CommandPalette.tsx";
 import { Composer, type SpeedMode } from "./components/Composer.tsx";
 import { ErrorDialog } from "./components/ErrorDialog.tsx";
-import {
-  SessionInfoPanel,
-  SessionTreePanel,
-} from "./components/SessionParityPanels.tsx";
+import { SessionInfoPanel, SessionTreePanel } from "./components/SessionParityPanels.tsx";
 import { RenameDialog } from "./components/RenameDialog.tsx";
 import { SettingsPage } from "./components/settings/SettingsPage.tsx";
 import {
@@ -38,8 +36,16 @@ import {
 import { PixLogo } from "./components/PixLogo.tsx";
 import { ThreadHeader } from "./components/ThreadHeader.tsx";
 import { TimelineProcessBlock, TimelineRow } from "./components/TimelineRow.tsx";
+import {
+  MessageScroller,
+  MessageScrollerButton,
+  MessageScrollerContent,
+  MessageScrollerItem,
+  MessageScrollerProvider,
+  MessageScrollerViewport,
+} from "@/components/ui/message-scroller";
 import { buildShellCommands } from "./lib/commands.ts";
-import { promptWithAttachedPaths } from "./lib/composer-suggestions.ts";
+import { isPromptImagePath, promptWithAttachedPaths } from "./lib/composer-suggestions.ts";
 import {
   buildUnifiedSlashCatalog,
   parseShellInjection,
@@ -63,7 +69,7 @@ import {
 import { loadNotificationPrefs } from "./lib/notification-prefs.ts";
 import { installOverlayScroll, syncOverlayScroll } from "./lib/overlay-scroll.ts";
 import { sidebarRailWidth } from "./lib/sidebar-prefs.ts";
-import { matchShortcut } from "./lib/shortcuts.ts";
+import { matchShortcut, SHORTCUT_OVERRIDES_CHANGED_EVENT } from "./lib/shortcuts.ts";
 import {
   filterRecentWorkspaces,
   firstLine,
@@ -203,6 +209,7 @@ function App() {
   /** float = overlay without squeeze; dock = flex squeeze. */
   const [envPanelLayout, setEnvPanelLayout] = useState<Exclude<EnvPanelLayoutMode, "none">>("dock");
   const [sessionTreeOpen, setSessionTreeOpen] = useState(false);
+  const [sessionTreeMode, setSessionTreeMode] = useState<"navigate" | "fork">("navigate");
   const [sessionTree, setSessionTree] = useState<SessionTreeView | undefined>();
   const [sessionTreeLoading, setSessionTreeLoading] = useState(false);
   const [sessionTreeError, setSessionTreeError] = useState<string | undefined>();
@@ -241,7 +248,6 @@ function App() {
   const composerDockRef = useRef<HTMLDivElement | null>(null);
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
   const pendingComposerFocus = useRef(false);
-  const [showScrollToBottom, setShowScrollToBottom] = useState(false);
   /** Floating composer height — timeline bottom inset so last rows stay above the input. */
   const [composerDockHeight, setComposerDockHeight] = useState(200);
   const [modelOptions, setModelOptions] = useState<
@@ -253,6 +259,7 @@ function App() {
   const [accessMode, setAccessMode] = useState<AccessMode>(loadAccessMode);
   const [accessVisibility, setAccessVisibility] = useState<AccessVisibility>(loadAccessVisibility);
   const [showContextUsage, setShowContextUsage] = useState(loadShowContextUsage);
+  const [shortcutRevision, setShortcutRevision] = useState(0);
 
   function applyAccessMode(mode: AccessMode) {
     const next = resolveAccessMode(mode, accessVisibility);
@@ -369,9 +376,10 @@ function App() {
   /** Session identity — used to pin scroll + remount timeline rows on switch. */
   const sessionKey = snapshot?.sessionFile ?? snapshot?.sessionId ?? "";
   const timeline = useMemo(() => {
-    const items = [...historyToTimeline(history), ...projectEventsToTimeline(events, sentPrompts)].filter(
-      (item) => !(snapshot?.hideThinkingBlock && item.kind === "thinking"),
-    );
+    const items = [
+      ...historyToTimeline(history),
+      ...projectEventsToTimeline(events, sentPrompts),
+    ].filter((item) => !(snapshot?.hideThinkingBlock && item.kind === "thinking"));
     // Prefix ids with session so React does not reuse rows across switches.
     if (!sessionKey) return items;
     return items.map((item) => ({ ...item, id: `${sessionKey}:${item.id}` }));
@@ -626,11 +634,6 @@ function App() {
     requestAnimationFrame(() => syncOverlayScroll(el, { show: true }));
   }
 
-  function scrollTimelineToBottom(behavior: ScrollBehavior = "smooth") {
-    pinTimelineScrollport(behavior);
-    setShowScrollToBottom(false);
-  }
-
   /**
    * Session open/switch: hold the content pane blank until history is applied and
    * scrolled to bottom. Never show empty-hero or project-bar protrusion mid-transition.
@@ -646,7 +649,6 @@ function App() {
     pendingScrollBottomRef.current = true;
     holdBlankRef.current = true;
     setTimelineReady(false);
-    setShowScrollToBottom(false);
   }
 
   function requestContentReveal() {
@@ -656,7 +658,6 @@ function App() {
   function finishBlankHold() {
     holdBlankRef.current = false;
     pendingScrollBottomRef.current = false;
-    setShowScrollToBottom(false);
     setTimelineReady(true);
   }
 
@@ -698,7 +699,6 @@ function App() {
         return;
       }
       // Reveal while already pinned; header/composer height changes resize the scrollport.
-      setShowScrollToBottom(false);
       holdBlankRef.current = false;
       setTimelineReady(true);
       // Post-reveal pins: after paint so clientHeight reflects final column layout.
@@ -712,7 +712,6 @@ function App() {
             if (cancelled) return;
             pinBottom();
             pendingScrollBottomRef.current = false;
-            setShowScrollToBottom(false);
           });
         });
       });
@@ -724,8 +723,8 @@ function App() {
     };
   }, [sessionKey, history.length, timeline.length, composerDockHeight, revealToken]);
 
-  // Track composer height only so scroll-to-bottom / settle re-run when the dock resizes
-  // (composer is in-flow now — content area bottom is the dock top, not the window edge).
+  // Track composer height so the jump-to-bottom control sits above the sticky dock
+  // (composer is in-flow — content area bottom is the dock top, not the window edge).
   useEffect(() => {
     const dock = composerDockRef.current;
     if (!dock || typeof ResizeObserver === "undefined") return;
@@ -734,63 +733,10 @@ function App() {
     const ro = new ResizeObserver(() => apply());
     ro.observe(dock);
     return () => ro.disconnect();
-  }, [hasActivity, showScrollToBottom, showContextUsage, accessVisibility, timelineReady]);
+  }, [hasActivity, showContextUsage, accessVisibility, timelineReady]);
 
-  /** Pixels from scrollport bottom before we consider "not at bottom" (show jump chip). */
+  /** Pixels from scrollport bottom — MessageScroller autoScroll edge threshold. */
   const SCROLL_BOTTOM_GAP_PX = 64;
-
-  useEffect(() => {
-    if (!hasActivity || !timelineReady) return;
-    const el = timelineScrollRef.current;
-    if (!el) return;
-    // Streaming: auto-stick only while already near the scrollport bottom.
-    if (pendingScrollBottomRef.current || holdBlankRef.current) return;
-    const gap = el.scrollHeight - el.scrollTop - el.clientHeight;
-    if (gap < SCROLL_BOTTOM_GAP_PX) {
-      pinTimelineScrollport("auto");
-      setShowScrollToBottom(false);
-    }
-  }, [timeline, hasActivity, running, composerDockHeight, timelineReady]);
-
-  useEffect(() => {
-    if (!hasActivity || !timelineReady) {
-      setShowScrollToBottom(false);
-      return;
-    }
-    const el = timelineScrollRef.current;
-    if (!el) return;
-
-    const update = () => {
-      // Always attach listeners — pending is a ref and must not skip subscription
-      // (otherwise after switch settle we never re-bind scroll and the chip never appears).
-      if (pendingScrollBottomRef.current || holdBlankRef.current) {
-        setShowScrollToBottom(false);
-        return;
-      }
-      const gap = el.scrollHeight - el.scrollTop - el.clientHeight;
-      const overflows = el.scrollHeight > el.clientHeight + 4;
-      setShowScrollToBottom(overflows && gap > SCROLL_BOTTOM_GAP_PX);
-    };
-
-    // Defer so layout (absolute scrollport height) is settled after paint.
-    const measure = () => requestAnimationFrame(update);
-    measure();
-    el.addEventListener("scroll", update, { passive: true });
-    el.addEventListener("wheel", measure, { passive: true });
-    const ro =
-      typeof ResizeObserver !== "undefined" ? new ResizeObserver(() => measure()) : undefined;
-    ro?.observe(el);
-    // After session open, pending clears async — re-measure a few times.
-    const t1 = window.setTimeout(update, 120);
-    const t2 = window.setTimeout(update, 400);
-    return () => {
-      el.removeEventListener("scroll", update);
-      el.removeEventListener("wheel", measure);
-      ro?.disconnect();
-      window.clearTimeout(t1);
-      window.clearTimeout(t2);
-    };
-  }, [hasActivity, timeline.length, composerDockHeight, timelineReady, revealToken]);
 
   async function ensureHost(): Promise<HostSnapshot> {
     const store = useShellStore.getState();
@@ -898,7 +844,8 @@ function App() {
     }
   }
 
-  async function openSessionTree() {
+  async function openSessionTree(mode: "navigate" | "fork" = "navigate") {
+    setSessionTreeMode(mode);
     setSessionTreeOpen(true);
     await refreshSessionTree();
   }
@@ -921,11 +868,11 @@ function App() {
     await refreshSessionInfo();
   }
 
-  async function runBuiltinSlash(name: string, args: string): Promise<boolean> {
-    const action = resolveBuiltinSlash(name, args);
+  async function runBuiltinSlash(name: string, args: string, source?: string): Promise<boolean> {
+    const action = resolveBuiltinSlash(name, args, source);
     switch (action.type) {
       case "new":
-        await newBlankTask();
+        await newSessionInCurrentWorkspace();
         return true;
       case "model":
         setSettingsSection("models");
@@ -954,7 +901,7 @@ function App() {
         await openSessionTree();
         return true;
       case "fork":
-        await forkThread();
+        await openSessionTree("fork");
         return true;
       case "clone": {
         const opened = await window.pix.session.clone();
@@ -981,7 +928,9 @@ function App() {
         return true;
       }
       case "import": {
-        const opened = await window.pix.session.importPick();
+        const opened = action.path
+          ? await window.pix.session.import(action.path)
+          : await window.pix.session.importPick();
         if (!opened) return true;
         markSessionOpenForBottomScroll();
         applySessionOpen(opened);
@@ -999,6 +948,18 @@ function App() {
         }
         await navigator.clipboard.writeText(text);
         setStatus(t(locale, "session.parity.copied"));
+        return true;
+      }
+      case "share": {
+        try {
+          setStatus(t(locale, "session.parity.sharing"));
+          const shared = await window.pix.session.share();
+          await navigator.clipboard.writeText(shared.url).catch(() => undefined);
+          setStatus(t(locale, "session.parity.shared", { url: shared.url }));
+          void window.pix.workspace.openExternal(shared.url).catch(() => undefined);
+        } catch (error) {
+          reportAppError(error, t(locale, "session.parity.shareFailed"));
+        }
         return true;
       }
       case "reload": {
@@ -1027,10 +988,7 @@ function App() {
   /**
    * Codex-style edit: fork before the original user entry (when known), then resend text.
    */
-  async function editUserAndResend(
-    item: Extract<TimelineItem, { kind: "user" }>,
-    text: string,
-  ) {
+  async function editUserAndResend(item: Extract<TimelineItem, { kind: "user" }>, text: string) {
     const next = text.trim();
     if (!next || running) return;
     try {
@@ -1073,7 +1031,10 @@ function App() {
     const slash = parseSlashLine(displayMessage);
     if (slash && attachedPaths.length === 0) {
       try {
-        const handled = await runBuiltinSlash(slash.name, slash.args);
+        const source = buildUnifiedSlashCatalog(snapshot, locale).find(
+          (item) => item.name === slash.name,
+        )?.source;
+        const handled = await runBuiltinSlash(slash.name, slash.args, source);
         if (handled) {
           setPrompt("");
           return;
@@ -1088,8 +1049,9 @@ function App() {
     const shell = parseShellInjection(displayMessage);
     if (shell.kind !== "none" && attachedPaths.length === 0) {
       if (!shell.command.trim()) return;
+      const agentWasRunning = running;
       setPrompt("");
-      setRunning(true);
+      if (!agentWasRunning) setRunning(true);
       setStatus(
         shell.kind === "hidden-shell"
           ? t(locale, "session.parity.shellHidden")
@@ -1100,6 +1062,16 @@ function App() {
           excludeFromContext: shell.kind === "hidden-shell",
         });
         acceptSnapshot(result.snapshot);
+        setEvents((current) => [
+          ...current,
+          {
+            protocolVersion: IPC_PROTOCOL_VERSION,
+            type: "runtime.event",
+            runtimeId: result.snapshot.runtimeId,
+            sequence: result.snapshot.sequence,
+            event: { type: "shell.completed", ...result.result },
+          },
+        ]);
         setStatus(
           result.result.exitCode === 0
             ? t(locale, "session.parity.shellDone")
@@ -1109,13 +1081,14 @@ function App() {
         setPrompt(draft);
         reportAppError(error, t(locale, "session.parity.shellFailed"));
       } finally {
-        setRunning(false);
+        if (!agentWasRunning) setRunning(false);
       }
       return;
     }
 
     const queueBehavior = running ? (streamingBehavior ?? "steer") : undefined;
     const message = promptWithAttachedPaths(displayMessage, attachedPaths);
+    const imagePaths = attachedPaths.filter(isPromptImagePath);
 
     // If the user switches sessions mid-request, ignore late host results.
     const sessionAtStart =
@@ -1135,7 +1108,7 @@ function App() {
     if (queueBehavior) {
       setStatus(queueBehavior === "followUp" ? "Follow-up queued" : "Guidance queued");
       try {
-        const next = await window.pix.agent.prompt(message, queueBehavior);
+        const next = await window.pix.agent.prompt(message, queueBehavior, imagePaths);
         if (stillSameSession()) acceptSnapshot(next);
       } catch (error) {
         if (!stillSameSession()) return;
@@ -1154,7 +1127,7 @@ function App() {
     setLastFailure(undefined);
     setStatus("Agent running...");
     try {
-      const next = await window.pix.agent.prompt(message);
+      const next = await window.pix.agent.prompt(message, undefined, imagePaths);
       if (!stillSameSession()) return;
       acceptSnapshot(next);
       setStatus("Agent settled");
@@ -1255,20 +1228,64 @@ function App() {
     setSidebarOpen(false);
   }
 
-  async function installPackage(source: string, scope: "global" | "project") {
+  async function installPackage(
+    source: string,
+    scope: "global" | "project",
+    options?: { temporary?: boolean },
+  ) {
     const loc = useShellStore.getState().locale;
     setEcoLoading(true);
-    setStatus(t(loc, "packages.status.installing", { scope }));
+    setStatus(
+      t(loc, options?.temporary ? "packages.status.installingTemp" : "packages.status.installing", {
+        scope,
+      }),
+    );
     try {
       await ensureHost();
-      const next = await window.pix.packages.install(source, scope);
+      const next = await window.pix.packages.install(source, scope, options);
       setPackages(next);
-      setStatus(t(loc, "packages.status.installed"));
+      setStatus(
+        t(loc, options?.temporary ? "packages.status.installedTemp" : "packages.status.installed"),
+      );
       acceptSnapshot(await window.pix.host.snapshot());
       await refreshPiStatus({ ensure: false });
     } catch (error) {
       reportAppError(error, t(loc, "packages.status.installFailed"));
       throw error;
+    } finally {
+      setEcoLoading(false);
+    }
+  }
+
+  async function setPackageEnabled(source: string, scope: "global" | "project", enabled: boolean) {
+    const loc = useShellStore.getState().locale;
+    setEcoLoading(true);
+    try {
+      const next = await window.pix.packages.setEnabled(source, scope, enabled);
+      setPackages(next);
+      setStatus(
+        t(loc, enabled ? "packages.status.enabled" : "packages.status.disabled", { source }),
+      );
+      acceptSnapshot(await window.pix.host.snapshot());
+      await refreshPiStatus({ ensure: false });
+    } catch (error) {
+      reportAppError(error, t(loc, "packages.status.enableFailed"));
+      throw error;
+    } finally {
+      setEcoLoading(false);
+    }
+  }
+
+  async function refreshModelCatalogFromPackages() {
+    const loc = useShellStore.getState().locale;
+    setEcoLoading(true);
+    try {
+      await ensureHost();
+      await window.pix.models.refreshCatalog();
+      setStatus(t(loc, "packages.status.catalogRefreshed"));
+      acceptSnapshot(await window.pix.host.snapshot());
+    } catch (error) {
+      reportAppError(error, t(loc, "packages.status.catalogRefreshFailed"));
     } finally {
       setEcoLoading(false);
     }
@@ -1425,6 +1442,37 @@ function App() {
         }
       });
     });
+  }
+
+  async function newSessionInCurrentWorkspace() {
+    if (useShellStore.getState().running) {
+      try {
+        acceptSnapshot(await window.pix.agent.abort());
+      } catch {
+        // Continue once the current run has already settled
+      } finally {
+        setRunning(false);
+      }
+    }
+    try {
+      if (!useShellStore.getState().runtimeId) await ensureHost();
+      setView("thread");
+      setSidebarOpen(false);
+      setPrompt("");
+      setAttachments([]);
+      setStatus("Creating session...");
+      const opened = await window.pix.session.create();
+      markSessionOpenForBottomScroll();
+      applySessionOpen(opened);
+      requestContentReveal();
+      setStatus("Agent Host ready");
+      await refreshThreads();
+      if (isNonProjectWorkspacePath(opened.snapshot.cwd)) await refreshConversationSessions();
+    } catch (error) {
+      reportAppError(error, "无法在当前位置新建会话");
+      setTimelineReady(true);
+      pendingScrollBottomRef.current = false;
+    }
   }
 
   /**
@@ -1611,12 +1659,24 @@ function App() {
 
   async function forkThread(entryId?: string) {
     if (running) return;
+    if (!entryId) {
+      await openSessionTree("fork");
+      return;
+    }
     try {
       if (!useShellStore.getState().runtimeId) await ensureHost();
       setStatus("Forking thread...");
       const opened = await window.pix.session.fork(entryId);
       markSessionOpenForBottomScroll();
       applySessionOpen(opened);
+      setPrompt(opened.selectedText ?? "");
+      const cwd = opened.snapshot.cwd;
+      if (cwd) {
+        setThreadsByCwd((prev) => ({
+          ...prev,
+          [normalizeCwdKey(cwd)]: opened.threads,
+        }));
+      }
       requestContentReveal();
       setStatus("Agent Host ready");
     } catch (error) {
@@ -1794,8 +1854,14 @@ function App() {
         },
       }),
     // handlers close over latest store setters; recompute lightly when mode/view changes
-    [colorMode, view, running, envPanelFits, workspacePath, hasActivity],
+    [colorMode, view, running, envPanelFits, workspacePath, hasActivity, shortcutRevision],
   );
+
+  useEffect(() => {
+    const refreshShortcuts = () => setShortcutRevision((revision) => revision + 1);
+    window.addEventListener(SHORTCUT_OVERRIDES_CHANGED_EVENT, refreshShortcuts);
+    return () => window.removeEventListener(SHORTCUT_OVERRIDES_CHANGED_EVENT, refreshShortcuts);
+  }, []);
 
   useEffect(() => {
     function onKeyDown(event: globalThis.KeyboardEvent) {
@@ -1985,184 +2051,205 @@ function App() {
                 Composer is sticky to the bottom of that full-height scrollport.
               */}
               <div className="thread-pane">
-                <div
-                  className={cn(
-                    "timeline-scroll thread-pane-scroll",
-                    !timelineReady && "invisible pointer-events-none",
-                  )}
-                  ref={timelineScrollRef}
-                  aria-busy={!timelineReady}
-                  data-ready={timelineReady ? "true" : "false"}
+                <MessageScrollerProvider
+                  autoScroll={timelineReady && hasActivity}
+                  defaultScrollPosition="end"
+                  scrollEdgeThreshold={SCROLL_BOTTOM_GAP_PX}
                 >
-                  <div className="thread-content-column thread-content-column-stack">
-                    <div
+                  <MessageScroller className="size-full min-h-0">
+                    <MessageScrollerViewport
+                      ref={timelineScrollRef}
                       className={cn(
-                        "thread-messages",
-                        hasActivity ? "pt-6 pb-4" : "empty flex min-h-0 flex-1 flex-col",
+                        "timeline-scroll thread-pane-scroll size-full min-h-0",
+                        !timelineReady && "invisible pointer-events-none",
                       )}
-                      data-testid="timeline"
+                      aria-busy={!timelineReady}
+                      data-ready={timelineReady ? "true" : "false"}
                     >
-                      {hasActivity ? (
-                        <>
-                          {timelineBlocks.map((block) =>
-                            block.type === "process" ? (
-                              <TimelineProcessBlock
-                                key={block.id}
-                                locale={locale}
-                                items={block.items}
-                                {...(block.durationLabel
-                                  ? { durationLabel: block.durationLabel }
-                                  : {})}
-                                {...(workspacePath ? { workspacePath } : {})}
-                              />
-                            ) : (
-                              <TimelineRow
-                                key={block.item.id}
-                                item={block.item}
-                                locale={locale}
-                                workspacePath={workspacePath}
-                                editingLocked={running}
-                                onEditUser={(item, text) => void editUserAndResend(item, text)}
-                              />
-                            ),
-                          )}
-                          <div ref={timelineEndRef} className="h-px w-full shrink-0" aria-hidden />
-                        </>
-                      ) : timelineReady ? (
+                      <MessageScrollerContent className="thread-content-column thread-content-column-stack gap-0">
                         <div
-                          className="flex min-h-full flex-1 flex-col items-center justify-center px-4 text-center"
-                          data-testid="empty-hero"
+                          className={cn(
+                            "thread-messages",
+                            hasActivity ? "pt-6 pb-4" : "empty flex min-h-0 flex-1 flex-col",
+                          )}
+                          data-testid="timeline"
                         >
-                          <PixLogo className="mb-5 size-12" title={t(locale, "app.name")} />
-                          <h1 className="m-0 max-w-lg text-[26px] leading-snug font-semibold tracking-[-0.03em] text-[var(--text)]">
-                            {workspacePath
-                              ? t(locale, "empty.title", { name: workspace.name })
-                              : isPureConversation || snapshot || pendingPureConversation
-                                ? t(locale, "empty.titleConversation")
-                                : t(locale, "empty.titleNoWorkspace")}
-                          </h1>
-                          {!workspacePath ? (
-                            <p className="mt-3 max-w-md text-[13px] text-[var(--muted-foreground)]">
-                              {isPureConversation || snapshot || pendingPureConversation
-                                ? t(locale, "empty.subtitleConversation")
-                                : t(locale, "empty.subtitleNoWorkspace")}
-                            </p>
+                          {hasActivity ? (
+                            <>
+                              {timelineBlocks.map((block) => {
+                                const messageId =
+                                  block.type === "process" ? block.id : block.item.id;
+                                const isUser = block.type === "item" && block.item.kind === "user";
+                                return (
+                                  <MessageScrollerItem
+                                    key={messageId}
+                                    messageId={messageId}
+                                    scrollAnchor={isUser}
+                                    className="[content-visibility:visible]"
+                                  >
+                                    {block.type === "process" ? (
+                                      <TimelineProcessBlock
+                                        locale={locale}
+                                        items={block.items}
+                                        {...(block.durationLabel
+                                          ? { durationLabel: block.durationLabel }
+                                          : {})}
+                                        {...(workspacePath ? { workspacePath } : {})}
+                                      />
+                                    ) : (
+                                      <TimelineRow
+                                        item={block.item}
+                                        locale={locale}
+                                        workspacePath={workspacePath}
+                                        editingLocked={running}
+                                        onEditUser={(item, text) =>
+                                          void editUserAndResend(item, text)
+                                        }
+                                      />
+                                    )}
+                                  </MessageScrollerItem>
+                                );
+                              })}
+                              <div
+                                ref={timelineEndRef}
+                                className="h-px w-full shrink-0"
+                                aria-hidden
+                              />
+                            </>
+                          ) : timelineReady ? (
+                            <div
+                              className="flex min-h-full flex-1 flex-col items-center justify-center px-4 text-center"
+                              data-testid="empty-hero"
+                            >
+                              <PixLogo className="mb-5 size-12" title={t(locale, "app.name")} />
+                              <h1 className="m-0 max-w-lg text-[26px] leading-snug font-semibold tracking-[-0.03em] text-[var(--text)]">
+                                {workspacePath
+                                  ? t(locale, "empty.title", { name: workspace.name })
+                                  : isPureConversation || snapshot || pendingPureConversation
+                                    ? t(locale, "empty.titleConversation")
+                                    : t(locale, "empty.titleNoWorkspace")}
+                              </h1>
+                              {!workspacePath ? (
+                                <p className="mt-3 max-w-md text-[13px] text-[var(--muted-foreground)]">
+                                  {isPureConversation || snapshot || pendingPureConversation
+                                    ? t(locale, "empty.subtitleConversation")
+                                    : t(locale, "empty.subtitleNoWorkspace")}
+                                </p>
+                              ) : null}
+                            </div>
                           ) : null}
                         </div>
-                      ) : null}
-                    </div>
 
-                    <div
-                      ref={composerDockRef}
-                      className="composer-dock pointer-events-none sticky bottom-0 z-[2] w-full bg-[var(--canvas)] pt-1 pb-6"
-                      data-mode="sticky"
-                      data-testid="composer-dock"
-                    >
-                      {hasActivity && timelineReady ? (
                         <div
-                          className="composer-dock-fade pointer-events-none absolute inset-x-0 top-0 z-[1] h-10 -translate-y-full"
-                          aria-hidden
-                        />
-                      ) : null}
-                      {showScrollToBottom && timelineReady && hasActivity ? (
-                        <div
-                          className="pointer-events-none absolute inset-x-0 top-0 z-20 flex -translate-y-[calc(100%+12px)] justify-center"
-                          data-testid="scroll-to-bottom-wrap"
+                          ref={composerDockRef}
+                          className="composer-dock pointer-events-none sticky bottom-0 z-[2] w-full bg-[var(--canvas)] pt-1 pb-6"
+                          data-mode="sticky"
+                          data-testid="composer-dock"
                         >
-                          <button
-                            type="button"
-                            data-testid="scroll-to-bottom"
-                            title={t(locale, "thread.scrollToBottom")}
-                            aria-label={t(locale, "thread.scrollToBottom")}
-                            className={cn(
-                              "pointer-events-auto inline-flex h-7 w-7 items-center justify-center rounded-full",
-                              "border border-[var(--border)] bg-[var(--popover)] text-[var(--foreground)]",
-                              "shadow-[0_4px_16px_rgb(0_0_0/0.28)] transition-colors",
-                              "hover:bg-[var(--hover-fill)]",
+                          {hasActivity && timelineReady ? (
+                            <div
+                              className="composer-dock-fade pointer-events-none absolute inset-x-0 top-0 z-[1] h-10 -translate-y-full"
+                              aria-hidden
+                            />
+                          ) : null}
+                          <Composer
+                            locale={locale}
+                            prompt={prompt}
+                            onPromptChange={setPrompt}
+                            onSubmit={(event) => void sendPrompt(event)}
+                            onAbort={() => void abort()}
+                            onKeyDown={onComposerKeyDown}
+                            running={running}
+                            composerRef={composerRef}
+                            workspacePath={workspacePath}
+                            recentWorkspaces={recentWorkspaces}
+                            onOpenProject={(path) =>
+                              void openWorkspacePath(path, { resumeRecent: true })
+                            }
+                            onAddProject={() => void openWorkspacePicker()}
+                            showProjectBar={timelineReady && !hasActivity}
+                            accessMode={accessMode}
+                            onAccessMode={applyAccessMode}
+                            accessVisibility={accessVisibility}
+                            modelOptions={modelOptions}
+                            modelValue={
+                              displayModel ? `${displayModel.provider}/${displayModel.id}` : ""
+                            }
+                            onModelChange={(provider, id) => void changeModel(provider, id)}
+                            thinkingLevel={displayThinkingLevel}
+                            thinkingLevels={displayThinkingLevels}
+                            onThinkingChange={(level) => void changeThinking(level)}
+                            speedMode={speedMode}
+                            onSpeedMode={(mode) => {
+                              setSpeedMode(mode);
+                              try {
+                                localStorage.setItem("pix.composer.speed", mode);
+                              } catch {
+                                // ignore
+                              }
+                            }}
+                            contextPercent={snapshot?.usage?.context?.percent ?? undefined}
+                            contextTokens={
+                              snapshot?.usage?.context?.tokens ??
+                              snapshot?.usage?.tokens.total ??
+                              undefined
+                            }
+                            showContextUsage={showContextUsage}
+                            projectTrusted={snapshot?.projectTrusted}
+                            runState={runState}
+                            piThemeLabel={piThemeLabel(snapshot)}
+                            attachments={attachments}
+                            onPickAttachments={pickComposerAttachments}
+                            onRemoveAttachment={(path) =>
+                              setAttachments((current) => current.filter((item) => item !== path))
+                            }
+                            onAddAttachments={(paths) =>
+                              setAttachments((current) =>
+                                [...new Set([...current, ...paths])].slice(0, 12),
+                              )
+                            }
+                            packages={packages}
+                            slashCommands={buildUnifiedSlashCatalog(snapshot, locale).map(
+                              (item) => ({
+                                name: item.name,
+                                description: item.upcoming
+                                  ? `${item.description}${t(locale, "slash.upcomingSuffix")}`
+                                  : item.description,
+                                source:
+                                  item.source === "skill" ||
+                                  item.source === "prompt" ||
+                                  item.source === "extension" ||
+                                  item.source === "builtin"
+                                    ? item.source
+                                    : "builtin",
+                                ...(item.argumentHint ? { argumentHint: item.argumentHint } : {}),
+                              }),
                             )}
-                            onClick={() => scrollTimelineToBottom("smooth")}
-                          >
-                            <ArrowDown className="h-3.5 w-3.5" strokeWidth={2.25} />
-                          </button>
+                            queuedMessages={queuedMessages}
+                            onClearQueue={() => void clearQueuedMessages()}
+                          />
                         </div>
-                      ) : null}
-                      <Composer
-                        locale={locale}
-                        prompt={prompt}
-                        onPromptChange={setPrompt}
-                        onSubmit={(event) => void sendPrompt(event)}
-                        onAbort={() => void abort()}
-                        onKeyDown={onComposerKeyDown}
-                        running={running}
-                        composerRef={composerRef}
-                        workspacePath={workspacePath}
-                        recentWorkspaces={recentWorkspaces}
-                        onOpenProject={(path) =>
-                          void openWorkspacePath(path, { resumeRecent: true })
-                        }
-                        onAddProject={() => void openWorkspacePicker()}
-                        showProjectBar={timelineReady && !hasActivity}
-                        accessMode={accessMode}
-                        onAccessMode={applyAccessMode}
-                        accessVisibility={accessVisibility}
-                        modelOptions={modelOptions}
-                        modelValue={
-                          displayModel ? `${displayModel.provider}/${displayModel.id}` : ""
-                        }
-                        onModelChange={(provider, id) => void changeModel(provider, id)}
-                        thinkingLevel={displayThinkingLevel}
-                        thinkingLevels={displayThinkingLevels}
-                        onThinkingChange={(level) => void changeThinking(level)}
-                        speedMode={speedMode}
-                        onSpeedMode={(mode) => {
-                          setSpeedMode(mode);
-                          try {
-                            localStorage.setItem("pix.composer.speed", mode);
-                          } catch {
-                            // ignore
-                          }
-                        }}
-                        contextPercent={snapshot?.usage?.context?.percent ?? undefined}
-                        contextTokens={
-                          snapshot?.usage?.context?.tokens ??
-                          snapshot?.usage?.tokens.total ??
-                          undefined
-                        }
-                        showContextUsage={showContextUsage}
-                        projectTrusted={snapshot?.projectTrusted}
-                        runState={runState}
-                        piThemeLabel={piThemeLabel(snapshot)}
-                        attachments={attachments}
-                        onPickAttachments={pickComposerAttachments}
-                        onRemoveAttachment={(path) =>
-                          setAttachments((current) => current.filter((item) => item !== path))
-                        }
-                        onAddAttachments={(paths) =>
-                          setAttachments((current) =>
-                            [...new Set([...current, ...paths])].slice(0, 12),
-                          )
-                        }
-                        packages={packages}
-                        slashCommands={buildUnifiedSlashCatalog(snapshot, locale).map((item) => ({
-                          name: item.name,
-                          description: item.upcoming
-                            ? `${item.description}${t(locale, "slash.upcomingSuffix")}`
-                            : item.description,
-                          source:
-                            item.source === "skill" ||
-                            item.source === "prompt" ||
-                            item.source === "extension" ||
-                            item.source === "builtin"
-                              ? item.source
-                              : "builtin",
-                          ...(item.argumentHint ? { argumentHint: item.argumentHint } : {}),
-                        }))}
-                        queuedMessages={queuedMessages}
-                        onClearQueue={() => void clearQueuedMessages()}
-                      />
-                    </div>
-                  </div>
-                </div>
+                      </MessageScrollerContent>
+                    </MessageScrollerViewport>
+                    {timelineReady && hasActivity ? (
+                      <MessageScrollerButton
+                        data-testid="scroll-to-bottom"
+                        direction="end"
+                        behavior="smooth"
+                        title={t(locale, "thread.scrollToBottom")}
+                        aria-label={t(locale, "thread.scrollToBottom")}
+                        className={cn(
+                          "z-20 size-7 rounded-full border border-border bg-popover text-foreground shadow-[0_4px_16px_rgb(0_0_0/0.28)]",
+                          "hover:bg-accent",
+                        )}
+                        style={{ bottom: Math.max(composerDockHeight + 12, 72) }}
+                      >
+                        <ArrowDown className="size-3.5" strokeWidth={2.25} />
+                        <span className="sr-only">{t(locale, "thread.scrollToBottom")}</span>
+                      </MessageScrollerButton>
+                    ) : null}
+                  </MessageScroller>
+                </MessageScrollerProvider>
               </div>
 
               <EnvPanel
@@ -2185,9 +2272,11 @@ function App() {
             loading={ecoLoading}
             onRefresh={() => void openPackages()}
             onBack={() => void openThread()}
-            onInstall={(source, scope) => installPackage(source, scope)}
+            onInstall={(source, scope, options) => installPackage(source, scope, options)}
             onRemove={(source, scope) => removePackage(source, scope)}
             onUpdate={(source) => updatePackages(source)}
+            onSetEnabled={(source, scope, enabled) => setPackageEnabled(source, scope, enabled)}
+            onRefreshCatalog={() => void refreshModelCatalogFromPackages()}
           />
         ) : view === "resources" ? (
           <ResourcesPage
@@ -2214,6 +2303,7 @@ function App() {
             showContextUsage={showContextUsage}
             onShowContextUsage={applyShowContextUsage}
             onEnsureHost={() => ensureHost()}
+            onSnapshot={acceptSnapshot}
             onLocale={setLocale}
             onThemePreference={setThemePreference}
             onTranslucent={setSidebarTranslucent}
@@ -2274,15 +2364,23 @@ function App() {
       />
       <SessionTreePanel
         open={sessionTreeOpen}
+        mode={sessionTreeMode}
         locale={locale}
         tree={sessionTree}
         loading={sessionTreeLoading}
         error={sessionTreeError}
         onClose={() => setSessionTreeOpen(false)}
         onRefresh={() => void refreshSessionTree()}
-        onNavigate={async (node) => {
+        onNavigate={async (node, options) => {
           try {
-            const opened = await window.pix.session.navigateTree(node.id);
+            if (sessionTreeMode === "fork") {
+              await forkThread(node.id);
+              setSessionTreeOpen(false);
+              focusComposer();
+              return;
+            }
+            const opened = await window.pix.session.navigateTree(node.id, options);
+            if (opened.cancelled) return;
             markSessionOpenForBottomScroll();
             applySessionOpen({
               snapshot: opened.snapshot,
@@ -2318,11 +2416,20 @@ function App() {
           try {
             const result = await window.pix.session.exportPick(format);
             if (!result) return;
-            setStatus(
-              t(locale, "session.parity.exported", { format, path: result.path }),
-            );
+            setStatus(t(locale, "session.parity.exported", { format, path: result.path }));
           } catch (error) {
             reportAppError(error, t(locale, "session.parity.exportFailed"));
+          }
+        }}
+        onShare={async () => {
+          try {
+            setStatus(t(locale, "session.parity.sharing"));
+            const shared = await window.pix.session.share();
+            await navigator.clipboard.writeText(shared.url).catch(() => undefined);
+            setStatus(t(locale, "session.parity.shared", { url: shared.url }));
+            void window.pix.workspace.openExternal(shared.url).catch(() => undefined);
+          } catch (error) {
+            reportAppError(error, t(locale, "session.parity.shareFailed"));
           }
         }}
         onClone={async () => {
@@ -2390,14 +2497,21 @@ function PackagesPage(props: {
   loading: boolean;
   onRefresh: () => void;
   onBack: () => void;
-  onInstall: (source: string, scope: "global" | "project") => Promise<void>;
+  onInstall: (
+    source: string,
+    scope: "global" | "project",
+    options?: { temporary?: boolean },
+  ) => Promise<void>;
   onRemove: (source: string, scope: "global" | "project") => Promise<void>;
   onUpdate: (source?: string) => Promise<void>;
+  onSetEnabled: (source: string, scope: "global" | "project", enabled: boolean) => Promise<void>;
+  onRefreshCatalog: () => void;
 }) {
   const tr = (key: Parameters<typeof t>[1], vars?: Record<string, string>) =>
     t(props.locale, key, vars);
   const [source, setSource] = useState("");
   const [scope, setScope] = useState<"global" | "project">("global");
+  const [temporary, setTemporary] = useState(false);
   const [busy, setBusy] = useState(false);
   const [formError, setFormError] = useState<string>();
   const CATALOG_PAGE = 20;
@@ -2531,7 +2645,7 @@ function PackagesPage(props: {
     setBusy(true);
     setFormError(undefined);
     try {
-      await props.onInstall(value, scope);
+      await props.onInstall(value, scope, temporary ? { temporary: true } : undefined);
       setSource("");
     } catch {
       // Parent install path already surfaces a modal via reportAppError.
@@ -2576,15 +2690,27 @@ function PackagesPage(props: {
             {props.loading || catalogLoading ? tr("packages.loading") : tr("packages.refresh")}
           </button>
           {tab === "installed" ? (
-            <button
-              type="button"
-              className="btn-secondary"
-              data-testid="packages-update-all"
-              onClick={() => void props.onUpdate()}
-              disabled={props.loading || busy || props.packages.length === 0}
-            >
-              {tr("packages.updateAll")}
-            </button>
+            <>
+              <button
+                type="button"
+                className="btn-secondary"
+                data-testid="packages-refresh-catalog"
+                onClick={() => props.onRefreshCatalog()}
+                disabled={props.loading || busy}
+                title={tr("packages.refreshCatalogHint")}
+              >
+                {tr("packages.refreshCatalog")}
+              </button>
+              <button
+                type="button"
+                className="btn-secondary"
+                data-testid="packages-update-all"
+                onClick={() => void props.onUpdate()}
+                disabled={props.loading || busy || props.packages.length === 0}
+              >
+                {tr("packages.updateAll")}
+              </button>
+            </>
           ) : null}
           <button type="button" className="btn-ghost" onClick={props.onBack}>
             {tr("packages.back")}
@@ -2754,11 +2880,24 @@ function PackagesPage(props: {
                     data-testid="package-scope-select"
                     value={scope}
                     onChange={(event) => setScope(event.target.value as "global" | "project")}
-                    disabled={props.loading || busy}
+                    disabled={props.loading || busy || temporary}
                   >
                     <option value="global">{tr("packages.scopeGlobal")}</option>
                     <option value="project">{tr("packages.scopeProject")}</option>
                   </select>
+                </label>
+                <label
+                  className="install-label flex flex-row items-center gap-2"
+                  data-testid="package-temporary-label"
+                >
+                  <input
+                    type="checkbox"
+                    data-testid="package-temporary"
+                    checked={temporary}
+                    onChange={(event) => setTemporary(event.target.checked)}
+                    disabled={props.loading || busy}
+                  />
+                  <span>{tr("packages.temporary")}</span>
                 </label>
                 <div className="install-actions">
                   <button
@@ -2767,7 +2906,11 @@ function PackagesPage(props: {
                     data-testid="package-install-button"
                     disabled={props.loading || busy || !source.trim()}
                   >
-                    {busy ? tr("packages.working") : tr("packages.install")}
+                    {busy
+                      ? tr("packages.working")
+                      : temporary
+                        ? tr("packages.installTemp")
+                        : tr("packages.install")}
                   </button>
                 </div>
               </form>
@@ -2790,11 +2933,23 @@ function PackagesPage(props: {
                         <div className="meta">
                           {item.installedPath ? item.installedPath : tr("packages.notResolved")}
                           {item.filtered ? ` · ${tr("packages.filtered")}` : ""}
+                          {!item.enabled ? ` · ${tr("packages.disabled")}` : ""}
                         </div>
                       </div>
                       <div className="badges">
                         <span className="chip">{item.scope}</span>
                         <span className="chip">{item.kind}</span>
+                        <button
+                          type="button"
+                          className="btn-ghost btn-sm"
+                          data-testid={`package-enable-${item.scope}-${item.source}`}
+                          disabled={props.loading || busy}
+                          onClick={() =>
+                            void props.onSetEnabled(item.source, item.scope, !item.enabled)
+                          }
+                        >
+                          {item.enabled ? tr("packages.disable") : tr("packages.enable")}
+                        </button>
                         <button
                           type="button"
                           className="btn-ghost btn-sm"
@@ -2870,7 +3025,9 @@ function ResourcesPage(props: {
                     <div className="meta">
                       {item.path || "—"}
                       {item.source ? ` · ${item.source}` : ""}
-                      {item.kind === "context" ? tr("resources.contextHint") : ""}
+                      {item.kind === "context" || item.kind === "system"
+                        ? tr("resources.contextHint")
+                        : ""}
                     </div>
                   </div>
                   <div className="badges flex items-center gap-2">

@@ -94,11 +94,15 @@ import { cn } from "../../lib/utils.ts";
 import { workspaceLabel } from "../../lib/workspace.ts";
 import { useShellStore, type SettingsSection } from "../../store/shell-store.ts";
 import {
+  SettingsButton,
+  SettingsIconButton,
+  SettingsInput,
   SettingsPageShell,
   SettingsPillButton,
   SettingsRow,
   SettingsSectionBlock,
   SettingsSelect,
+  SettingsTextarea,
   SettingsToggle,
 } from "./SettingsPrimitives.tsx";
 
@@ -120,6 +124,7 @@ export interface SettingsPageProps {
   showContextUsage: boolean;
   onShowContextUsage: (value: boolean) => void;
   onEnsureHost: () => Promise<HostSnapshot>;
+  onSnapshot: (snapshot: HostSnapshot) => void;
   onLocale: (locale: Locale) => void;
   onThemePreference: (mode: ThemePreference) => void;
   onTranslucent: (value: boolean) => void;
@@ -343,51 +348,49 @@ function ArchivedSection(props: {
       testId="settings-archived"
       titleAction={
         sessionIds.length > 0 ? (
-          <button
-            type="button"
+          <SettingsButton
+            variant="secondary"
+            size="sm"
+            testId="archived-delete-all"
             className="archived-delete-all"
-            data-testid="archived-delete-all"
             onClick={deleteAll}
           >
             <Trash2 className="size-3.5" strokeWidth={1.75} />
             {tr("settings.archived.deleteAll")}
-          </button>
+          </SettingsButton>
         ) : null
       }
     >
       <div className="archived-toolbar" data-testid="archived-toolbar">
         <label className="archived-search">
           <Search className="size-3.5 shrink-0 text-[var(--text-subtle)]" strokeWidth={1.75} />
-          <input
+          <SettingsInput
             data-testid="archived-search"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder={tr("settings.archived.search")}
+            className="h-auto min-w-0 flex-1 border-0 bg-transparent px-0 shadow-none focus-visible:border-0 focus-visible:ring-0 dark:bg-transparent"
           />
         </label>
-        <select
-          className="archived-filter"
-          data-testid="archived-filter-sessions"
+        <SettingsSelect
+          className="w-auto"
+          testId="archived-filter-sessions"
           value="all"
           onChange={() => {
             /* reserved: all sessions only for now */
           }}
-        >
-          <option value="all">{tr("settings.archived.filterAll")}</option>
-        </select>
-        <select
-          className="archived-filter"
-          data-testid="archived-filter-projects"
+          options={[{ value: "all", label: tr("settings.archived.filterAll") }]}
+        />
+        <SettingsSelect
+          className="w-auto"
+          testId="archived-filter-projects"
           value={projectFilter}
-          onChange={(e) => setProjectFilter(e.target.value)}
-        >
-          <option value="all">{tr("settings.archived.filterAllProjects")}</option>
-          {projectOptions.map(([key, name]) => (
-            <option key={key} value={key}>
-              {name}
-            </option>
-          ))}
-        </select>
+          onChange={setProjectFilter}
+          options={[
+            { value: "all", label: tr("settings.archived.filterAllProjects") },
+            ...projectOptions.map(([key, name]) => ({ value: key, label: name })),
+          ]}
+        />
       </div>
 
       {groups.length === 0 ? (
@@ -411,26 +414,25 @@ function ArchivedSection(props: {
                   className="archived-group-menu"
                   ref={openGroupMenu === cwdKey ? menuRef : null}
                 >
-                  <button
-                    type="button"
-                    className="inline-flex h-7 w-7 items-center justify-center rounded-lg text-[var(--muted-foreground)] hover:bg-[var(--hover-fill)]"
-                    data-testid="archived-project-menu"
+                  <SettingsIconButton
+                    testId="archived-project-menu"
                     aria-label="More"
+                    size="icon-sm"
                     onClick={() => setOpenGroupMenu((v) => (v === cwdKey ? null : cwdKey))}
                   >
                     <MoreHorizontal className="size-3.5" strokeWidth={1.75} />
-                  </button>
+                  </SettingsIconButton>
                   {openGroupMenu === cwdKey ? (
                     <div className="archived-group-menu-panel" role="menu">
-                      <button
-                        type="button"
-                        className="archived-group-menu-item"
-                        data-testid="archived-project-delete-all"
+                      <SettingsButton
+                        variant="ghost"
+                        testId="archived-project-delete-all"
+                        className="archived-group-menu-item h-auto w-full justify-start rounded-none text-red-400"
                         onClick={() => deleteAllInProject(cwdKey)}
                       >
                         <Trash2 className="size-3.5" strokeWidth={1.75} />
                         {tr("settings.archived.deleteProjectAll")}
-                      </button>
+                      </SettingsButton>
                     </div>
                   ) : null}
                 </div>
@@ -450,24 +452,24 @@ function ArchivedSection(props: {
                     </div>
                   </div>
                   <div className="archived-item-actions">
-                    <button
-                      type="button"
-                      className="archived-icon-btn"
-                      data-testid={`archived-session-delete-${item.id}`}
+                    <SettingsIconButton
+                      testId={`archived-session-delete-${item.id}`}
                       title={tr("settings.archived.delete")}
                       aria-label={tr("settings.archived.delete")}
+                      className="archived-icon-btn"
                       onClick={() => deleteSession(item.id)}
                     >
                       <Trash2 className="size-3.5" strokeWidth={1.75} />
-                    </button>
-                    <button
-                      type="button"
+                    </SettingsIconButton>
+                    <SettingsButton
+                      variant="secondary"
+                      size="sm"
+                      testId={`archived-session-unarchive-${item.id}`}
                       className="archived-unarchive-btn"
-                      data-testid={`archived-session-unarchive-${item.id}`}
                       onClick={() => unarchiveSession(item.id)}
                     >
                       {tr("settings.archived.unarchive")}
-                    </button>
+                    </SettingsButton>
                   </div>
                 </div>
               ))}
@@ -560,12 +562,12 @@ function ShortcutsSection(
       <div className="mb-3 flex items-center gap-2">
         <label className="settings-rail-search min-w-0 flex-1 !rounded-[12px]">
           <Search className="size-3.5 shrink-0 opacity-60" strokeWidth={1.75} />
-          <input
+          <SettingsInput
             data-testid="shortcuts-search"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder={tr("shortcuts.search")}
-            className="min-w-0 flex-1 border-0 bg-transparent text-[13px] text-[var(--foreground)] outline-none placeholder:text-[var(--text-subtle)]"
+            className="h-auto min-w-0 flex-1 border-0 bg-transparent px-0 shadow-none focus-visible:border-0 focus-visible:ring-0 dark:bg-transparent"
           />
         </label>
       </div>
@@ -599,11 +601,13 @@ function ShortcutsSection(
                   <div className="settings-row-title">{tr(def.labelKey as MessageKey)}</div>
                 </div>
                 <div className="flex shrink-0 items-center gap-1">
-                  <button
+                  <SettingsButton
                     type="button"
-                    data-testid={`shortcut-bind-${def.id}`}
+                    variant="outline"
+                    size="sm"
+                    testId={`shortcut-bind-${def.id}`}
                     className={cn(
-                      "shortcut-bind",
+                      "shortcut-bind h-auto min-h-8",
                       recording && "shortcut-bind-recording",
                       !recording && !keyParts.length && "shortcut-bind-empty",
                     )}
@@ -635,11 +639,10 @@ function ShortcutsSection(
                         {unbound || isCustom ? tr("shortcuts.none") : tr("shortcuts.clickToBind")}
                       </span>
                     )}
-                  </button>
-                  <button
-                    type="button"
+                  </SettingsButton>
+                  <SettingsIconButton
                     className="shortcut-action-btn"
-                    data-testid={`shortcut-reset-${def.id}`}
+                    testId={`shortcut-reset-${def.id}`}
                     title={tr("shortcuts.reset")}
                     aria-label={tr("shortcuts.reset")}
                     disabled={!isCustom}
@@ -650,11 +653,10 @@ function ShortcutsSection(
                     }}
                   >
                     <RotateCcw className="size-3.5" strokeWidth={1.75} />
-                  </button>
-                  <button
-                    type="button"
+                  </SettingsIconButton>
+                  <SettingsIconButton
                     className="shortcut-action-btn shortcut-action-delete"
-                    data-testid={`shortcut-clear-${def.id}`}
+                    testId={`shortcut-clear-${def.id}`}
                     title={tr("shortcuts.clear")}
                     aria-label={tr("shortcuts.clear")}
                     disabled={!effective}
@@ -665,7 +667,7 @@ function ShortcutsSection(
                     }}
                   >
                     <Trash2 className="size-3.5" strokeWidth={1.75} />
-                  </button>
+                  </SettingsIconButton>
                 </div>
               </div>
             );
@@ -925,9 +927,10 @@ function WorktreeSection(
           <div>
             <div className="settings-row-title">{tr("worktree.root")}</div>
             <div className="mt-2 flex flex-wrap items-center gap-1.5">
-              <input
+              <SettingsInput
                 data-testid="worktree-root-input"
-                className="h-8 min-w-0 flex-1 rounded-lg border border-[var(--border)] bg-transparent px-2.5 font-mono text-[12px] text-[var(--foreground)] outline-none focus:border-[var(--ring,#0a84ff)]"
+                mono
+                className="min-w-0 flex-1"
                 value={wtRoot}
                 placeholder={wtDefaultRoot || tr("worktree.rootPlaceholder")}
                 disabled={wtLoading}
@@ -960,7 +963,7 @@ function WorktreeSection(
               />
             </div>
           </div>
-          <div className="flex items-center justify-between gap-4 border-t border-[var(--border)] pt-3">
+          <div className="settings-divider flex items-center justify-between gap-4">
             <div className="min-w-0">
               <div className="settings-row-title">{tr("worktree.autoDelete")}</div>
               <div className="settings-row-desc">{tr("worktree.autoDeleteHint")}</div>
@@ -976,17 +979,17 @@ function WorktreeSection(
               aria-label={tr("worktree.autoDelete")}
             />
           </div>
-          <div className="flex items-center justify-between gap-4 border-t border-[var(--border)] pt-3">
+          <div className="settings-divider flex items-center justify-between gap-4">
             <div className="min-w-0">
               <div className="settings-row-title">{tr("worktree.autoDeleteLimit")}</div>
               <div className="settings-row-desc">{tr("worktree.autoDeleteLimitHint")}</div>
             </div>
-            <input
+            <SettingsInput
               type="number"
               min={1}
               max={100}
               data-testid="worktree-auto-delete-limit"
-              className="h-8 w-20 rounded-lg border border-[var(--border)] bg-transparent px-2 text-right text-[13px] text-[var(--foreground)] outline-none disabled:opacity-40"
+              className="w-20 text-right"
               value={wtLimit}
               disabled={wtLoading || !wtAutoDelete}
               onChange={(e) => setWtLimit(Number(e.target.value) || 1)}
@@ -1110,10 +1113,10 @@ function GitSection(
             <div className="settings-row-title">{tr("git.branchPrefix")}</div>
             <div className="settings-row-desc">{tr("git.branchPrefixHint")}</div>
           </div>
-          <div className="settings-code-field-wrap">
-            <input
+          <div className="mt-1">
+            <SettingsInput
               data-testid="git-branch-prefix"
-              className="settings-code-field settings-code-field-sm"
+              mono
               value={branchPrefix}
               placeholder={tr("git.branchPrefixPlaceholder")}
               disabled={loading}
@@ -1182,9 +1185,8 @@ function GitSection(
             <div className="settings-row-title">{tr("git.customCommit")}</div>
             <div className="settings-row-desc">{tr("git.customCommitHint")}</div>
           </div>
-          <textarea
+          <SettingsTextarea
             data-testid="git-custom-commit"
-            className="settings-prompt-field"
             value={customCommit}
             placeholder={tr("git.customCommitPlaceholder")}
             disabled={loading}
@@ -1198,9 +1200,8 @@ function GitSection(
             <div className="settings-row-title">{tr("git.customPr")}</div>
             <div className="settings-row-desc">{tr("git.customPrHint")}</div>
           </div>
-          <textarea
+          <SettingsTextarea
             data-testid="git-custom-pr"
-            className="settings-prompt-field"
             value={customPr}
             placeholder={tr("git.customPrPlaceholder")}
             disabled={loading}
@@ -1654,13 +1655,13 @@ function AppearanceSection(
           title={tr("appearance.sidebarWidth")}
           description={
             <div className="mt-2 flex items-center gap-3">
-              <input
+              <SettingsInput
                 type="range"
                 min={232}
                 max={360}
                 step={4}
                 data-testid="appearance-sidebar-width"
-                className="settings-range min-w-0 flex-1"
+                className="min-w-0 flex-1"
                 value={props.sidebarWidthPx}
                 onChange={(e) => props.onSidebarWidth(Number(e.target.value))}
               />
@@ -1903,12 +1904,12 @@ function ProvidersSection(
       <div className="mb-3 flex items-center gap-2">
         <label className="settings-rail-search min-w-0 flex-1 !rounded-[12px]">
           <Search className="size-3.5 shrink-0 opacity-60" strokeWidth={1.75} />
-          <input
+          <SettingsInput
             data-testid="providers-search"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder={tr("auth.search")}
-            className="min-w-0 flex-1 border-0 bg-transparent text-[13px] text-[var(--foreground)] outline-none placeholder:text-[var(--text-subtle)]"
+            className="h-auto min-w-0 flex-1 border-0 bg-transparent px-0 shadow-none focus-visible:border-0 focus-visible:ring-0 dark:bg-transparent"
           />
         </label>
         <SettingsPillButton
@@ -1927,42 +1928,40 @@ function ProvidersSection(
         >
           <label className="settings-field">
             <span>{tr("auth.provider")}</span>
-            <select
-              data-testid="provider-select"
-              className="settings-select w-full max-w-none"
-              value={keyProvider}
-              onChange={(e) => setKeyProvider(e.target.value)}
+            <SettingsSelect
+              testId="provider-select"
+              fullWidth
+              value={keyProvider || (providers[0]?.provider ?? "")}
+              onChange={setKeyProvider}
               disabled={loading}
-            >
-              {providers.length === 0 ? <option value="">—</option> : null}
-              {providers.map((p) => (
-                <option key={p.provider} value={p.provider}>
-                  {p.displayName}
-                </option>
-              ))}
-            </select>
+              options={
+                providers.length === 0
+                  ? [{ value: "", label: "—" }]
+                  : providers.map((p) => ({ value: p.provider, label: p.displayName }))
+              }
+            />
           </label>
           <label className="settings-field">
             <span>{tr("auth.apiKey")}</span>
             <div className="settings-key-row">
-              <input
+              <SettingsInput
                 data-testid="provider-api-key-input"
                 type="password"
                 autoComplete="off"
-                className="settings-input settings-key-input"
+                className="min-w-0 flex-1"
                 value={apiKey}
                 onChange={(e) => setApiKey(e.target.value)}
                 disabled={loading}
                 placeholder="••••••••"
               />
-              <button
+              <SettingsButton
                 type="submit"
-                className="settings-primary-btn"
-                data-testid="provider-save-key"
+                variant="default"
+                testId="provider-save-key"
                 disabled={loading || !keyProvider || !apiKey.trim()}
               >
                 {loading ? tr("auth.saving") : tr("auth.saveKey")}
-              </button>
+              </SettingsButton>
             </div>
           </label>
         </form>
@@ -2054,14 +2053,13 @@ function ProvidersSection(
                       <p>{tr("auth.oauthHint")}</p>
                     </div>
                   </div>
-                  <button
-                    type="button"
+                  <SettingsIconButton
                     className="provider-oauth-close"
                     aria-label={tr("auth.oauthClose")}
                     onClick={closeOAuthDialog}
                   >
                     <X size={16} />
-                  </button>
+                  </SettingsIconButton>
                 </div>
 
                 <div className="provider-oauth-body">
@@ -2073,36 +2071,38 @@ function ProvidersSection(
                           {oauthDialog.authUrl.instructions || tr("auth.oauthBrowserHint")}
                         </span>
                       </div>
-                      <button
-                        type="button"
-                        className="settings-pill-btn"
+                      <SettingsButton
+                        variant="secondary"
+                        size="sm"
                         onClick={() =>
                           void window.pix.workspace.openExternal(oauthDialog.authUrl?.url ?? "")
                         }
                       >
                         <ExternalLink size={13} />
                         {tr("auth.oauthOpenBrowser")}
-                      </button>
+                      </SettingsButton>
                     </div>
                   ) : null}
 
                   {!oauthDialog.terminal && oauthDialog.deviceCode ? (
                     <div className="provider-oauth-device" data-testid="provider-oauth-device-step">
                       <span>{tr("auth.oauthDeviceCode")}</span>
-                      <button
+                      <SettingsButton
                         type="button"
-                        className="provider-oauth-code"
-                        data-testid="provider-oauth-device-code"
+                        variant="outline"
+                        className="provider-oauth-code h-auto"
+                        testId="provider-oauth-device-code"
                         onClick={() =>
                           void navigator.clipboard.writeText(oauthDialog.deviceCode?.userCode ?? "")
                         }
                       >
                         {oauthDialog.deviceCode.userCode}
                         <Copy size={14} />
-                      </button>
-                      <button
+                      </SettingsButton>
+                      <SettingsButton
                         type="button"
-                        className="provider-oauth-link"
+                        variant="link"
+                        className="provider-oauth-link h-auto p-0"
                         onClick={() =>
                           void window.pix.workspace.openExternal(
                             oauthDialog.deviceCode?.verificationUri ?? "",
@@ -2111,7 +2111,7 @@ function ProvidersSection(
                       >
                         {oauthDialog.deviceCode.verificationUri}
                         <ExternalLink size={12} />
-                      </button>
+                      </SettingsButton>
                     </div>
                   ) : null}
 
@@ -2143,14 +2143,16 @@ function ProvidersSection(
                   {!oauthDialog.terminal && oauthDialog.links?.length ? (
                     <div className="provider-oauth-links">
                       {oauthDialog.links.map((link) => (
-                        <button
+                        <SettingsButton
                           key={link.url}
                           type="button"
+                          variant="link"
+                          className="h-auto p-0"
                           onClick={() => void window.pix.workspace.openExternal(link.url)}
                         >
                           {link.label || link.url}
                           <ExternalLink size={12} />
-                        </button>
+                        </SettingsButton>
                       ))}
                     </div>
                   ) : null}
@@ -2181,16 +2183,20 @@ function ProvidersSection(
                       <strong>{oauthPrompt.message}</strong>
                       <div className="provider-oauth-options">
                         {oauthPrompt.options.map((option) => (
-                          <button
+                          <SettingsButton
                             key={option.id}
                             type="button"
+                            variant="outline"
+                            className="h-auto w-full justify-between"
                             disabled={oauthBusy}
                             onClick={() => void respondOAuth(oauthDialog.prompt!, option.id, false)}
                           >
-                            <span>{option.label}</span>
-                            {option.description ? <small>{option.description}</small> : null}
+                            <span className="flex min-w-0 flex-col items-start text-left">
+                              <span>{option.label}</span>
+                              {option.description ? <small>{option.description}</small> : null}
+                            </span>
                             <ChevronRight size={15} />
-                          </button>
+                          </SettingsButton>
                         ))}
                       </div>
                     </div>
@@ -2209,11 +2215,10 @@ function ProvidersSection(
                     >
                       <label htmlFor="provider-oauth-input">{oauthPrompt.message}</label>
                       <div className="provider-oauth-input-row">
-                        <input
+                        <SettingsInput
                           id="provider-oauth-input"
                           data-testid="provider-oauth-input"
                           type={oauthPrompt.type === "secret" ? "password" : "text"}
-                          className="settings-input"
                           value={oauthValue}
                           placeholder={oauthPrompt.placeholder}
                           autoComplete="off"
@@ -2221,14 +2226,14 @@ function ProvidersSection(
                           disabled={oauthBusy}
                           onChange={(event) => setOAuthValue(event.target.value)}
                         />
-                        <button
+                        <SettingsButton
                           type="submit"
-                          className="settings-primary-btn"
-                          data-testid="provider-oauth-continue"
+                          variant="default"
+                          testId="provider-oauth-continue"
                           disabled={oauthBusy}
                         >
                           {tr("auth.oauthContinue")}
-                        </button>
+                        </SettingsButton>
                       </div>
                     </form>
                   ) : null}
@@ -2242,9 +2247,10 @@ function ProvidersSection(
                 </div>
 
                 <div className="provider-oauth-footer">
-                  <button type="button" className="settings-pill-btn" onClick={closeOAuthDialog}>
-                    {oauthDialog.terminal ? tr("auth.oauthClose") : tr("common.cancel")}
-                  </button>
+                  <SettingsPillButton
+                    label={oauthDialog.terminal ? tr("auth.oauthClose") : tr("common.cancel")}
+                    onClick={closeOAuthDialog}
+                  />
                 </div>
               </div>
             </div>,
@@ -2720,12 +2726,12 @@ function ModelsSection(
       <div className="mb-3 flex items-center gap-2">
         <label className="settings-rail-search min-w-0 flex-1 !rounded-[12px]">
           <Search className="size-3.5 shrink-0 opacity-60" strokeWidth={1.75} />
-          <input
+          <SettingsInput
             data-testid="models-search"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder={tr("models.search")}
-            className="min-w-0 flex-1 border-0 bg-transparent text-[13px] text-[var(--foreground)] outline-none placeholder:text-[var(--text-subtle)]"
+            className="h-auto min-w-0 flex-1 border-0 bg-transparent px-0 shadow-none focus-visible:border-0 focus-visible:ring-0 dark:bg-transparent"
           />
         </label>
         <SettingsPillButton
@@ -2770,9 +2776,9 @@ function ModelsSection(
             <div className="mb-1 text-[11px] font-medium text-[var(--text-subtle)]">
               {tr("models.scopedPatterns")}
             </div>
-            <textarea
+            <SettingsTextarea
               data-testid="models-scoped-patterns"
-              className="settings-select min-h-[88px] w-full resize-y font-mono text-[12px]"
+              className="min-h-[88px] w-full font-mono text-sm"
               value={scopedPatternsText}
               onChange={(e) => setScopedPatternsText(e.target.value)}
               placeholder={tr("models.scopedPatternsPh")}
@@ -2806,7 +2812,7 @@ function ModelsSection(
                         checked ? "bg-[var(--hover-fill)]" : "hover:bg-[var(--hover-fill)]",
                       )}
                     >
-                      <input
+                      <SettingsInput
                         type="checkbox"
                         className="size-3.5 shrink-0"
                         checked={checked}
@@ -2892,9 +2898,8 @@ function ModelsSection(
                     <div className="models-custom-form-grid">
                       <label className="models-custom-field">
                         <span>{tr("models.customProvider")}</span>
-                        <input
+                        <SettingsInput
                           data-testid="models-custom-provider"
-                          className="settings-input"
                           value={providerId}
                           onChange={(e) => setProviderId(e.target.value)}
                           placeholder={tr("models.customProviderPh")}
@@ -2905,25 +2910,22 @@ function ModelsSection(
                       </label>
                       <label className="models-custom-field">
                         <span>{tr("models.customApi")}</span>
-                        <select
-                          data-testid="models-custom-api"
-                          className="settings-select w-full max-w-none"
+                        <SettingsSelect
+                          testId="models-custom-api"
+                          fullWidth
                           value={api}
-                          onChange={(e) => setApi(e.target.value as CustomModelApi)}
+                          onChange={(v) => setApi(v as CustomModelApi)}
                           disabled={dialogBusy}
-                        >
-                          {CUSTOM_MODEL_API_OPTIONS.map((opt) => (
-                            <option key={opt.value} value={opt.value}>
-                              {opt.label}
-                            </option>
-                          ))}
-                        </select>
+                          options={CUSTOM_MODEL_API_OPTIONS.map((opt) => ({
+                            value: opt.value,
+                            label: opt.label,
+                          }))}
+                        />
                       </label>
                       <label className="models-custom-field models-custom-field-span">
                         <span>{tr("models.customBaseUrl")}</span>
-                        <input
+                        <SettingsInput
                           data-testid="models-custom-base-url"
-                          className="settings-input"
                           value={baseUrl}
                           onChange={(e) => setBaseUrl(e.target.value)}
                           placeholder={tr("models.customBaseUrlPh")}
@@ -2933,10 +2935,9 @@ function ModelsSection(
                       </label>
                       <label className="models-custom-field models-custom-field-span">
                         <span>{tr("models.customApiKey")}</span>
-                        <input
+                        <SettingsInput
                           data-testid="models-custom-api-key"
                           type="password"
-                          className="settings-input"
                           value={apiKey}
                           onChange={(e) => setApiKey(e.target.value)}
                           placeholder={tr("models.customApiKeyPh")}
@@ -2946,9 +2947,8 @@ function ModelsSection(
                       </label>
                       <label className="models-custom-field">
                         <span>{tr("models.customModelId")}</span>
-                        <input
+                        <SettingsInput
                           data-testid="models-custom-model-id"
-                          className="settings-input"
                           value={modelId}
                           onChange={(e) => setModelId(e.target.value)}
                           placeholder={tr("models.customModelIdPh")}
@@ -2958,9 +2958,8 @@ function ModelsSection(
                       </label>
                       <label className="models-custom-field">
                         <span>{tr("models.customModelName")}</span>
-                        <input
+                        <SettingsInput
                           data-testid="models-custom-model-name"
-                          className="settings-input"
                           value={modelName}
                           onChange={(e) => setModelName(e.target.value)}
                           disabled={dialogBusy}
@@ -2969,9 +2968,8 @@ function ModelsSection(
                       </label>
                       <label className="models-custom-field">
                         <span>{tr("models.customContextWindow")}</span>
-                        <input
+                        <SettingsInput
                           data-testid="models-custom-context-window"
-                          className="settings-input"
                           inputMode="numeric"
                           value={contextWindow}
                           onChange={(e) => setContextWindow(e.target.value)}
@@ -2981,9 +2979,8 @@ function ModelsSection(
                       </label>
                       <label className="models-custom-field">
                         <span>{tr("models.customMaxTokens")}</span>
-                        <input
+                        <SettingsInput
                           data-testid="models-custom-max-tokens"
-                          className="settings-input"
                           inputMode="numeric"
                           value={maxTokens}
                           onChange={(e) => setMaxTokens(e.target.value)}
@@ -2997,7 +2994,7 @@ function ModelsSection(
                           className="models-custom-chip"
                           data-active={inputMode === "text" ? "true" : "false"}
                         >
-                          <input
+                          <SettingsInput
                             type="radio"
                             name="models-custom-input"
                             data-testid="models-custom-input-text"
@@ -3011,7 +3008,7 @@ function ModelsSection(
                           className="models-custom-chip"
                           data-active={inputMode === "text-image" ? "true" : "false"}
                         >
-                          <input
+                          <SettingsInput
                             type="radio"
                             name="models-custom-input"
                             data-testid="models-custom-input"
@@ -3025,7 +3022,7 @@ function ModelsSection(
                           className="models-custom-check"
                           data-on={reasoning ? "true" : "false"}
                         >
-                          <input
+                          <SettingsInput
                             type="checkbox"
                             data-testid="models-custom-reasoning"
                             checked={reasoning}
@@ -3038,7 +3035,7 @@ function ModelsSection(
                           className="models-custom-check"
                           data-on={authHeader ? "true" : "false"}
                         >
-                          <input
+                          <SettingsInput
                             type="checkbox"
                             data-testid="models-custom-auth-header"
                             checked={authHeader}
@@ -3054,9 +3051,8 @@ function ModelsSection(
                         <div className="models-custom-advanced-body">
                           <label className="models-custom-field">
                             <span>{tr("models.customCostInput")}</span>
-                            <input
+                            <SettingsInput
                               data-testid="models-custom-cost-input"
-                              className="settings-input"
                               inputMode="decimal"
                               value={costInput}
                               onChange={(e) => setCostInput(e.target.value)}
@@ -3066,9 +3062,8 @@ function ModelsSection(
                           </label>
                           <label className="models-custom-field">
                             <span>{tr("models.customCostOutput")}</span>
-                            <input
+                            <SettingsInput
                               data-testid="models-custom-cost-output"
-                              className="settings-input"
                               inputMode="decimal"
                               value={costOutput}
                               onChange={(e) => setCostOutput(e.target.value)}
@@ -3078,9 +3073,8 @@ function ModelsSection(
                           </label>
                           <label className="models-custom-field">
                             <span>{tr("models.customCostCacheRead")}</span>
-                            <input
+                            <SettingsInput
                               data-testid="models-custom-cost-cache-read"
-                              className="settings-input"
                               inputMode="decimal"
                               value={costCacheRead}
                               onChange={(e) => setCostCacheRead(e.target.value)}
@@ -3090,9 +3084,8 @@ function ModelsSection(
                           </label>
                           <label className="models-custom-field">
                             <span>{tr("models.customCostCacheWrite")}</span>
-                            <input
+                            <SettingsInput
                               data-testid="models-custom-cost-cache-write"
-                              className="settings-input"
                               inputMode="decimal"
                               value={costCacheWrite}
                               onChange={(e) => setCostCacheWrite(e.target.value)}
@@ -3106,23 +3099,25 @@ function ModelsSection(
                   </div>
 
                   <div className="models-custom-dialog-footer">
-                    <button
+                    <SettingsButton
                       type="button"
-                      data-testid="models-custom-cancel"
-                      className="h-9 rounded-lg px-3.5 text-[13px] text-[var(--muted-foreground)] hover:bg-[var(--hover-fill)]"
+                      variant="ghost"
+                      testId="models-custom-cancel"
+                      className="h-9 px-3.5"
                       disabled={dialogBusy}
                       onClick={closeCustomDialog}
                     >
                       {tr("common.cancel")}
-                    </button>
-                    <button
+                    </SettingsButton>
+                    <SettingsButton
                       type="submit"
-                      className="settings-primary-btn !h-9 !px-4"
-                      data-testid="models-custom-save"
+                      variant="default"
+                      className="h-9 px-4"
+                      testId="models-custom-save"
                       disabled={dialogBusy}
                     >
                       {dialogBusy ? tr("models.customSaving") : tr("models.customSave")}
-                    </button>
+                    </SettingsButton>
                   </div>
                 </form>
               </div>
@@ -3167,7 +3162,9 @@ function PiSettingsSection(
   async function apply(patch: PiSettingsPatch) {
     setLoading(true);
     try {
-      setView(await window.pix.settings.patch(patch));
+      const result = await window.pix.settings.patch(patch);
+      setView(result.settings);
+      props.onSnapshot(result.snapshot);
     } catch (err) {
       showAppError(err instanceof Error ? err.message : "Failed to save settings");
     } finally {
@@ -3234,11 +3231,11 @@ function PiSettingsSection(
           title={tr("piSettings.compactionReserve")}
           description={tr("piSettings.compactionReserveHint")}
           control={
-            <input
+            <SettingsInput
               type="number"
               min={1024}
               step={1024}
-              className="settings-input settings-input-num"
+              className="w-24 text-right tabular-nums"
               data-testid="pi-compaction-reserve"
               disabled={loading || !view}
               value={view?.compactionReserveTokens ?? 16384}
@@ -3254,11 +3251,11 @@ function PiSettingsSection(
           title={tr("piSettings.compactionKeepRecent")}
           description={tr("piSettings.compactionKeepRecentHint")}
           control={
-            <input
+            <SettingsInput
               type="number"
               min={1024}
               step={1024}
-              className="settings-input settings-input-num"
+              className="w-24 text-right tabular-nums"
               data-testid="pi-compaction-keep"
               disabled={loading || !view}
               value={view?.compactionKeepRecentTokens ?? 20000}
@@ -3286,12 +3283,12 @@ function PiSettingsSection(
           title={tr("piSettings.retryMax")}
           description={tr("piSettings.retryMaxHint")}
           control={
-            <input
+            <SettingsInput
               type="number"
               min={0}
               max={20}
               step={1}
-              className="settings-input settings-input-num settings-input-num-sm"
+              className="w-20 text-right tabular-nums"
               data-testid="pi-retry-max"
               disabled={loading || !view}
               value={view?.retryMaxRetries ?? 3}
@@ -3307,12 +3304,12 @@ function PiSettingsSection(
           title={tr("piSettings.retryBaseDelay")}
           description={tr("piSettings.retryBaseDelayHint")}
           control={
-            <input
+            <SettingsInput
               type="number"
               min={0}
               max={60000}
               step={100}
-              className="settings-input settings-input-num"
+              className="w-24 text-right tabular-nums"
               data-testid="pi-retry-base-delay"
               disabled={loading || !view}
               value={view?.retryBaseDelayMs ?? 2000}
@@ -3357,9 +3354,7 @@ function PiSettingsSection(
               testId="pi-steering-mode"
               size="md"
               value={String(view?.steeringMode ?? "all")}
-              onChange={(v) =>
-                void apply({ steeringMode: v as "all" | "one-at-a-time" })
-              }
+              onChange={(v) => void apply({ steeringMode: v as "all" | "one-at-a-time" })}
               options={[
                 { value: "all", label: tr("piSettings.queueModeAll") },
                 { value: "one-at-a-time", label: tr("piSettings.queueModeOne") },
@@ -3376,9 +3371,7 @@ function PiSettingsSection(
               testId="pi-followup-mode"
               size="md"
               value={String(view?.followUpMode ?? "all")}
-              onChange={(v) =>
-                void apply({ followUpMode: v as "all" | "one-at-a-time" })
-              }
+              onChange={(v) => void apply({ followUpMode: v as "all" | "one-at-a-time" })}
               options={[
                 { value: "all", label: tr("piSettings.queueModeAll") },
                 { value: "one-at-a-time", label: tr("piSettings.queueModeOne") },
@@ -3399,9 +3392,7 @@ function PiSettingsSection(
               testId="pi-double-escape"
               size="md"
               value={String(view?.doubleEscapeAction ?? "fork")}
-              onChange={(v) =>
-                void apply({ doubleEscapeAction: v as "fork" | "tree" | "none" })
-              }
+              onChange={(v) => void apply({ doubleEscapeAction: v as "fork" | "tree" | "none" })}
               options={[
                 { value: "fork", label: tr("piSettings.doubleEscapeFork") },
                 { value: "tree", label: tr("piSettings.doubleEscapeTree") },
@@ -3489,6 +3480,40 @@ function PiSettingsSection(
         />
       </SettingsSectionBlock>
 
+      <SettingsSectionBlock
+        label={tr("piSettings.inventorySection")}
+        testId="pi-settings-inventory"
+      >
+        <div className="px-3 py-2 text-xs space-y-1.5" data-testid="pi-settings-inventory-list">
+          <p className="m-0 mb-2 text-[12px] leading-relaxed text-[var(--text-subtle)]">
+            {tr("piSettings.inventoryHint")}
+          </p>
+          {(view?.inventory ?? []).map((item, index, list) => (
+            <div
+              key={item.key}
+              className={cn(
+                "settings-row settings-row-flush !gap-3 !px-0 !py-1.5",
+                index === list.length - 1 && "settings-row-last",
+              )}
+              data-testid={`pi-inventory-${item.key}`}
+            >
+              <div className="min-w-0">
+                <code className="text-[11px]">{item.key}</code>
+                <div className="break-all text-[11px] text-[var(--text-subtle)]">{item.value}</div>
+              </div>
+              <div className="shrink-0 text-right text-[11px] text-[var(--text-subtle)]">
+                <div>{item.source}</div>
+                <div>
+                  {item.writable
+                    ? tr("piSettings.inventory.writable")
+                    : tr("piSettings.inventory.readonly")}
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      </SettingsSectionBlock>
+
       {view?.degradedCapabilities?.length ? (
         <SettingsSectionBlock label={tr("piSettings.degradedSection")}>
           <div className="px-3 py-2 text-xs opacity-70 space-y-1" data-testid="pi-degraded-list">
@@ -3503,9 +3528,7 @@ function PiSettingsSection(
                       : item === "gist" || item.includes("Gist")
                         ? "piSettings.degraded.gist"
                         : null;
-              return (
-                <div key={item}>• {key ? tr(key) : item}</div>
-              );
+              return <div key={item}>• {key ? tr(key) : item}</div>;
             })}
           </div>
         </SettingsSectionBlock>

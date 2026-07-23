@@ -1,8 +1,18 @@
 /**
- * Simple confirm modal (used for delete / archive when prefs require it).
+ * Confirm modal (delete / archive when prefs require it).
+ * Built on shadcn AlertDialog for focus trap + a11y.
  */
-import { useEffect } from "react";
-import { createPortal } from "react-dom";
+import { useRef } from "react";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 
 export function ConfirmDialog(props: {
   open: boolean;
@@ -16,73 +26,52 @@ export function ConfirmDialog(props: {
   onConfirm: () => void;
   onCancel: () => void;
 }) {
-  useEffect(() => {
-    if (!props.open) return;
-    const onKey = (ev: KeyboardEvent) => {
-      if (ev.key === "Escape") {
-        ev.preventDefault();
-        props.onCancel();
-      }
-    };
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  }, [props.open, props.onCancel]);
+  const settledRef = useRef(false);
 
-  if (!props.open || typeof document === "undefined") return null;
-
-  return createPortal(
-    <div
-      className="fixed inset-0 z-[11000] flex items-center justify-center bg-black/50 p-4"
-      data-testid={props.testId ?? "confirm-dialog"}
-      role="alertdialog"
-      aria-modal="true"
-      aria-labelledby="confirm-dialog-title"
-      aria-describedby="confirm-dialog-message"
-      onMouseDown={(e) => {
-        if (e.target === e.currentTarget) props.onCancel();
+  return (
+    <AlertDialog
+      open={props.open}
+      onOpenChange={(open) => {
+        if (open) {
+          settledRef.current = false;
+          return;
+        }
+        if (!settledRef.current) props.onCancel();
       }}
     >
-      <div
-        className="surface-panel w-full max-w-sm p-4 shadow-2xl"
-        onMouseDown={(e) => e.stopPropagation()}
+      <AlertDialogContent
+        size="default"
+        className="max-w-sm gap-3 p-4"
+        data-testid={props.testId ?? "confirm-dialog"}
       >
-        <h2
-          id="confirm-dialog-title"
-          className="m-0 mb-2 text-[15px] font-semibold text-[var(--foreground)]"
-        >
-          {props.title}
-        </h2>
-        <p
-          id="confirm-dialog-message"
-          className="m-0 mb-4 text-[13px] leading-relaxed whitespace-pre-wrap text-[var(--muted-foreground)]"
-        >
-          {props.message}
-        </p>
-        <div className="flex justify-end gap-2">
-          <button
-            type="button"
+        <AlertDialogHeader>
+          <AlertDialogTitle className="text-[15px] font-semibold">{props.title}</AlertDialogTitle>
+          <AlertDialogDescription className="text-[13px] leading-relaxed whitespace-pre-wrap">
+            {props.message}
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel
             data-testid="confirm-dialog-cancel"
-            className="h-8 rounded-lg px-3 text-[13px] text-[var(--muted-foreground)] hover:bg-[var(--hover-fill)]"
-            onClick={props.onCancel}
+            onClick={() => {
+              settledRef.current = true;
+              props.onCancel();
+            }}
           >
             {props.cancelLabel}
-          </button>
-          <button
-            type="button"
+          </AlertDialogCancel>
+          <AlertDialogAction
             data-testid="confirm-dialog-confirm"
-            className={
-              props.danger
-                ? "h-8 rounded-lg bg-red-500 px-3.5 text-[13px] font-medium text-white hover:bg-red-600"
-                : "h-8 rounded-lg bg-[#0a84ff] px-3.5 text-[13px] font-medium text-white hover:bg-[#0a84ff]/90"
-            }
-            autoFocus
-            onClick={props.onConfirm}
+            variant={props.danger ? "destructive" : "default"}
+            onClick={() => {
+              settledRef.current = true;
+              props.onConfirm();
+            }}
           >
             {props.confirmLabel}
-          </button>
-        </div>
-      </div>
-    </div>,
-    document.body,
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
   );
 }

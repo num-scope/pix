@@ -4,6 +4,7 @@ import {
   type CreateAgentSessionFromServicesOptions,
   type CreateAgentSessionRuntimeFactory,
   type ExtensionError,
+  type PackageSource,
   createAgentSessionFromServices,
   createAgentSessionRuntime,
   createAgentSessionServices,
@@ -32,11 +33,17 @@ import type {
   SessionExportResult,
   SessionHistoryMessage,
   SessionInfoView,
+  SessionShareResult,
   SessionThreadSummary,
   SessionTreeView,
   UpsertCustomProviderInput,
 } from "@pix/contracts";
-import { basename, isAbsolute, win32 } from "node:path";
+import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { basename, isAbsolute, join, win32 } from "node:path";
 import {
   createPortableExtensionUiBridge,
   type ExtensionUiRequestEvent,
@@ -81,7 +88,19 @@ export {
   parseShellInjection,
   projectSessionTree,
 } from "./session-parity.ts";
-import { randomUUID } from "node:crypto";
+
+const MACOS_GITHUB_CLI_PATHS = ["/opt/homebrew/bin/gh", "/usr/local/bin/gh"] as const;
+
+export function resolveGitHubCliCommand(
+  platform: NodeJS.Platform = process.platform,
+  pathExists: (path: string) => boolean = existsSync,
+): string {
+  if (platform === "darwin") {
+    const installed = MACOS_GITHUB_CLI_PATHS.find((path) => pathExists(path));
+    if (installed) return installed;
+  }
+  return "gh";
+}
 
 export interface CreatePixRuntimeOptions {
   cwd: string;
@@ -141,6 +160,7 @@ export interface PixRuntimeHandle {
       phase: "start" | "progress" | "complete" | "error";
       message?: string;
     }) => void,
+    options?: { temporary?: boolean },
   ): Promise<PackageSummary[]>;
   removePackage(
     source: string,
@@ -160,6 +180,11 @@ export interface PixRuntimeHandle {
       phase: "start" | "progress" | "complete" | "error";
       message?: string;
     }) => void,
+  ): Promise<PackageSummary[]>;
+  setPackageEnabled(
+    source: string,
+    scope: "global" | "project",
+    enabled: boolean,
   ): Promise<PackageSummary[]>;
   /** Session replacement helpers that re-bind portable Extension UI after pi rebuilds the session. */
   newSession(
@@ -198,7 +223,9 @@ export interface PixRuntimeHandle {
   cloneSession(): Promise<{ cancelled: boolean }>;
   getSessionInfo(): SessionInfoView;
   exportSession(format: "html" | "jsonl", outputPath?: string): Promise<SessionExportResult>;
-  importSession(inputPath: string): Promise<{ cancelled: boolean }>;
+  importSession(inputPath: string, cwdOverride?: string): Promise<{ cancelled: boolean }>;
+  /** Share session as secret gist via `gh` (same as pi `/share`). */
+  shareSession(): Promise<SessionShareResult>;
   executeBash(
     command: string,
     options?: { excludeFromContext?: boolean },
@@ -368,6 +395,10 @@ export function projectSessionHistory(
       toolName?: string;
       isError?: boolean;
       customType?: string;
+      command?: string;
+      output?: string;
+      exitCode?: number;
+      excludeFromContext?: boolean;
     };
     if (row.role === "user") {
       const text = textFromMessageContent(row.content).trim();
@@ -391,6 +422,16 @@ export function projectSessionHistory(
       };
       if (entryId) item.entryId = entryId;
       history.push(item);
+    } else if (row.role === "bashExecution") {
+      const item: SessionHistoryMessage = {
+        role: "shell",
+        text: typeof row.output === "string" ? row.output : "",
+        command: typeof row.command === "string" ? row.command : "",
+        exitCode: typeof row.exitCode === "number" ? row.exitCode : 0,
+        excludeFromContext: row.excludeFromContext === true,
+      };
+      if (entryId) item.entryId = entryId;
+      history.push(item);
     } else if (row.role === "custom") {
       const text = textFromMessageContent(row.content).trim();
       const item: SessionHistoryMessage = {
@@ -410,6 +451,7 @@ export function projectHistoryFromSessionManager(sessionManager: {
     type: string;
     id: string;
     timestamp?: string;
+    summary?: string;
     message?: {
       role?: string;
       content?: unknown;
@@ -419,11 +461,28 @@ export function projectHistoryFromSessionManager(sessionManager: {
     };
   }>;
 }): SessionHistoryMessage[] {
-  const entries = sessionManager.getEntries().filter((entry) => entry.type === "message");
-  return projectSessionHistory(
-    entries.map((entry) => entry.message),
-    entries.map((entry) => entry.id),
-  );
+  const history: SessionHistoryMessage[] = [];
+  for (const entry of sessionManager.getEntries()) {
+    if (entry.type === "message") {
+      const projected = projectSessionHistory([entry.message], [entry.id]);
+      for (const item of projected) {
+        if (entry.timestamp) item.timestamp = entry.timestamp;
+        history.push(item);
+      }
+      continue;
+    }
+    if (entry.type === "compaction" && typeof entry.summary === "string") {
+      const item: SessionHistoryMessage = {
+        role: "system",
+        title: "Compaction",
+        text: entry.summary,
+        entryId: entry.id,
+      };
+      if (entry.timestamp) item.timestamp = entry.timestamp;
+      history.push(item);
+    }
+  }
+  return history;
 }
 
 function threadTitleFromSession(info: { name?: string; firstMessage: string; id: string }): string {
@@ -529,22 +588,160 @@ function bindPackageProgress(
   });
 }
 
+function packageSourceString(pkg: unknown): string {
+  if (typeof pkg === "string") return pkg;
+  if (pkg && typeof pkg === "object" && "source" in pkg) {
+    const source = (pkg as { source?: unknown }).source;
+    if (typeof source === "string") return source;
+  }
+  return "";
+}
+
+function packageEntryEnabled(pkg: unknown): boolean {
+  if (typeof pkg === "string") return true;
+  if (pkg && typeof pkg === "object") {
+    const entry = pkg as {
+      autoload?: unknown;
+      extensions?: unknown;
+      skills?: unknown;
+      prompts?: unknown;
+      themes?: unknown;
+    };
+    if (entry.autoload !== false) return true;
+    return (
+      [entry.extensions, entry.skills, entry.prompts, entry.themes].some(
+        (patterns) => Array.isArray(patterns) && patterns.length > 0,
+      ) && !disabledPackageFilters(entry)
+    );
+  }
+  return true;
+}
+
+const DISABLED_PACKAGE_FILTER_PREFIX = "__pix_disabled_filters__/";
+
+function disabledPackageFilters(entry: object): PackageSource | undefined {
+  const extensions = (entry as { extensions?: unknown }).extensions;
+  if (!Array.isArray(extensions)) return undefined;
+  const marker = extensions.find(
+    (value): value is string =>
+      typeof value === "string" && value.startsWith(DISABLED_PACKAGE_FILTER_PREFIX),
+  );
+  if (!marker) return undefined;
+  try {
+    const decoded = JSON.parse(
+      Buffer.from(marker.slice(DISABLED_PACKAGE_FILTER_PREFIX.length), "base64url").toString(
+        "utf8",
+      ),
+    ) as unknown;
+    if (
+      !decoded ||
+      typeof decoded !== "object" ||
+      !("source" in decoded) ||
+      typeof decoded.source !== "string"
+    ) {
+      return undefined;
+    }
+    return decoded as PackageSource;
+  } catch {
+    return undefined;
+  }
+}
+
+function disablePackageEntry(entry: unknown, source: string): PackageSource {
+  if (typeof entry === "string") return { source: entry, autoload: false };
+  if (!entry || typeof entry !== "object") return { source, autoload: false };
+  const record: Record<string, unknown> = { ...(entry as Record<string, unknown>), source };
+  if (disabledPackageFilters(record)) return record as PackageSource;
+  const encoded = Buffer.from(JSON.stringify(record), "utf8").toString("base64url");
+  return {
+    source,
+    autoload: false,
+    extensions: [`${DISABLED_PACKAGE_FILTER_PREFIX}${encoded}`],
+  };
+}
+
+function enablePackageEntry(entry: unknown, source: string): PackageSource {
+  if (typeof entry === "string") return entry;
+  if (!entry || typeof entry !== "object") return source;
+  const restored = disabledPackageFilters(entry);
+  if (restored) return restored;
+  const record: Record<string, unknown> = { ...(entry as Record<string, unknown>), source };
+  delete record.autoload;
+  const keys = Object.keys(record).filter((key) => key !== "source");
+  return keys.length === 0 ? source : (record as PackageSource);
+}
+
+function findPackageEntry(
+  packages: unknown[],
+  source: string,
+): { index: number; entry: unknown } | undefined {
+  const needle = source.replace(/\\/g, "/").replace(/\/+$/, "");
+  for (let index = 0; index < packages.length; index += 1) {
+    const entry = packages[index];
+    const candidate = packageSourceString(entry).replace(/\\/g, "/").replace(/\/+$/, "");
+    if (!candidate) continue;
+    if (
+      candidate === needle ||
+      candidate.endsWith(needle) ||
+      needle.endsWith(candidate) ||
+      candidate === source ||
+      packageSourceString(entry) === source
+    ) {
+      return { index, entry };
+    }
+  }
+  return undefined;
+}
+
 export function listPackagesFromServices(services: AgentSessionServices): PackageSummary[] {
   const manager = createPackageManager(services);
+  const globalPackages = services.settingsManager.getGlobalSettings().packages ?? [];
+  const projectPackages = services.settingsManager.getProjectSettings().packages ?? [];
   return manager.listConfiguredPackages().map((entry) => {
+    const pool = entry.scope === "project" ? projectPackages : globalPackages;
+    const match = findPackageEntry(pool, entry.source);
     const summary: PackageSummary = {
       source: entry.source,
       scope: entry.scope === "project" ? "project" : "global",
       kind: packageKindFromSource(entry.source),
       filtered: entry.filtered,
+      enabled: match ? packageEntryEnabled(match.entry) : true,
     };
     if (entry.installedPath) summary.installedPath = entry.installedPath;
     return summary;
   });
 }
 
-async function reloadResourcesAfterPackageChange(services: AgentSessionServices): Promise<void> {
-  await services.resourceLoader.reload();
+/**
+ * Toggle a configured package without letting explicit filters bypass `autoload: false`.
+ * Filtered entries are encoded into a no-match pattern while disabled so they can be restored.
+ */
+export function setPackageEnabledInSettings(
+  services: AgentSessionServices,
+  source: string,
+  scope: "global" | "project",
+  enabled: boolean,
+): PackageSummary[] {
+  const isProject = scope === "project";
+  const current = isProject
+    ? [...(services.settingsManager.getProjectSettings().packages ?? [])]
+    : [...(services.settingsManager.getGlobalSettings().packages ?? [])];
+  const found = findPackageEntry(current, source);
+  if (!found) {
+    throw new Error(`Package not found in ${scope} settings: ${source}`);
+  }
+  const sourceStr = packageSourceString(found.entry) || source;
+  const nextEntry = enabled
+    ? enablePackageEntry(found.entry, sourceStr)
+    : disablePackageEntry(found.entry, sourceStr);
+  const next = [...current];
+  next[found.index] = nextEntry as (typeof current)[number];
+  if (isProject) {
+    services.settingsManager.setProjectPackages(next as never);
+  } else {
+    services.settingsManager.setPackages(next as never);
+  }
+  return listPackagesFromServices(services);
 }
 
 export function listResourcesFromServices(services: AgentSessionServices): ResourceSummary[] {
@@ -593,6 +790,35 @@ export function listResourcesFromServices(services: AgentSessionServices): Resou
       path: file.path,
     });
   }
+  const systemPromptPaths = [
+    {
+      path: join(services.cwd, ".pi", "SYSTEM.md"),
+      source: "project",
+      trusted: services.settingsManager.isProjectTrusted(),
+    },
+    { path: join(services.agentDir, "SYSTEM.md"), source: "global", trusted: true },
+  ];
+  const appendSystemPromptPaths = [
+    {
+      path: join(services.cwd, ".pi", "APPEND_SYSTEM.md"),
+      source: "project",
+      trusted: services.settingsManager.isProjectTrusted(),
+    },
+    { path: join(services.agentDir, "APPEND_SYSTEM.md"), source: "global", trusted: true },
+  ];
+  for (const candidates of [systemPromptPaths, appendSystemPromptPaths]) {
+    const selected = candidates.find(
+      (candidate) => candidate.trusted && existsSync(candidate.path),
+    );
+    if (selected) {
+      resources.push({
+        kind: "system",
+        name: basename(selected.path),
+        path: selected.path,
+        source: selected.source,
+      });
+    }
+  }
   return resources;
 }
 
@@ -635,15 +861,17 @@ function createSnapshot(
     if (prompt.argumentHint) command.argumentHint = prompt.argumentHint;
     slashCommands.push(command);
   }
-  for (const skill of skills.skills) {
-    const name = `skill:${skill.name}`;
-    if (commandNames.has(name)) continue;
-    commandNames.add(name);
-    slashCommands.push({
-      name,
-      description: skill.description,
-      source: "skill",
-    });
+  if (services.settingsManager.getEnableSkillCommands()) {
+    for (const skill of skills.skills) {
+      const name = `skill:${skill.name}`;
+      if (commandNames.has(name)) continue;
+      commandNames.add(name);
+      slashCommands.push({
+        name,
+        description: skill.description,
+        source: "skill",
+      });
+    }
   }
 
   const resourceDiagnostics = [
@@ -695,7 +923,8 @@ function createSnapshot(
   };
 
   if (runtime.session.sessionFile) snapshot.sessionFile = runtime.session.sessionFile;
-  const sessionName = runtime.session.sessionName ?? runtime.session.sessionManager.getSessionName();
+  const sessionName =
+    runtime.session.sessionName ?? runtime.session.sessionManager.getSessionName();
   if (sessionName) snapshot.sessionName = sessionName;
   if (model) snapshot.model = { provider: model.provider, id: model.id };
   snapshot.thinkingLevel = String(runtime.session.thinkingLevel);
@@ -742,6 +971,7 @@ export async function createPixRuntime(
   const runtimeId = randomUUID();
   const extensionErrors: ExtensionError[] = [];
   const configDiagnostics: SnapshotDiagnostic[] = [];
+  const temporaryExtensionPaths: string[] = [];
   const extensionUi = createPortableExtensionUiBridge({
     runtimeId,
     onRequest: (request) => {
@@ -771,7 +1001,12 @@ export async function createPixRuntime(
     sessionStartEvent,
   }) => {
     const settingsManager = SettingsManager.create(cwd, agentDir, { projectTrusted });
-    const services = await createAgentSessionServices({ cwd, agentDir, settingsManager });
+    const services = await createAgentSessionServices({
+      cwd,
+      agentDir,
+      settingsManager,
+      resourceLoaderOptions: { additionalExtensionPaths: temporaryExtensionPaths },
+    });
     // Keep only the latest service-layer config diagnostics for this session instance.
     configDiagnostics.length = 0;
     configDiagnostics.push(...collectConfigDiagnostics(services));
@@ -855,6 +1090,15 @@ export async function createPixRuntime(
     return result;
   }
 
+  async function reloadSessionResources(): Promise<void> {
+    extensionUi.reload();
+    await runtime.session.reload({
+      beforeSessionStart: () => {
+        extensionUi.reload();
+      },
+    });
+  }
+
   return {
     runtimeId,
     runtime,
@@ -870,12 +1114,7 @@ export async function createPixRuntime(
       ),
     respondExtensionUi: (response) => extensionUi.respond(response),
     async reload() {
-      extensionUi.reload();
-      await runtime.session.reload({
-        beforeSessionStart: () => {
-          extensionUi.reload();
-        },
-      });
+      await reloadSessionResources();
       // Replace config diagnostics after reload so repaired files clear old errors.
       configDiagnostics.length = 0;
       await runtime.services.modelRuntime.reloadConfig();
@@ -896,16 +1135,32 @@ export async function createPixRuntime(
     listResources() {
       return listResourcesFromServices(runtime.services);
     },
-    async installPackage(source, scope, onProgress) {
+    async installPackage(source, scope, onProgress, options) {
       const manager = createPackageManager(runtime.services);
       bindPackageProgress(manager, onProgress);
       try {
+        if (options?.temporary) {
+          // pi `-e` style: resolve into temporary scope, do not write settings.json.
+          const resolved = await manager.resolveExtensionSources([source], { temporary: true });
+          for (const extension of resolved.extensions) {
+            if (extension.enabled && !temporaryExtensionPaths.includes(extension.path)) {
+              temporaryExtensionPaths.push(extension.path);
+            }
+          }
+          await reloadSessionResources();
+          return listPackagesFromServices(runtime.services);
+        }
         await manager.installAndPersist(source, { local: scope === "project" });
-        await reloadResourcesAfterPackageChange(runtime.services);
+        await reloadSessionResources();
         return listPackagesFromServices(runtime.services);
       } finally {
         manager.setProgressCallback(undefined);
       }
+    },
+    async setPackageEnabled(source, scope, enabled) {
+      setPackageEnabledInSettings(runtime.services, source, scope, enabled);
+      await reloadSessionResources();
+      return listPackagesFromServices(runtime.services);
     },
     async removePackage(source, scope, onProgress) {
       const manager = createPackageManager(runtime.services);
@@ -928,7 +1183,7 @@ export async function createPixRuntime(
         if (!removed) {
           throw new Error(`Package was not removed from settings: ${source}`);
         }
-        await reloadResourcesAfterPackageChange(runtime.services);
+        await reloadSessionResources();
         return listPackagesFromServices(runtime.services);
       } finally {
         manager.setProgressCallback(undefined);
@@ -939,7 +1194,7 @@ export async function createPixRuntime(
       bindPackageProgress(manager, onProgress);
       try {
         await manager.update(source);
-        await reloadResourcesAfterPackageChange(runtime.services);
+        await reloadSessionResources();
         return listPackagesFromServices(runtime.services);
       } finally {
         manager.setProgressCallback(undefined);
@@ -1074,9 +1329,7 @@ export async function createPixRuntime(
     async navigateTree(targetId, options) {
       const result = await runtime.session.navigateTree(targetId, {
         ...(options?.summarize !== undefined ? { summarize: options.summarize } : {}),
-        ...(options?.customInstructions
-          ? { customInstructions: options.customInstructions }
-          : {}),
+        ...(options?.customInstructions ? { customInstructions: options.customInstructions } : {}),
       });
       return {
         cancelled: result.cancelled,
@@ -1126,7 +1379,7 @@ export async function createPixRuntime(
       const contextUsage = runtime.session.getContextUsage() ?? stats.contextUsage;
       const info: SessionInfoView = {
         sessionId: runtime.session.sessionId,
-        messageCount: runtime.session.sessionManager.getEntries().length,
+        messageCount: stats.totalMessages,
         tokens: {
           input: stats.tokens.input,
           output: stats.tokens.output,
@@ -1159,8 +1412,68 @@ export async function createPixRuntime(
       const path = runtime.session.exportToJsonl(outputPath);
       return { format, path };
     },
-    async importSession(inputPath) {
-      return afterSessionReplacement(() => runtime.importFromJsonl(inputPath));
+    async shareSession() {
+      // Same strategy as pi interactive `/share`: export HTML → `gh gist create --public=false`.
+      const dir = await mkdtemp(join(tmpdir(), "pix-share-"));
+      const htmlPath = join(dir, "session.html");
+      try {
+        await runtime.session.exportToHtml(htmlPath);
+        const result = await new Promise<{ stdout: string; stderr: string; code: number | null }>(
+          (resolve, reject) => {
+            const proc = spawn(
+              resolveGitHubCliCommand(),
+              ["gist", "create", "--public=false", htmlPath],
+              {
+                env: process.env,
+              },
+            );
+            let stdout = "";
+            let stderr = "";
+            proc.stdout?.on("data", (chunk: Buffer | string) => {
+              stdout += String(chunk);
+            });
+            proc.stderr?.on("data", (chunk: Buffer | string) => {
+              stderr += String(chunk);
+            });
+            proc.on("error", (error) => {
+              reject(
+                new Error(
+                  error instanceof Error &&
+                    "code" in error &&
+                    (error as NodeJS.ErrnoException).code === "ENOENT"
+                    ? "GitHub CLI (gh) is not installed. Install it from https://cli.github.com/ and run `gh auth login`."
+                    : error instanceof Error
+                      ? error.message
+                      : String(error),
+                ),
+              );
+            });
+            proc.on("close", (code) => resolve({ stdout, stderr, code }));
+          },
+        );
+        if (result.code !== 0) {
+          const detail = result.stderr.trim() || result.stdout.trim() || "Unknown error";
+          throw new Error(`Failed to create gist: ${detail}`);
+        }
+        const gistUrl =
+          result.stdout
+            .trim()
+            .split(/\s+/)
+            .find((line) => line.includes("gist.github.com")) ?? result.stdout.trim();
+        const gistId = gistUrl.split("/").filter(Boolean).pop();
+        if (!gistId) {
+          throw new Error("Failed to parse gist ID from gh output");
+        }
+        // Same viewer base as pi config.getShareViewerUrl (not re-exported from package root).
+        const baseUrl = process.env.PI_SHARE_VIEWER_URL || "https://pi.dev/session/";
+        const url = `${baseUrl}#${gistId}`;
+        return { url, gistUrl, gistId };
+      } finally {
+        await rm(dir, { recursive: true, force: true }).catch(() => undefined);
+      }
+    },
+    async importSession(inputPath, cwdOverride) {
+      return afterSessionReplacement(() => runtime.importFromJsonl(inputPath, cwdOverride));
     },
     async executeBash(command, options) {
       const excludeFromContext = options?.excludeFromContext === true;
@@ -1282,10 +1595,12 @@ function projectPiSettings(
     enableAnalytics: sm.getEnableAnalytics(),
     httpIdleTimeoutMs: sm.getHttpIdleTimeoutMs(),
     enabledModels: [...(sm.getEnabledModels() ?? [])],
+    inventory: projectSettingsInventory(sm),
     // Nested compaction/retry thresholds are writable via SettingsManager private save path.
     readOnlyFields: ["thinkingBudgets"],
     // Stable keys for desktop i18n (piSettings.degraded.*). Do not localize here.
-    degradedCapabilities: ["tui", "sandbox", "llama", "gist"],
+    // gist is no longer degraded once /share is wired; llama/sandbox/tui remain.
+    degradedCapabilities: ["tui", "sandbox", "llama"],
   };
   const provider = sm.getDefaultProvider();
   const model = sm.getDefaultModel();
@@ -1296,6 +1611,146 @@ function projectPiSettings(
   if (theme) view.theme = theme;
   if (thinkingBudgets) view.thinkingBudgets = { ...thinkingBudgets };
   return view;
+}
+
+const KNOWN_PI_SETTING_KEYS = [
+  "lastChangelogVersion",
+  "defaultProvider",
+  "defaultModel",
+  "defaultThinkingLevel",
+  "transport",
+  "steeringMode",
+  "followUpMode",
+  "theme",
+  "compaction",
+  "branchSummary",
+  "retry",
+  "hideThinkingBlock",
+  "showCacheMissNotices",
+  "externalEditor",
+  "shellPath",
+  "quietStartup",
+  "defaultProjectTrust",
+  "shellCommandPrefix",
+  "npmCommand",
+  "collapseChangelog",
+  "enableInstallTelemetry",
+  "enableAnalytics",
+  "trackingId",
+  "packages",
+  "extensions",
+  "skills",
+  "prompts",
+  "themes",
+  "enableSkillCommands",
+  "terminal",
+  "images",
+  "enabledModels",
+  "doubleEscapeAction",
+  "treeFilterMode",
+  "thinkingBudgets",
+  "editorPaddingX",
+  "outputPad",
+  "autocompleteMaxVisible",
+  "showHardwareCursor",
+  "markdown",
+  "warnings",
+  "sessionDir",
+  "httpProxy",
+  "httpIdleTimeoutMs",
+  "websocketConnectTimeoutMs",
+] as const;
+
+const WRITABLE_PI_SETTING_KEYS = new Set([
+  "defaultProvider",
+  "defaultModel",
+  "defaultThinkingLevel",
+  "defaultProjectTrust",
+  "theme",
+  "compaction",
+  "retry",
+  "hideThinkingBlock",
+  "quietStartup",
+  "enableSkillCommands",
+  "steeringMode",
+  "followUpMode",
+  "doubleEscapeAction",
+  "treeFilterMode",
+  "enableInstallTelemetry",
+  "enableAnalytics",
+  "httpIdleTimeoutMs",
+  "enabledModels",
+]);
+
+function isPlainSettingObject(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function mergeSettingValue(globalValue: unknown, projectValue: unknown): unknown {
+  if (!isPlainSettingObject(globalValue) || !isPlainSettingObject(projectValue)) {
+    return projectValue;
+  }
+  const merged: Record<string, unknown> = { ...globalValue };
+  for (const [key, value] of Object.entries(projectValue)) {
+    merged[key] = mergeSettingValue(globalValue[key], value);
+  }
+  return merged;
+}
+
+function formatSettingValue(key: string, value: unknown): string {
+  if (value === undefined) return "pi default";
+  if (key === "trackingId" || key === "httpProxy") return value ? "configured" : "not configured";
+  if (typeof value === "string") return value || '""';
+  if (value === null) return "null";
+  if (typeof value === "number" || typeof value === "boolean" || typeof value === "bigint") {
+    return value.toString();
+  }
+  let serialized: string | undefined;
+  try {
+    serialized = JSON.stringify(value);
+  } catch {
+    return `[${typeof value}]`;
+  }
+  if (serialized === undefined) return `[${typeof value}]`;
+  return serialized.length > 360 ? `${serialized.slice(0, 357)}...` : serialized;
+}
+
+function projectSettingsInventory(
+  settingsManager: AgentSessionServices["settingsManager"],
+): PiSettingsView["inventory"] {
+  const globalSettings = settingsManager.getGlobalSettings() as Record<string, unknown>;
+  const projectSettings = settingsManager.getProjectSettings() as Record<string, unknown>;
+  const keys = new Set<string>([
+    ...KNOWN_PI_SETTING_KEYS,
+    ...Object.keys(globalSettings),
+    ...Object.keys(projectSettings),
+  ]);
+  return [...keys].sort().map((key) => {
+    const hasGlobal = Object.hasOwn(globalSettings, key);
+    const hasProject = Object.hasOwn(projectSettings, key);
+    const globalValue = globalSettings[key];
+    const projectValue = projectSettings[key];
+    const bothObjects =
+      hasGlobal &&
+      hasProject &&
+      isPlainSettingObject(globalValue) &&
+      isPlainSettingObject(projectValue);
+    const effective = hasProject
+      ? hasGlobal
+        ? mergeSettingValue(globalValue, projectValue)
+        : projectValue
+      : globalValue;
+    return {
+      key,
+      value: formatSettingValue(key, effective),
+      source: bothObjects ? "merged" : hasProject ? "project" : hasGlobal ? "global" : "default",
+      configuredScopes: [
+        ...(hasGlobal ? (["global"] as const) : []),
+        ...(hasProject ? (["project"] as const) : []),
+      ],
+      writable: WRITABLE_PI_SETTING_KEYS.has(key),
+    };
+  });
 }
 
 /**
@@ -1368,10 +1823,7 @@ function asWritableSettingsManager(sm: SettingsManager): {
   };
 }
 
-function ensureNestedObject(
-  parent: Record<string, unknown>,
-  key: string,
-): Record<string, unknown> {
+function ensureNestedObject(parent: Record<string, unknown>, key: string): Record<string, unknown> {
   const current = parent[key];
   if (current && typeof current === "object" && !Array.isArray(current)) {
     return current as Record<string, unknown>;

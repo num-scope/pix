@@ -6,6 +6,11 @@ export default defineConfig({
   root: resolve(import.meta.dirname, "src/renderer"),
   base: "./",
   plugins: [tailwindcss()],
+  resolve: {
+    alias: {
+      "@": resolve(import.meta.dirname, "src/renderer"),
+    },
+  },
   build: {
     outDir: resolve(import.meta.dirname, "dist/renderer"),
     emptyOutDir: true,

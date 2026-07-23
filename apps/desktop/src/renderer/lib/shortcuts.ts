@@ -38,6 +38,7 @@ export const SHORTCUT_DEFINITIONS: ShortcutDefinition[] = [
 ];
 
 const STORAGE_KEY = "pix.shortcuts.overrides";
+export const SHORTCUT_OVERRIDES_CHANGED_EVENT = "pix:shortcut-overrides-changed";
 
 /**
  * Overrides map. Missing key → use default.
@@ -63,9 +64,15 @@ export function loadShortcutOverrides(): ShortcutOverrides {
 export function saveShortcutOverrides(overrides: ShortcutOverrides): void {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(overrides));
+    notifyShortcutOverridesChanged();
   } catch {
     // ignore
   }
+}
+
+export function notifyShortcutOverridesChanged(): void {
+  if (typeof window === "undefined" || typeof window.dispatchEvent !== "function") return;
+  window.dispatchEvent(new Event(SHORTCUT_OVERRIDES_CHANGED_EVENT));
 }
 
 /** True when user has any override for this id (custom combo or unbound). */
@@ -126,6 +133,8 @@ export function resetAllShortcuts(): ShortcutOverrides {
 /** Parse "mod+shift+f" into parts. */
 export function parseCombo(combo: string): {
   mod: boolean;
+  ctrl: boolean;
+  meta: boolean;
   shift: boolean;
   alt: boolean;
   key: string;
@@ -136,25 +145,42 @@ export function parseCombo(combo: string): {
     .map((p) => p.trim())
     .filter(Boolean);
   return {
-    mod:
-      parts.includes("mod") ||
-      parts.includes("cmd") ||
-      parts.includes("ctrl") ||
-      parts.includes("meta"),
+    mod: parts.includes("mod"),
+    ctrl: parts.includes("ctrl") || parts.includes("control"),
+    meta: parts.includes("meta") || parts.includes("cmd") || parts.includes("command"),
     shift: parts.includes("shift"),
     alt: parts.includes("alt") || parts.includes("option"),
     key:
       parts
-        .filter((p) => !["mod", "cmd", "ctrl", "meta", "shift", "alt", "option"].includes(p))
+        .filter(
+          (p) =>
+            ![
+              "mod",
+              "cmd",
+              "command",
+              "ctrl",
+              "control",
+              "meta",
+              "shift",
+              "alt",
+              "option",
+            ].includes(p),
+        )
         .join("+") || "",
   };
 }
 
-export function eventToCombo(event: KeyboardEvent): string | null {
+function isMacPlatform(): boolean {
+  return typeof navigator !== "undefined" && /Mac|iPhone|iPod|iPad/i.test(navigator.platform);
+}
+
+export function eventToCombo(event: KeyboardEvent, isMac = isMacPlatform()): string | null {
   const key = event.key;
   if (!key || key === "Meta" || key === "Control" || key === "Shift" || key === "Alt") return null;
   const parts: string[] = [];
-  if (event.metaKey || event.ctrlKey) parts.push("mod");
+  if (isMac ? event.metaKey : event.ctrlKey) parts.push("mod");
+  if (isMac && event.ctrlKey) parts.push("ctrl");
+  if (!isMac && event.metaKey) parts.push("meta");
   if (event.shiftKey) parts.push("shift");
   if (event.altKey) parts.push("alt");
   // Normalize key
@@ -174,13 +200,19 @@ export function eventToCombo(event: KeyboardEvent): string | null {
   return parts.join("+");
 }
 
-export function eventMatchesCombo(event: KeyboardEvent, combo: string): boolean {
+export function eventMatchesCombo(
+  event: KeyboardEvent,
+  combo: string,
+  isMac = isMacPlatform(),
+): boolean {
   // Empty / unbound combos never match.
   if (!combo || !combo.trim()) return false;
   const parsed = parseCombo(combo);
   if (!parsed.key) return false;
-  const mod = event.metaKey || event.ctrlKey;
-  if (parsed.mod !== mod) return false;
+  const expectedMeta = parsed.meta || (parsed.mod && isMac);
+  const expectedCtrl = parsed.ctrl || (parsed.mod && !isMac);
+  if (expectedMeta !== event.metaKey) return false;
+  if (expectedCtrl !== event.ctrlKey) return false;
   if (parsed.shift !== event.shiftKey) return false;
   if (parsed.alt !== event.altKey) return false;
 
@@ -199,14 +231,13 @@ export function eventMatchesCombo(event: KeyboardEvent, combo: string): boolean 
 }
 
 /** Individual key labels for UI keycaps (⌘ / Ctrl, ⇧ / Shift, …). */
-export function comboToDisplayParts(
-  combo: string,
-  isMac = typeof navigator !== "undefined" && /Mac|iPhone|iPod|iPad/i.test(navigator.platform),
-): string[] {
+export function comboToDisplayParts(combo: string, isMac = isMacPlatform()): string[] {
   if (!combo) return [];
   const p = parseCombo(combo);
   const bits: string[] = [];
   if (p.mod) bits.push(isMac ? "⌘" : "Ctrl");
+  if (p.ctrl) bits.push(isMac ? "⌃" : "Ctrl");
+  if (p.meta) bits.push(isMac ? "⌘" : "Meta");
   if (p.shift) bits.push(isMac ? "⇧" : "Shift");
   if (p.alt) bits.push(isMac ? "⌥" : "Alt");
   const keyLabel =

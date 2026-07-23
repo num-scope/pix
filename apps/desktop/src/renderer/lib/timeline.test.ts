@@ -30,7 +30,13 @@ describe("runtime timeline", () => {
       ["first", "queued"],
     );
 
-    expect(timeline.map((item) => ({ id: item.id, kind: item.kind, text: "text" in item ? item.text : "" }))).toEqual([
+    expect(
+      timeline.map((item) => ({
+        id: item.id,
+        kind: item.kind,
+        text: "text" in item ? item.text : "",
+      })),
+    ).toEqual([
       { id: "user-1", kind: "user", text: "first" },
       { id: "assistant-0", kind: "assistant", text: "working" },
       { id: "user-2", kind: "user", text: "queued" },
@@ -95,6 +101,55 @@ describe("runtime timeline", () => {
       },
     ]);
     expect(splitAttachedPaths("plain text")).toEqual({ text: "plain text", paths: [] });
+  });
+
+  it("shows shell output from live and persisted sessions", () => {
+    expect(
+      historyToTimeline([
+        {
+          role: "shell",
+          text: "hello",
+          command: "printf hello",
+          exitCode: 0,
+          excludeFromContext: true,
+        },
+      ])[0],
+    ).toMatchObject({ kind: "system", title: "!! printf hello", text: "```text\nhello\n```" });
+
+    expect(
+      projectEventsToTimeline(
+        [
+          runtimeEvent(1, {
+            type: "shell.completed",
+            command: "false",
+            output: "failed",
+            exitCode: 1,
+            excludeFromContext: false,
+          }),
+        ],
+        [],
+      )[0],
+    ).toMatchObject({ kind: "system", title: "! false", tone: "error" });
+  });
+
+  it("shows compaction lifecycle events", () => {
+    const projected = projectEventsToTimeline(
+      [
+        runtimeEvent(1, { type: "compaction.started", reason: "manual" }),
+        runtimeEvent(2, {
+          type: "compaction.completed",
+          reason: "manual",
+          aborted: false,
+        }),
+      ],
+      [],
+    );
+    expect(projected).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ title: "Compaction", text: "Compaction started (manual)" }),
+        expect.objectContaining({ title: "Compaction", text: "Compaction completed" }),
+      ]),
+    );
   });
 
   it("groups thinking/tools into a process block before assistant", () => {

@@ -1,10 +1,13 @@
 import { describe, expect, it } from "vite-plus/test";
 import {
   addResourceQuery,
+  applyPathTokenCompletion,
   attachmentLabel,
   attachmentPresentation,
   filterResourceCommands,
   filterSlashCommands,
+  isPromptImagePath,
+  pathTokenBeforeCursor,
   promptWithAttachedPaths,
   slashCommandQuery,
 } from "./composer-suggestions.ts";
@@ -63,6 +66,22 @@ describe("composer suggestions", () => {
     expect(promptWithAttachedPaths("Inspect", ["/tmp/a&b.md"])).toContain(
       "<path>/tmp/a&amp;b.md</path>",
     );
+    expect(isPromptImagePath("/tmp/photo.webp")).toBe(true);
+    expect(isPromptImagePath("/tmp/vector.svg")).toBe(false);
+  });
+
+  it("detects path tokens and applies Tab completions", () => {
+    expect(pathTokenBeforeCursor("see src/co", 10)).toMatchObject({
+      query: "src/co",
+      atMention: false,
+    });
+    expect(pathTokenBeforeCursor("hi @util", 8)).toMatchObject({
+      query: "util",
+      atMention: true,
+    });
+    const applied = applyPathTokenCompletion("see src/co", 10, "src/composer.ts");
+    expect(applied?.value).toBe("see src/composer.ts");
+    expect(applied?.cursor).toBe("see src/composer.ts".length);
   });
 
   it.each([

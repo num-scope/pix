@@ -42,7 +42,9 @@ async function writeModels(agentDir: string, baseUrl: string) {
 
 afterEach(async () => {
   await Promise.all(
-    temporaryDirectories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })),
+    temporaryDirectories
+      .splice(0)
+      .map((directory) => rm(directory, { recursive: true, force: true })),
   );
 });
 
@@ -191,6 +193,13 @@ describe("session-parity runtime APIs", () => {
       expect(settings.doubleEscapeAction).toBe("tree");
       expect(settings.readOnlyFields).toContain("thinkingBudgets");
       expect(settings.degradedCapabilities.length).toBeGreaterThan(0);
+      expect(settings.inventory).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ key: "hideThinkingBlock", source: "global", writable: true }),
+          expect.objectContaining({ key: "sessionDir", source: "default", writable: false }),
+          expect.objectContaining({ key: "websocketConnectTimeoutMs" }),
+        ]),
+      );
 
       const withThresholds = await handle.patchPiSettings({
         compactionReserveTokens: 8192,
@@ -244,21 +253,38 @@ describe("session-parity runtime APIs", () => {
         // short sessions may still emit start/end
       }
       unsub();
-      expect(events.includes("compaction_start") || events.includes("compaction_end") || true).toBe(
-        true,
-      );
+      expect(
+        events.some((event) => event === "compaction_start" || event === "compaction_end"),
+      ).toBe(true);
 
       const info = handle.getSessionInfo();
       expect(info.sessionName).toBe("parity-session");
       expect(info.sessionFile || info.path).toBeTruthy();
       expect(typeof info.cost).toBe("number");
       expect(typeof info.tokens.total).toBe("number");
+      expect(info.messageCount).toBe(handle.runtime.session.getSessionStats().totalMessages);
 
       const exported = await handle.exportSession("jsonl");
       expect(exported.format).toBe("jsonl");
       expect(exported.path.length).toBeGreaterThan(0);
       const exportBody = await readFile(exported.path, "utf8");
       expect(exportBody.length).toBeGreaterThan(0);
+
+      const importedRows = exportBody.trim().split("\n");
+      const importedHeader = JSON.parse(importedRows[0] ?? "{}") as Record<string, unknown>;
+      importedHeader.cwd = join(paths.root, "removed-project");
+      importedRows[0] = JSON.stringify(importedHeader);
+      const importPath = join(paths.root, "missing-cwd-session.jsonl");
+      await writeFile(importPath, `${importedRows.join("\n")}\n`);
+
+      await expect(handle.importSession(importPath)).rejects.toMatchObject({
+        name: "MissingSessionCwdError",
+      });
+      const replacementCwd = join(paths.root, "replacement-project");
+      await mkdir(replacementCwd, { recursive: true });
+      const imported = await handle.importSession(importPath, replacementCwd);
+      expect(imported.cancelled).toBe(false);
+      expect(handle.snapshot().cwd).toBe(replacementCwd);
 
       await handle.reload();
       const afterReload = handle.snapshot();

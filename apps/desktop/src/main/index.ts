@@ -16,6 +16,7 @@ import {
   type PhotonProbeResult,
   type PackageSummary,
   type PiSettingsPatch,
+  type PiSettingsPatchResult,
   type PiSettingsView,
   type ProjectTrustSummary,
   type ProviderAuthSummary,
@@ -26,6 +27,7 @@ import {
   type SessionExportResult,
   type SessionHistoryMessage,
   type SessionInfoView,
+  type SessionShareResult,
   type SessionThreadSummary,
   type SessionTreeView,
   type UpsertCustomProviderInput,
@@ -34,6 +36,7 @@ import {
 import {
   app,
   BrowserWindow,
+  clipboard,
   dialog,
   ipcMain,
   Menu,
@@ -58,7 +61,7 @@ import {
   unlinkSync,
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
@@ -1840,7 +1843,11 @@ class HostSupervisor {
     return event.snapshot;
   }
 
-  async prompt(message: string, streamingBehavior?: "steer" | "followUp"): Promise<HostSnapshot> {
+  async prompt(
+    message: string,
+    streamingBehavior?: "steer" | "followUp",
+    imagePaths?: string[],
+  ): Promise<HostSnapshot> {
     if (!this.#host) await this.start();
     const command: HostCommand = {
       protocolVersion: IPC_PROTOCOL_VERSION,
@@ -1849,6 +1856,7 @@ class HostSupervisor {
       message,
     };
     if (streamingBehavior) command.streamingBehavior = streamingBehavior;
+    if (imagePaths?.length) command.imagePaths = imagePaths.slice(0, 12);
     const event = await this.#request(command);
     if (event.type !== "runtime.snapshot")
       throw new Error("Agent Host returned an unexpected prompt response");
@@ -1954,6 +1962,7 @@ class HostSupervisor {
     snapshot: HostSnapshot;
     threads: SessionThreadSummary[];
     history: SessionHistoryMessage[];
+    selectedText?: string;
   }> {
     if (!this.#host) await this.start();
     const command: HostCommand = {
@@ -1966,7 +1975,12 @@ class HostSupervisor {
     if (event.type !== "session.opened")
       throw new Error("Agent Host returned an unexpected session.fork response");
     this.#acceptSnapshot(event.snapshot);
-    return { snapshot: event.snapshot, threads: event.threads, history: event.history };
+    return {
+      snapshot: event.snapshot,
+      threads: event.threads,
+      history: event.history,
+      ...(event.selectedText !== undefined ? { selectedText: event.selectedText } : {}),
+    };
   }
 
   async sessionTree(): Promise<SessionTreeView> {
@@ -2002,12 +2016,12 @@ class HostSupervisor {
     const event = await this.#request(command);
     if (event.type !== "session.opened")
       throw new Error("Agent Host returned an unexpected session.navigateTree response");
-    this.#acceptSnapshot(event.snapshot);
+    if (!event.cancelled) this.#acceptSnapshot(event.snapshot);
     return {
       snapshot: event.snapshot,
       threads: event.threads,
       history: event.history,
-      cancelled: false,
+      cancelled: event.cancelled === true,
     };
   }
 
@@ -2069,10 +2083,7 @@ class HostSupervisor {
     return event.info;
   }
 
-  async exportSession(
-    format: "html" | "jsonl",
-    outputPath?: string,
-  ): Promise<SessionExportResult> {
+  async exportSession(format: "html" | "jsonl", outputPath?: string): Promise<SessionExportResult> {
     if (!this.#host) await this.start();
     const command: HostCommand = {
       protocolVersion: IPC_PROTOCOL_VERSION,
@@ -2087,21 +2098,55 @@ class HostSupervisor {
     return event.result;
   }
 
-  async importSession(inputPath: string): Promise<{
-    snapshot: HostSnapshot;
-    threads: SessionThreadSummary[];
-    history: SessionHistoryMessage[];
-  }> {
+  async importSession(
+    inputPath: string,
+    cwdOverride?: string,
+  ): Promise<
+    | {
+        snapshot: HostSnapshot;
+        threads: SessionThreadSummary[];
+        history: SessionHistoryMessage[];
+      }
+    | undefined
+  > {
     if (!this.#host) await this.start();
-    const event = await this.#request({
+    const resolvedInputPath = isAbsolute(inputPath)
+      ? inputPath
+      : resolve(this.#workspaceCwd ?? process.cwd(), inputPath);
+    const command: HostCommand = {
       protocolVersion: IPC_PROTOCOL_VERSION,
       type: "session.import",
       requestId: randomUUID(),
-      inputPath,
-    });
+      inputPath: resolvedInputPath,
+    };
+    if (cwdOverride) command.cwdOverride = cwdOverride;
+    let event: HostEvent;
+    try {
+      event = await this.#request(command);
+    } catch (error) {
+      const code = error instanceof Error ? (error as NodeJS.ErrnoException).code : undefined;
+      if (code !== "SESSION_IMPORT_CWD_MISSING" || cwdOverride) throw error;
+      if (this.window.isDestroyed()) return undefined;
+      const picked = await dialog.showOpenDialog(this.window, {
+        title: "Choose a workspace for the imported session",
+        buttonLabel: "Use this workspace",
+        properties: ["openDirectory", "createDirectory"],
+        ...(error instanceof Error ? { message: error.message } : {}),
+        ...(this.#workspaceCwd ? { defaultPath: this.#workspaceCwd } : {}),
+      });
+      const selectedCwd = picked.filePaths[0];
+      if (picked.canceled || !selectedCwd) return undefined;
+      return this.importSession(resolvedInputPath, selectedCwd);
+    }
     if (event.type !== "session.opened")
       throw new Error("Agent Host returned an unexpected session.import response");
     this.#acceptSnapshot(event.snapshot);
+    if (event.snapshot.cwd) {
+      this.#workspaceCwd = event.snapshot.cwd;
+      this.#requireExplicitWorkspace = false;
+      this.#sessionFile = event.snapshot.sessionFile;
+      rememberWorkspace(event.snapshot.cwd);
+    }
     return { snapshot: event.snapshot, threads: event.threads, history: event.history };
   }
 
@@ -2136,6 +2181,18 @@ class HostSupervisor {
     if (event.type !== "session.copyLast")
       throw new Error("Agent Host returned an unexpected session.copyLast response");
     return event.text;
+  }
+
+  async shareSession(): Promise<SessionShareResult> {
+    if (!this.#host) await this.start();
+    const event = await this.#request({
+      protocolVersion: IPC_PROTOCOL_VERSION,
+      type: "session.share",
+      requestId: randomUUID(),
+    });
+    if (event.type !== "session.share")
+      throw new Error("Agent Host returned an unexpected session.share response");
+    return event.result;
   }
 
   async reloadRuntime(): Promise<HostSnapshot> {
@@ -2219,17 +2276,42 @@ class HostSupervisor {
     return event.packages;
   }
 
-  async installPackage(source: string, scope: "global" | "project"): Promise<PackageSummary[]> {
+  async installPackage(
+    source: string,
+    scope: "global" | "project",
+    options?: { temporary?: boolean },
+  ): Promise<PackageSummary[]> {
     if (!this.#host) await this.start();
-    const event = await this.#request({
+    const command: HostCommand = {
       protocolVersion: IPC_PROTOCOL_VERSION,
       type: "packages.install",
       requestId: randomUUID(),
       source,
       scope,
-    });
+    };
+    if (options?.temporary) command.temporary = true;
+    const event = await this.#request(command);
     if (event.type !== "packages.changed")
       throw new Error("Agent Host returned an unexpected packages.install response");
+    return event.packages;
+  }
+
+  async setPackageEnabled(
+    source: string,
+    scope: "global" | "project",
+    enabled: boolean,
+  ): Promise<PackageSummary[]> {
+    if (!this.#host) await this.start();
+    const event = await this.#request({
+      protocolVersion: IPC_PROTOCOL_VERSION,
+      type: "packages.setEnabled",
+      requestId: randomUUID(),
+      source,
+      scope,
+      enabled,
+    });
+    if (event.type !== "packages.changed")
+      throw new Error("Agent Host returned an unexpected packages.setEnabled response");
     return event.packages;
   }
 
@@ -2532,7 +2614,7 @@ class HostSupervisor {
     return event.settings;
   }
 
-  async patchPiSettings(patch: PiSettingsPatch): Promise<PiSettingsView> {
+  async patchPiSettings(patch: PiSettingsPatch): Promise<PiSettingsPatchResult> {
     if (!this.#host) await this.start();
     const event = await this.#request({
       protocolVersion: IPC_PROTOCOL_VERSION,
@@ -2542,7 +2624,9 @@ class HostSupervisor {
     });
     if (event.type !== "settings.view")
       throw new Error("Agent Host returned an unexpected settings.patch response");
-    return event.settings;
+    if (!event.snapshot) throw new Error("Agent Host omitted the settings snapshot");
+    this.#acceptSnapshot(event.snapshot);
+    return { settings: event.settings, snapshot: event.snapshot };
   }
 
   eventCounts(): Record<string, number> {
@@ -2784,8 +2868,11 @@ class HostSupervisor {
     if (!pending) return;
     clearTimeout(pending.timeout);
     this.#pending.delete(message.requestId);
-    if (message.type === "host.error") pending.reject(new Error(message.message));
-    else pending.resolve(message);
+    if (message.type === "host.error") {
+      const error = new Error(message.message) as NodeJS.ErrnoException;
+      error.code = message.code;
+      pending.reject(error);
+    } else pending.resolve(message);
   }
 
   #rejectPending(error: Error): void {
@@ -3026,13 +3113,11 @@ app.setName("Pix");
 function openSystemNotificationSettings(): void {
   if (process.platform === "darwin") {
     // Ventura+ Settings app
-    void shell.openExternal(
-      "x-apple.systempreferences:com.apple.Notifications-Settings.extension",
-    ).catch(() => {
-      void shell.openExternal(
-        "x-apple.systempreferences:com.apple.preference.notifications",
-      );
-    });
+    void shell
+      .openExternal("x-apple.systempreferences:com.apple.Notifications-Settings.extension")
+      .catch(() => {
+        void shell.openExternal("x-apple.systempreferences:com.apple.preference.notifications");
+      });
     return;
   }
   if (process.platform === "win32") {
@@ -3040,7 +3125,9 @@ function openSystemNotificationSettings(): void {
     return;
   }
   // Linux: no single standard deep-link.
-  void shell.openExternal("https://wiki.archlinux.org/title/Desktop_notifications").catch(() => undefined);
+  void shell
+    .openExternal("https://wiki.archlinux.org/title/Desktop_notifications")
+    .catch(() => undefined);
 }
 
 /** Keep Notification instances alive until closed (GC otherwise drops them before show). */
@@ -3348,6 +3435,28 @@ void app
         );
       },
     );
+    ipcMain.handle(
+      "pix:workspace:save-clipboard-image",
+      async (_event, options?: { bytes?: number[]; ext?: string }) => {
+        const dir = join(app.getPath("temp"), "pix-attachments");
+        mkdirSync(dir, { recursive: true });
+        let buffer: Buffer | undefined;
+        let ext =
+          typeof options?.ext === "string" && options.ext.trim() ? options.ext.trim() : "png";
+        if (Array.isArray(options?.bytes) && options.bytes.length > 0) {
+          buffer = Buffer.from(options.bytes);
+        } else {
+          const image = clipboard.readImage();
+          if (image.isEmpty()) return undefined;
+          buffer = image.toPNG();
+          ext = "png";
+        }
+        if (!buffer || buffer.length === 0) return undefined;
+        const filePath = join(dir, `paste-${Date.now()}.${ext.replace(/^\./, "")}`);
+        writeFileSync(filePath, buffer);
+        return filePath;
+      },
+    );
     ipcMain.handle("pix:trust:get", () => supervisor?.getTrust());
     ipcMain.handle("pix:trust:set", (_event, trusted: boolean) => supervisor?.setTrust(trusted));
     ipcMain.handle("pix:models:list", () => supervisor?.listModels());
@@ -3391,8 +3500,8 @@ void app
     );
     ipcMain.handle(
       "pix:agent:prompt",
-      (_event, message: string, streamingBehavior?: "steer" | "followUp") =>
-        supervisor?.prompt(message, streamingBehavior),
+      (_event, message: string, streamingBehavior?: "steer" | "followUp", imagePaths?: string[]) =>
+        supervisor?.prompt(message, streamingBehavior, imagePaths),
     );
     ipcMain.handle("pix:agent:queue-clear", () => supervisor?.clearQueue());
     ipcMain.handle("pix:agent:abort", () => supervisor?.abort());
@@ -3423,11 +3532,8 @@ void app
     ipcMain.handle("pix:session:tree", () => supervisor?.sessionTree());
     ipcMain.handle(
       "pix:session:navigate-tree",
-      (
-        _event,
-        targetId: string,
-        options?: { summarize?: boolean; customInstructions?: string },
-      ) => supervisor?.navigateSessionTree(targetId, options),
+      (_event, targetId: string, options?: { summarize?: boolean; customInstructions?: string }) =>
+        supervisor?.navigateSessionTree(targetId, options),
     );
     ipcMain.handle("pix:session:compact", (_event, instructions?: string) =>
       supervisor?.compactSession(instructions),
@@ -3437,10 +3543,8 @@ void app
     );
     ipcMain.handle("pix:session:clone", () => supervisor?.cloneSession());
     ipcMain.handle("pix:session:info", () => supervisor?.sessionInfo());
-    ipcMain.handle(
-      "pix:session:export",
-      (_event, format: "html" | "jsonl", outputPath?: string) =>
-        supervisor?.exportSession(format, outputPath),
+    ipcMain.handle("pix:session:export", (_event, format: "html" | "jsonl", outputPath?: string) =>
+      supervisor?.exportSession(format, outputPath),
     );
     ipcMain.handle("pix:session:export-pick", (_event, format: "html" | "jsonl") =>
       supervisor?.exportSessionPick(format),
@@ -3455,12 +3559,20 @@ void app
         supervisor?.sessionBash(command, options),
     );
     ipcMain.handle("pix:session:copy-last", () => supervisor?.copyLastAssistant());
+    ipcMain.handle("pix:session:share", () => supervisor?.shareSession());
     ipcMain.handle("pix:runtime:reload", () => supervisor?.reloadRuntime());
     ipcMain.handle("pix:models:list-scoped", () => supervisor?.listScopedModels());
     ipcMain.handle("pix:models:refresh-catalog", () => supervisor?.refreshModelCatalog());
     ipcMain.handle("pix:packages:list", () => supervisor?.listPackages());
-    ipcMain.handle("pix:packages:install", (_event, source: string, scope: "global" | "project") =>
-      supervisor?.installPackage(source, scope),
+    ipcMain.handle(
+      "pix:packages:install",
+      (_event, source: string, scope: "global" | "project", options?: { temporary?: boolean }) =>
+        supervisor?.installPackage(source, scope, options),
+    );
+    ipcMain.handle(
+      "pix:packages:set-enabled",
+      (_event, source: string, scope: "global" | "project", enabled: boolean) =>
+        supervisor?.setPackageEnabled(source, scope, enabled),
     );
     ipcMain.handle("pix:packages:remove", (_event, source: string, scope: "global" | "project") =>
       supervisor?.removePackage(source, scope),
@@ -3481,9 +3593,8 @@ void app
       ipcMain.handle("pix:test:crash-host", () => supervisor?.crashHost());
     }
 
-    ipcMain.handle(
-      "pix:notifications:show",
-      (_event, payload: ShowOsNotificationPayload) => showOsNotification(payload ?? { title: "" }),
+    ipcMain.handle("pix:notifications:show", (_event, payload: ShowOsNotificationPayload) =>
+      showOsNotification(payload ?? { title: "" }),
     );
     ipcMain.handle("pix:notifications:open-system-settings", () => {
       openSystemNotificationSettings();

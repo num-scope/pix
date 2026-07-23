@@ -1,10 +1,13 @@
 @import "tailwindcss";
+@import "tw-animate-css";
 
 /*
  * Tokens lifted from OpenCowork dark theme (main.css :root / .dark).
  * Structure: shadcn-style semantic colors + Pix product chrome.
  * Not copying OpenCowork trademarks — only visual system.
  */
+
+@custom-variant dark (&:is([data-theme="dark"], [data-theme="dark"] *));
 
 @theme {
   --font-sans: "Inter", "SF Pro Text", "Segoe UI", system-ui, -apple-system, sans-serif;
@@ -15,6 +18,58 @@
   --radius-lg: 0.75rem; /* 12px — cards, env panel, dialogs, popovers */
   --radius-xl: 0.75rem; /* align large surfaces to panel radius */
   --radius-2xl: 0.75rem;
+}
+
+/* Map CSS variables → Tailwind color utilities (bg-background, text-muted-foreground, …). */
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+}
+
+/* Lightweight shimmer for attachment upload/processing states. */
+@keyframes pix-shimmer {
+  0% {
+    background-position: 100% 0;
+  }
+  100% {
+    background-position: -100% 0;
+  }
+}
+@utility shimmer {
+  background-image: linear-gradient(
+    90deg,
+    color-mix(in srgb, currentColor 35%, transparent) 0%,
+    color-mix(in srgb, currentColor 85%, transparent) 50%,
+    color-mix(in srgb, currentColor 35%, transparent) 100%
+  );
+  background-size: 200% 100%;
+  background-clip: text;
+  color: transparent;
+  animation: pix-shimmer 1.4s linear infinite;
 }
 
 :root,
@@ -47,11 +102,11 @@
   --accent: var(--hover-fill);
   --accent-foreground: var(--hover-fill-foreground);
   --destructive: oklch(0.396 0.141 25.723);
-  /* Softer chrome borders / row dividers (cards, composer, env, settings). */
-  --border: #333333;
-  --border-subtle: color-mix(in srgb, #ffffff 7%, transparent);
-  --divider: color-mix(in srgb, #ffffff 6%, transparent);
-  --input: #333333;
+  /* Chrome borders / row dividers (cards, composer, env, settings). */
+  --border: #3c3c3c;
+  --border-subtle: color-mix(in srgb, #ffffff 11%, transparent);
+  --divider: color-mix(in srgb, #ffffff 9%, transparent);
+  --input: #3c3c3c;
   --ring: oklch(0.62 0.09 255);
   --sidebar: #151515;
   --sidebar-foreground: oklch(0.985 0.004 260);
@@ -59,7 +114,7 @@
   --sidebar-primary-foreground: oklch(0.18 0.01 260);
   --sidebar-accent: var(--hover-fill);
   --sidebar-accent-foreground: var(--hover-fill-foreground);
-  --sidebar-border: #303030;
+  --sidebar-border: #383838;
   --sidebar-ring: oklch(0.62 0.09 255);
 
   --canvas: var(--background);
@@ -71,7 +126,7 @@
   --text-muted: var(--muted-foreground);
   --text-subtle: #6e6e6e;
   --bg-composer: var(--surface-panel);
-  --composer-border: color-mix(in srgb, #ffffff 7%, var(--surface-panel));
+  --composer-border: color-mix(in srgb, #ffffff 11%, var(--surface-panel));
   --composer-protrusion: #212121;
   --success: #3ecf8e;
   --warning: #f0a500;
@@ -86,7 +141,7 @@
   --bg-code: var(--code-bg);
   --bg-hover: var(--hover-fill);
   --bg-active: var(--hover-fill);
-  --border-strong: #3a3a3a;
+  --border-strong: #484848;
   --text-on-dark: var(--code-fg);
   --user-bubble: var(--surface-soft);
   --user-bubble-fg: oklch(0.985 0.004 260);
@@ -128,10 +183,10 @@
   --accent: var(--hover-fill);
   --accent-foreground: var(--hover-fill-foreground);
   --destructive: #dc2626;
-  --border: #e5e6eb;
-  --border-subtle: color-mix(in srgb, #9aa0ab 22%, #ffffff);
-  --divider: color-mix(in srgb, #9aa0ab 16%, #ffffff);
-  --input: #e5e6eb;
+  --border: #d7d9e0;
+  --border-subtle: color-mix(in srgb, #9aa0ab 30%, #ffffff);
+  --divider: color-mix(in srgb, #9aa0ab 24%, #ffffff);
+  --input: #d7d9e0;
   --ring: #0a84ff;
   --sidebar: #f1f2f4;
   --sidebar-foreground: #171717;
@@ -139,7 +194,7 @@
   --sidebar-primary-foreground: #fafafa;
   --sidebar-accent: var(--hover-fill);
   --sidebar-accent-foreground: var(--hover-fill-foreground);
-  --sidebar-border: #d9dbe2;
+  --sidebar-border: #cdd0d8;
   --sidebar-ring: #0a84ff;
   --canvas: var(--background);
   --surface: var(--surface-panel);
@@ -150,7 +205,7 @@
   --text-muted: var(--muted-foreground);
   --text-subtle: #8a8a84;
   --bg-composer: var(--surface-panel);
-  --composer-border: color-mix(in srgb, #9aa0ab 28%, #ffffff);
+  --composer-border: color-mix(in srgb, #9aa0ab 36%, #ffffff);
   --composer-protrusion: #f5f5f5;
   --bg-app: var(--canvas);
   --bg-sidebar: var(--sidebar);
@@ -158,7 +213,7 @@
   --bg-elevated: var(--surface-elevated);
   --bg-hover: var(--hover-fill);
   --bg-active: var(--hover-fill);
-  --border-strong: #c8c9cf;
+  --border-strong: #b8bac2;
   --code-bg: #f1f2f4;
   --code-fg: #171717;
   --user-bubble: var(--surface-soft);
@@ -1209,15 +1264,17 @@ body {
   padding-bottom: 10px;
   border-bottom: 1px solid var(--divider, var(--border));
   box-sizing: border-box;
-}
-.timeline-process-summary::-webkit-details-marker {
-  display: none;
+  background: transparent;
+  border-left: 0;
+  border-right: 0;
+  border-top: 0;
+  text-align: left;
 }
 /* Collapsed → right; open → down */
 .timeline-process-chevron {
   transition: transform 0.16s ease;
 }
-.timeline-process-details[open] > .timeline-process-summary .timeline-process-chevron {
+.timeline-process-details[data-state="open"] .timeline-process-chevron {
   transform: rotate(90deg);
 }
 .timeline-process-body {
@@ -1329,10 +1386,11 @@ body {
   border-radius: 11px;
   background: color-mix(in srgb, var(--surface-panel) 78%, transparent);
 }
-.content-thinking > summary,
-.content-tool-card > summary {
+.content-thinking-trigger,
+.content-tool-card-trigger {
   display: flex;
   min-width: 0;
+  width: 100%;
   cursor: pointer;
   list-style: none;
   align-items: center;
@@ -1340,23 +1398,22 @@ body {
   color: var(--muted-foreground);
   font-size: 12px;
   user-select: none;
+  background: transparent;
+  border: 0;
+  text-align: left;
 }
-.content-thinking > summary::-webkit-details-marker,
-.content-tool-card > summary::-webkit-details-marker {
-  display: none;
-}
-.content-thinking > summary {
+.content-thinking-trigger {
   padding: 8px 10px;
 }
-.content-thinking[open] > summary,
-.content-tool-card[open] > summary {
+.content-tool-card-trigger {
+  padding: 8px 10px;
+}
+.content-thinking[data-state="open"] > .content-thinking-trigger,
+.content-tool-card[data-state="open"] > .content-tool-card-trigger {
   border-bottom: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
 }
 .content-details-chevron {
   transition: transform 0.16s ease;
-}
-details[open] > summary .content-details-chevron {
-  transform: rotate(180deg);
 }
 .content-thinking-body {
   max-height: 280px;
@@ -2439,7 +2496,19 @@ a.btn-secondary:focus-visible {
   background: var(--surface-panel);
 }
 .archived-item {
-  @apply flex items-center gap-3 border-b border-[var(--border)] px-3.5 py-3 last:border-b-0;
+  @apply relative flex items-center gap-3 px-3.5 py-3;
+  border-bottom: none;
+}
+/* Inset divider (same language as settings-row). */
+.archived-item:not(:last-child)::after {
+  content: "";
+  position: absolute;
+  left: 0.875rem;
+  right: 0.875rem;
+  bottom: 0;
+  height: 1px;
+  background: var(--border);
+  pointer-events: none;
 }
 .archived-item-copy {
   @apply min-w-0 flex-1;
@@ -2485,17 +2554,32 @@ a.btn-secondary:focus-visible {
 }
 .settings-card {
   overflow: hidden;
-  border: 1px solid var(--border-subtle, var(--border));
+  border: 1px solid var(--border);
   border-radius: var(--radius-panel);
   background: var(--surface-panel);
 }
+/*
+ * Row rules are inset (left/right) — same idea as the sidebar divider above
+ * 「系统设置」(does not run edge-to-edge of the container).
+ */
 .settings-row {
+  position: relative;
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
   gap: 1.5rem;
-  border-bottom: 1px solid var(--divider, var(--border));
+  border-bottom: none;
   padding: 0.85rem 1rem;
+}
+.settings-row:not(.settings-row-last):not(:last-child)::after {
+  content: "";
+  position: absolute;
+  left: 1rem;
+  right: 1rem;
+  bottom: 0;
+  height: 1px;
+  background: var(--border);
+  pointer-events: none;
 }
 /* Title-only rows: no reserved description space, vertically centered. */
 .settings-row-compact {
@@ -2506,6 +2590,32 @@ a.btn-secondary:focus-visible {
 .settings-row-last,
 .settings-row:last-child {
   border-bottom: 0;
+}
+.settings-row-last::after,
+.settings-row:last-child::after {
+  display: none;
+}
+/* Flush to the row content box (parent padding already insets from the card). */
+.settings-row-flush::after {
+  left: 0;
+  right: 0;
+}
+/* Nested rule inside a padded row (e.g. worktree sub-options). */
+.settings-divider {
+  position: relative;
+  border-top: none !important;
+  padding-top: 0.75rem;
+  margin-top: 0;
+}
+.settings-divider::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 1px;
+  background: var(--border);
+  pointer-events: none;
 }
 .settings-row-title {
   @apply text-[13.5px] leading-snug font-medium text-[var(--foreground)];
@@ -2519,189 +2629,7 @@ a.btn-secondary:focus-visible {
 .settings-row-control-multiline {
   @apply pt-0.5;
 }
-/* Code / shell fields in settings (branch prefix, custom commands) */
-.settings-code-field-wrap {
-  @apply flex flex-col gap-1.5;
-}
-.settings-code-field {
-  @apply w-full border px-3 py-2 font-mono text-[12.5px] leading-snug outline-none transition-[border-color,box-shadow,background];
-  border-radius: var(--radius-field);
-  border-color: var(--border);
-  color: var(--foreground);
-  background: color-mix(in srgb, var(--muted) 45%, transparent);
-}
-.settings-code-field::placeholder {
-  color: var(--text-subtle);
-}
-.settings-code-field:hover:not(:disabled) {
-  border-color: color-mix(in srgb, var(--border) 70%, var(--foreground));
-}
-.settings-code-field:focus {
-  border-color: var(--ring, #0a84ff);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--ring, #0a84ff) 18%, transparent);
-  background: var(--background);
-}
-.settings-code-field:disabled {
-  opacity: 0.5;
-}
-.settings-code-field-sm {
-  @apply h-9 max-w-md py-0;
-}
-.settings-code-field-lg {
-  @apply min-h-[4.5rem] resize-y;
-}
-/* AI prompt textareas (commit / PR instructions) — prose, not shell code */
-.settings-prompt-field {
-  @apply w-full resize-y border px-3 py-2.5 text-[13px] leading-relaxed outline-none transition-[border-color,box-shadow,background];
-  border-radius: var(--radius-field);
-  border-color: var(--border);
-  min-height: 5.5rem;
-  color: var(--foreground);
-  background: color-mix(in srgb, var(--muted) 35%, transparent);
-  font-family:
-    ui-sans-serif,
-    system-ui,
-    -apple-system,
-    "Segoe UI",
-    sans-serif;
-}
-.settings-prompt-field::placeholder {
-  color: var(--text-subtle);
-}
-.settings-prompt-field:hover:not(:disabled) {
-  border-color: color-mix(in srgb, var(--border) 70%, var(--foreground));
-}
-.settings-prompt-field:focus {
-  border-color: var(--ring, #0a84ff);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--ring, #0a84ff) 18%, transparent);
-  background: var(--background);
-}
-.settings-prompt-field:disabled {
-  opacity: 0.5;
-}
-/* Slightly smaller than before (was 22×40 / knob 18). */
-.settings-toggle {
-  position: relative;
-  width: 34px;
-  height: 20px;
-  flex-shrink: 0;
-  border-radius: 999px;
-  transition: background-color 0.15s ease;
-}
-.settings-toggle-on {
-  background: #0a84ff;
-}
-.settings-toggle-off {
-  background: color-mix(in srgb, var(--muted-foreground) 22%, var(--border));
-}
-[data-theme="light"] .settings-toggle-off {
-  background: #d8dbe2;
-}
-.settings-toggle-knob {
-  position: absolute;
-  top: 2px;
-  left: 2px;
-  width: 16px;
-  height: 16px;
-  border-radius: 999px;
-  background: #ffffff;
-  box-shadow: 0 1px 2px rgb(0 0 0 / 0.12);
-  transition: transform 0.15s ease;
-}
-.settings-toggle-on .settings-toggle-knob {
-  transform: translateX(14px);
-}
-.settings-select {
-  @apply h-8 cursor-pointer appearance-none rounded-lg border border-[var(--border)] bg-[var(--secondary,#f1f2f4)] px-3 pr-8 text-[12.5px] text-[var(--foreground)] outline-none;
-  box-sizing: border-box;
-  min-width: 7.5rem;
-  max-width: 14rem;
-  width: auto;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%235c5c57' stroke-width='2'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
-  background-repeat: no-repeat;
-  background-position: right 10px center;
-}
-/* Select sizes sized to typical label content (not one oversized fixed column). */
-.settings-select-sm {
-  width: 7rem;
-  min-width: 7rem;
-  max-width: 7rem;
-}
-.settings-select-md {
-  width: 8.5rem;
-  min-width: 8.5rem;
-  max-width: 8.5rem;
-}
-.settings-select-lg {
-  width: 9.5rem;
-  min-width: 9.5rem;
-  max-width: 9.5rem;
-}
-.settings-select:hover {
-  background-color: var(--hover-fill);
-}
-.settings-select:focus-visible {
-  border-color: color-mix(in srgb, var(--ring, #0a84ff) 55%, var(--border));
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ring, #0a84ff) 22%, transparent);
-}
-.settings-select:disabled {
-  opacity: 0.45;
-  cursor: not-allowed;
-}
-.settings-pill-btn {
-  @apply inline-flex h-7 items-center justify-center rounded-full border border-[var(--border)] bg-[var(--secondary,#f1f2f4)] px-3 text-[12px] leading-none whitespace-nowrap text-[var(--foreground)] transition-colors hover:bg-[var(--hover-fill)] disabled:pointer-events-none disabled:opacity-40;
-}
-.settings-pill-btn-danger:hover:not(:disabled) {
-  border-color: color-mix(in srgb, #ef4444 35%, var(--border));
-  background: color-mix(in srgb, #ef4444 12%, transparent);
-  color: #ef4444;
-}
-.settings-primary-btn {
-  @apply inline-flex h-8 shrink-0 items-center justify-center rounded-lg px-3.5 text-[13px] font-medium text-white transition-colors;
-  background: #0a84ff;
-}
-.settings-primary-btn:hover:not(:disabled) {
-  background: #0077ed;
-}
-.settings-primary-btn:disabled {
-  @apply cursor-not-allowed opacity-40;
-}
-.settings-primary-btn:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 2px color-mix(in srgb, #0a84ff 30%, transparent);
-}
-.settings-inline-link {
-  @apply border-0 bg-transparent p-0 text-[12px] text-[#0a84ff] hover:underline;
-}
-.settings-input {
-  @apply h-8 w-full rounded-lg border border-[var(--border)] bg-transparent px-2.5 text-[13px] text-[var(--foreground)] outline-none;
-  box-sizing: border-box;
-}
-.settings-input:focus-visible {
-  border-color: color-mix(in srgb, #0a84ff 55%, var(--border));
-  box-shadow: 0 0 0 2px color-mix(in srgb, #0a84ff 18%, transparent);
-}
-.settings-input:disabled {
-  opacity: 0.45;
-  cursor: not-allowed;
-}
-/* Numeric fields: wide enough for values like 20000 / 16384, not full form column. */
-.settings-input-num {
-  width: 6.5rem;
-  min-width: 6.5rem;
-  max-width: 6.5rem;
-  padding-right: 0.5rem;
-  text-align: right;
-  font-variant-numeric: tabular-nums;
-  font-feature-settings: "tnum";
-}
-.settings-input-num-sm {
-  width: 5rem;
-  min-width: 5rem;
-  max-width: 5rem;
-}
-
-/* Agent settings: right-align controls; keep natural control widths (no force-stretch). */
+/* Agent settings: right-align controls; keep natural control widths. */
 [data-testid="settings-pi"] .settings-row-control {
   min-width: 9.5rem;
   justify-content: flex-end;
@@ -2709,11 +2637,8 @@ a.btn-secondary:focus-visible {
 .settings-key-row {
   @apply flex w-full min-w-0 items-center gap-2;
 }
-.settings-key-input {
-  @apply min-w-0 flex-1;
-}
 .settings-field {
-  @apply flex flex-col gap-1 px-4 py-2 text-[12px] text-[var(--muted-foreground)];
+  @apply flex flex-col gap-1.5 px-4 py-3 text-[12px] text-muted-foreground;
 }
 /* Add-custom-model dialog — single continuous form, no fake section boxes. */
 .models-custom-dialog {
@@ -2739,11 +2664,6 @@ a.btn-secondary:focus-visible {
 }
 .models-custom-field-span {
   @apply col-span-2;
-}
-.models-custom-field .settings-input,
-.models-custom-field .settings-select {
-  height: 2.25rem;
-  font-size: 13px;
 }
 .models-custom-toolbar {
   @apply col-span-2 mt-0.5 flex flex-wrap items-center gap-2;
@@ -2854,9 +2774,6 @@ a.btn-secondary:focus-visible {
 .provider-oauth-step-copy span {
   @apply text-[11.5px] leading-relaxed text-[var(--muted-foreground)];
 }
-.provider-oauth-step .settings-pill-btn {
-  @apply flex shrink-0 items-center gap-1.5;
-}
 .provider-oauth-device {
   @apply flex flex-col items-center gap-2 rounded-xl border px-4 py-4 text-center;
   border-color: color-mix(in srgb, var(--ring) 26%, var(--border));
@@ -2947,11 +2864,8 @@ a.btn-secondary:focus-visible {
 .provider-oauth-input-row {
   @apply flex items-center gap-2;
 }
-.provider-oauth-input-row .settings-input {
+.provider-oauth-input-row > :first-child {
   @apply min-w-0 flex-1;
-}
-.provider-oauth-input-row .settings-primary-btn {
-  @apply shrink-0;
 }
 .provider-oauth-waiting {
   @apply flex items-center justify-center gap-2 py-2 text-[12px] text-[var(--muted-foreground)];
@@ -3119,9 +3033,6 @@ a.btn-secondary:focus-visible {
   @apply m-0 max-h-64 overflow-auto rounded-lg p-3 font-mono text-[11px] leading-relaxed;
   background: var(--muted);
   color: var(--foreground);
-}
-.settings-range {
-  @apply h-1.5 w-full accent-[#0a84ff];
 }
 .settings-model-badge {
   @apply inline-flex shrink-0 items-center rounded-full px-2 py-0.5 text-[11px] font-medium;

@@ -89,9 +89,7 @@ export function groupModelsByProvider<T extends GroupableModel>(
     groups.push({
       key: "custom",
       label: customLabel,
-      models: custom
-        .slice()
-        .sort((a, b) => (a.name || a.id).localeCompare(b.name || b.id)),
+      models: custom.slice().sort((a, b) => (a.name || a.id).localeCompare(b.name || b.id)),
     });
   }
 

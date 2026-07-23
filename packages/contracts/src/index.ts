@@ -270,6 +270,20 @@ export type RuntimeEvent =
       isError: boolean;
     }
   | {
+      type: "shell.completed";
+      command: string;
+      output: string;
+      exitCode: number;
+      excludeFromContext: boolean;
+    }
+  | { type: "compaction.started"; reason: "manual" | "threshold" | "overflow" }
+  | {
+      type: "compaction.completed";
+      reason: "manual" | "threshold" | "overflow";
+      aborted: boolean;
+      errorMessage?: string;
+    }
+  | {
       type: "custom.message";
       customType: string;
       content: string;
@@ -325,10 +339,14 @@ export interface SessionThreadSummary {
 
 /** History used to rebuild the timeline after open/switch/new/fork. */
 export interface SessionHistoryMessage {
-  role: "user" | "assistant" | "thinking" | "tool" | "system";
+  role: "user" | "assistant" | "thinking" | "tool" | "system" | "shell";
   text: string;
   toolName?: string;
   isError?: boolean;
+  command?: string;
+  exitCode?: number;
+  excludeFromContext?: boolean;
+  title?: string;
   /** pi session entry id when available (fork target). */
   entryId?: string;
   /** ISO timestamp when known. */
@@ -340,13 +358,19 @@ export interface PackageSummary {
   source: string;
   scope: "global" | "project";
   kind: "npm" | "git" | "local" | "unknown";
+  /** True when package entry is object form (path filters / autoload options). */
   filtered: boolean;
+  /**
+   * Whether package resources autoload (pi `autoload !== false`).
+   * When false, entry is kept in settings but resources are not loaded.
+   */
+  enabled: boolean;
   installedPath?: string;
 }
 
 /** Loaded pi resource row for Resources view. */
 export interface ResourceSummary {
-  kind: "extension" | "skill" | "prompt" | "theme" | "context";
+  kind: "extension" | "skill" | "prompt" | "theme" | "context" | "system";
   name: string;
   path: string;
   source?: string;
@@ -435,6 +459,14 @@ export type QueueDeliveryMode = "all" | "one-at-a-time";
 export type DoubleEscapeAction = "fork" | "tree" | "none";
 export type TreeFilterMode = "default" | "no-tools" | "user-only" | "labeled-only" | "all";
 
+export interface PiSettingsInventoryItem {
+  key: string;
+  value: string;
+  source: "default" | "global" | "project" | "merged";
+  configuredScopes: Array<"global" | "project">;
+  writable: boolean;
+}
+
 /** Visual projection of pi global settings.json (safe fields only). */
 export interface PiSettingsView {
   agentDir: string;
@@ -476,6 +508,8 @@ export interface PiSettingsView {
    * Empty/undefined = no scope (all models available for cycling).
    */
   enabledModels: string[];
+  /** Complete known/future settings inventory with effective scope provenance. */
+  inventory: PiSettingsInventoryItem[];
   /** Labels for fields that are projected but not writable via desktop setters. */
   readOnlyFields: string[];
   /** Labels for capabilities deferred / degraded (TUI-only, upstream, etc.). */
@@ -511,6 +545,11 @@ export type PiSettingsPatch = Partial<{
    */
   enabledModels: string[];
 }>;
+
+export interface PiSettingsPatchResult {
+  settings: PiSettingsView;
+  snapshot: HostSnapshot;
+}
 
 /** Semantic kind for localized badges (not raw pi entry types). */
 export type SessionTreeRoleKind =
@@ -575,6 +614,15 @@ export interface SessionExportResult {
   path: string;
 }
 
+/** Result of `/share` (secret GitHub gist via `gh`, same strategy as pi CLI). */
+export interface SessionShareResult {
+  /** pi share viewer URL (preferred link to open). */
+  url: string;
+  /** Raw gist URL from `gh gist create`. */
+  gistUrl: string;
+  gistId: string;
+}
+
 export interface ScopedModelView {
   provider: string;
   id: string;
@@ -612,6 +660,7 @@ export type HostCommand =
       requestId: string;
       message: string;
       streamingBehavior?: "steer" | "followUp";
+      imagePaths?: string[];
     }
   | {
       protocolVersion: typeof IPC_PROTOCOL_VERSION;
@@ -688,6 +737,7 @@ export type HostCommand =
       type: "session.import";
       requestId: string;
       inputPath: string;
+      cwdOverride?: string;
     }
   | {
       protocolVersion: typeof IPC_PROTOCOL_VERSION;
@@ -829,6 +879,8 @@ export type HostCommand =
       requestId: string;
       source: string;
       scope: "global" | "project";
+      /** When true, install/load for this session only (pi `-e` style); do not write settings. */
+      temporary?: boolean;
     }
   | {
       protocolVersion: typeof IPC_PROTOCOL_VERSION;
@@ -842,6 +894,19 @@ export type HostCommand =
       type: "packages.update";
       requestId: string;
       source?: string;
+    }
+  | {
+      protocolVersion: typeof IPC_PROTOCOL_VERSION;
+      type: "packages.setEnabled";
+      requestId: string;
+      source: string;
+      scope: "global" | "project";
+      enabled: boolean;
+    }
+  | {
+      protocolVersion: typeof IPC_PROTOCOL_VERSION;
+      type: "session.share";
+      requestId: string;
     }
   | {
       protocolVersion: typeof IPC_PROTOCOL_VERSION;
@@ -951,6 +1016,9 @@ export type HostEvent =
       snapshot: HostSnapshot;
       threads: SessionThreadSummary[];
       history: SessionHistoryMessage[];
+      cancelled?: boolean;
+      /** Original user text restored into the editor after a pi-style fork. */
+      selectedText?: string;
     }
   | {
       protocolVersion: typeof IPC_PROTOCOL_VERSION;
@@ -969,6 +1037,12 @@ export type HostEvent =
       type: "session.export";
       requestId?: string;
       result: SessionExportResult;
+    }
+  | {
+      protocolVersion: typeof IPC_PROTOCOL_VERSION;
+      type: "session.share";
+      requestId?: string;
+      result: SessionShareResult;
     }
   | {
       protocolVersion: typeof IPC_PROTOCOL_VERSION;
@@ -1060,6 +1134,7 @@ export type HostEvent =
       type: "settings.view";
       requestId?: string;
       settings: PiSettingsView;
+      snapshot?: HostSnapshot;
     }
   | {
       protocolVersion: typeof IPC_PROTOCOL_VERSION;
@@ -1102,6 +1177,8 @@ export interface PixDesktopApi {
     pickFolder(): Promise<string | undefined>;
     /** Select readable files or folders to pass to pi as path context. */
     pickAttachments(): Promise<string[]>;
+    /** Resolve a dropped browser File to its native path without exposing file contents. */
+    pathForFile(file: File): string;
     /**
      * Search project files/folders for the `@` mention menu.
      * Returns absolute paths; empty when cwd missing or nothing matches.
@@ -1110,6 +1187,11 @@ export interface PixDesktopApi {
       query: string,
       options?: { cwd?: string; limit?: number },
     ): Promise<Array<{ path: string; relative: string; kind: "file" | "folder" }>>;
+    /**
+     * Persist an image from the system clipboard (or provided PNG bytes) into a temp file
+     * so Composer can attach it like a picked image.
+     */
+    saveClipboardImage(options?: { bytes?: number[]; ext?: string }): Promise<string | undefined>;
     /**
      * Ensure a default project folder under Documents/Pix/YYYY-MM-DD
      * (reuse today's folder if it already exists). Returns absolute path.
@@ -1267,10 +1349,14 @@ export interface PixDesktopApi {
   /** Visual editor for pi settings.json (global). */
   settings: {
     get(): Promise<PiSettingsView>;
-    patch(patch: PiSettingsPatch): Promise<PiSettingsView>;
+    patch(patch: PiSettingsPatch): Promise<PiSettingsPatchResult>;
   };
   agent: {
-    prompt(message: string, streamingBehavior?: "steer" | "followUp"): Promise<HostSnapshot>;
+    prompt(
+      message: string,
+      streamingBehavior?: "steer" | "followUp",
+      imagePaths?: string[],
+    ): Promise<HostSnapshot>;
     clearQueue(): Promise<HostSnapshot>;
     abort(): Promise<HostSnapshot>;
   };
@@ -1292,6 +1378,7 @@ export interface PixDesktopApi {
       snapshot: HostSnapshot;
       threads: SessionThreadSummary[];
       history: SessionHistoryMessage[];
+      selectedText?: string;
     }>;
     /** Session tree for /tree navigation (same JSONL file). */
     tree(): Promise<SessionTreeView>;
@@ -1316,11 +1403,14 @@ export interface PixDesktopApi {
     export(format: "html" | "jsonl", outputPath?: string): Promise<SessionExportResult>;
     /** Save dialog then export (visual path). */
     exportPick(format: "html" | "jsonl"): Promise<SessionExportResult | undefined>;
-    import(inputPath: string): Promise<{
-      snapshot: HostSnapshot;
-      threads: SessionThreadSummary[];
-      history: SessionHistoryMessage[];
-    }>;
+    import(inputPath: string): Promise<
+      | {
+          snapshot: HostSnapshot;
+          threads: SessionThreadSummary[];
+          history: SessionHistoryMessage[];
+        }
+      | undefined
+    >;
     /** Open dialog then import JSONL (visual path). */
     importPick(): Promise<
       | {
@@ -1331,11 +1421,19 @@ export interface PixDesktopApi {
       | undefined
     >;
     /** pi `!cmd` / `!!cmd` shell injection. */
-    bash(command: string, options?: { excludeFromContext?: boolean }): Promise<{
+    bash(
+      command: string,
+      options?: { excludeFromContext?: boolean },
+    ): Promise<{
       result: SessionBashResult;
       snapshot: HostSnapshot;
     }>;
     copyLastAssistant(): Promise<string | undefined>;
+    /**
+     * Share session as a secret GitHub gist (uses `gh` CLI auth, same as pi `/share`).
+     * Returns viewer URL + gist URL.
+     */
+    share(): Promise<SessionShareResult>;
   };
   runtime: {
     /** Reload extensions/resources without full app restart. */
@@ -1343,9 +1441,19 @@ export interface PixDesktopApi {
   };
   packages: {
     list(): Promise<PackageSummary[]>;
-    install(source: string, scope: "global" | "project"): Promise<PackageSummary[]>;
+    install(
+      source: string,
+      scope: "global" | "project",
+      options?: { temporary?: boolean },
+    ): Promise<PackageSummary[]>;
     remove(source: string, scope: "global" | "project"): Promise<PackageSummary[]>;
     update(source?: string): Promise<PackageSummary[]>;
+    /** Toggle package autoload (pi object-form `autoload: false` when disabled). */
+    setEnabled(
+      source: string,
+      scope: "global" | "project",
+      enabled: boolean,
+    ): Promise<PackageSummary[]>;
     /**
      * Search official pi packages from the npm registry (`keywords:pi-package`).
      * Used by the Discover tab for one-click install. Supports pagination via `from`.
@@ -1755,6 +1863,25 @@ function isRuntimeEvent(value: unknown): value is RuntimeEvent {
         typeof value.output === "string" &&
         typeof value.isError === "boolean"
       );
+    case "shell.completed":
+      return (
+        typeof value.command === "string" &&
+        typeof value.output === "string" &&
+        typeof value.exitCode === "number" &&
+        typeof value.excludeFromContext === "boolean"
+      );
+    case "compaction.started":
+      return (
+        value.reason === "manual" || value.reason === "threshold" || value.reason === "overflow"
+      );
+    case "compaction.completed":
+      return (
+        (value.reason === "manual" ||
+          value.reason === "threshold" ||
+          value.reason === "overflow") &&
+        typeof value.aborted === "boolean" &&
+        (value.errorMessage === undefined || typeof value.errorMessage === "string")
+      );
     case "custom.message":
       return typeof value.customType === "string" && typeof value.content === "string";
     case "custom.entry":
@@ -1784,7 +1911,8 @@ export function isHostCommand(value: unknown): value is HostCommand {
       typeof value.message === "string" &&
       (value.streamingBehavior === undefined ||
         value.streamingBehavior === "steer" ||
-        value.streamingBehavior === "followUp")
+        value.streamingBehavior === "followUp") &&
+      (value.imagePaths === undefined || isStringArray(value.imagePaths))
     );
   }
   if (value.type === "util.complete-text") {
@@ -1799,7 +1927,11 @@ export function isHostCommand(value: unknown): value is HostCommand {
   if (value.type === "session.fork") {
     return value.entryId === undefined || typeof value.entryId === "string";
   }
-  if (value.type === "session.tree" || value.type === "session.clone" || value.type === "session.info") {
+  if (
+    value.type === "session.tree" ||
+    value.type === "session.clone" ||
+    value.type === "session.info"
+  ) {
     return true;
   }
   if (value.type === "session.navigateTree") {
@@ -1819,7 +1951,12 @@ export function isHostCommand(value: unknown): value is HostCommand {
       (value.outputPath === undefined || typeof value.outputPath === "string")
     );
   }
-  if (value.type === "session.import") return typeof value.inputPath === "string";
+  if (value.type === "session.import") {
+    return (
+      typeof value.inputPath === "string" &&
+      (value.cwdOverride === undefined || typeof value.cwdOverride === "string")
+    );
+  }
   if (value.type === "session.bash") {
     return (
       typeof value.command === "string" &&
@@ -1860,12 +1997,22 @@ export function isHostCommand(value: unknown): value is HostCommand {
   if (value.type === "packages.list" || value.type === "resources.list") return true;
   if (value.type === "packages.install" || value.type === "packages.remove") {
     return (
-      typeof value.source === "string" && (value.scope === "global" || value.scope === "project")
+      typeof value.source === "string" &&
+      (value.scope === "global" || value.scope === "project") &&
+      (value.temporary === undefined || typeof value.temporary === "boolean")
     );
   }
   if (value.type === "packages.update") {
     return value.source === undefined || typeof value.source === "string";
   }
+  if (value.type === "packages.setEnabled") {
+    return (
+      typeof value.source === "string" &&
+      (value.scope === "global" || value.scope === "project") &&
+      typeof value.enabled === "boolean"
+    );
+  }
+  if (value.type === "session.share") return true;
   if (value.type === "test.photonProbe") return typeof value.imagePath === "string";
   if (value.type === "extensionUi.respond") {
     return (
@@ -1902,11 +2049,17 @@ function isSessionThreadSummary(value: unknown): value is SessionThreadSummary {
 
 function isSessionHistoryMessage(value: unknown): value is SessionHistoryMessage {
   if (!isRecord(value) || typeof value.text !== "string") return false;
-  if (!["user", "assistant", "thinking", "tool", "system"].includes(String(value.role))) {
+  if (!["user", "assistant", "thinking", "tool", "system", "shell"].includes(String(value.role))) {
     return false;
   }
   if (value.toolName !== undefined && typeof value.toolName !== "string") return false;
   if (value.isError !== undefined && typeof value.isError !== "boolean") return false;
+  if (value.command !== undefined && typeof value.command !== "string") return false;
+  if (value.exitCode !== undefined && typeof value.exitCode !== "number") return false;
+  if (value.excludeFromContext !== undefined && typeof value.excludeFromContext !== "boolean") {
+    return false;
+  }
+  if (value.title !== undefined && typeof value.title !== "string") return false;
   if (value.entryId !== undefined && typeof value.entryId !== "string") return false;
   if (value.timestamp !== undefined && typeof value.timestamp !== "string") return false;
   return true;
@@ -1922,6 +2075,7 @@ function isPackageSummary(value: unknown): value is PackageSummary {
       value.kind === "local" ||
       value.kind === "unknown") &&
     typeof value.filtered === "boolean" &&
+    typeof value.enabled === "boolean" &&
     (value.installedPath === undefined || typeof value.installedPath === "string")
   );
 }
@@ -1931,7 +2085,7 @@ function isResourceSummary(value: unknown): value is ResourceSummary {
     isRecord(value) &&
     typeof value.name === "string" &&
     typeof value.path === "string" &&
-    ["extension", "skill", "prompt", "theme", "context"].includes(String(value.kind)) &&
+    ["extension", "skill", "prompt", "theme", "context", "system"].includes(String(value.kind)) &&
     (value.source === undefined || typeof value.source === "string")
   );
 }
@@ -2002,7 +2156,8 @@ export function isHostEvent(value: unknown): value is HostEvent {
         Array.isArray(value.threads) &&
         value.threads.every(isSessionThreadSummary) &&
         Array.isArray(value.history) &&
-        value.history.every(isSessionHistoryMessage)
+        value.history.every(isSessionHistoryMessage) &&
+        (value.cancelled === undefined || typeof value.cancelled === "boolean")
       );
     case "session.tree":
       return isSessionTreeView(value.tree);
@@ -2013,6 +2168,13 @@ export function isHostEvent(value: unknown): value is HostEvent {
         isRecord(value.result) &&
         (value.result.format === "html" || value.result.format === "jsonl") &&
         typeof value.result.path === "string"
+      );
+    case "session.share":
+      return (
+        isRecord(value.result) &&
+        typeof value.result.url === "string" &&
+        typeof value.result.gistUrl === "string" &&
+        typeof value.result.gistId === "string"
       );
     case "session.bash":
       return (
@@ -2074,7 +2236,10 @@ export function isHostEvent(value: unknown): value is HostEvent {
         isProviderOAuthUpdate(value.update)
       );
     case "settings.view":
-      return isPiSettingsView(value.settings);
+      return (
+        isPiSettingsView(value.settings) &&
+        (value.snapshot === undefined || isHostSnapshot(value.snapshot))
+      );
     case "util.text":
       return typeof value.text === "string";
     default:
@@ -2178,6 +2343,20 @@ function isPiSettingsView(value: unknown): value is PiSettingsView {
     typeof value.httpIdleTimeoutMs === "number" &&
     Array.isArray(value.enabledModels) &&
     value.enabledModels.every((item) => typeof item === "string") &&
+    Array.isArray(value.inventory) &&
+    value.inventory.every(
+      (item) =>
+        isRecord(item) &&
+        typeof item.key === "string" &&
+        typeof item.value === "string" &&
+        (item.source === "default" ||
+          item.source === "global" ||
+          item.source === "project" ||
+          item.source === "merged") &&
+        Array.isArray(item.configuredScopes) &&
+        item.configuredScopes.every((scope) => scope === "global" || scope === "project") &&
+        typeof item.writable === "boolean",
+    ) &&
     Array.isArray(value.readOnlyFields) &&
     value.readOnlyFields.every((item) => typeof item === "string") &&
     Array.isArray(value.degradedCapabilities) &&

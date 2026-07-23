@@ -1,7 +1,21 @@
 /**
- * Codex / ChatGPT–aligned settings chrome: section title, cards, rows, toggles.
+ * Settings chrome layout + thin wrappers around default shadcn form controls.
+ * Controls intentionally use stock shadcn styling (no custom skins).
  */
+import * as React from "react";
 import type { ReactNode } from "react";
+import { Button, buttonVariants } from "@/components/ui/button";
+import { Field, FieldContent, FieldDescription, FieldLabel } from "@/components/ui/field";
+import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Switch } from "@/components/ui/switch";
+import { Textarea } from "@/components/ui/textarea";
 import { cn } from "../../lib/utils.ts";
 
 export function SettingsPageShell(props: {
@@ -26,9 +40,7 @@ export function SettingsPageShell(props: {
 export function SettingsSectionBlock(props: {
   label: string;
   testId?: string;
-  /** When false, never render the group heading (page title is enough). */
   showLabel?: boolean;
-  /** `code` = monospaced identifier style (provider / custom / scoped). */
   labelVariant?: "default" | "code";
   children: ReactNode;
 }) {
@@ -54,7 +66,6 @@ function hasSettingsDescription(description: ReactNode | undefined): boolean {
   if (description == null || description === false || description === true) return false;
   if (typeof description === "string") return description.trim().length > 0;
   if (typeof description === "number") return true;
-  // Empty fragments / arrays should not reserve description space.
   if (Array.isArray(description)) return description.some((item) => hasSettingsDescription(item));
   return true;
 }
@@ -68,7 +79,8 @@ export function SettingsRow(props: {
 }) {
   const withDescription = hasSettingsDescription(props.description);
   return (
-    <div
+    <Field
+      orientation="horizontal"
       className={cn(
         "settings-row",
         !withDescription && "settings-row-compact",
@@ -76,10 +88,12 @@ export function SettingsRow(props: {
       )}
       data-testid={props.testId}
     >
-      <div className="settings-row-copy min-w-0 flex-1">
-        <div className="settings-row-title">{props.title}</div>
-        {withDescription ? <div className="settings-row-desc">{props.description}</div> : null}
-      </div>
+      <FieldContent className="settings-row-copy min-w-0 flex-1">
+        <FieldLabel className="settings-row-title">{props.title}</FieldLabel>
+        {withDescription ? (
+          <FieldDescription className="settings-row-desc">{props.description}</FieldDescription>
+        ) : null}
+      </FieldContent>
       <div
         className={cn(
           "settings-row-control shrink-0",
@@ -88,7 +102,7 @@ export function SettingsRow(props: {
       >
         {props.control}
       </div>
-    </div>
+    </Field>
   );
 }
 
@@ -100,25 +114,14 @@ export function SettingsToggle(props: {
   "aria-label"?: string;
 }) {
   return (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={props.checked}
+    <Switch
+      checked={props.checked}
+      onCheckedChange={props.onChange}
+      disabled={props.disabled}
       aria-label={props["aria-label"]}
       data-testid={props.testId}
       data-on={props.checked ? "true" : "false"}
-      disabled={props.disabled}
-      className={cn(
-        "settings-toggle",
-        props.checked ? "settings-toggle-on" : "settings-toggle-off",
-        props.disabled && "opacity-40",
-      )}
-      onClick={() => {
-        if (!props.disabled) props.onChange(!props.checked);
-      }}
-    >
-      <span className="settings-toggle-knob" />
-    </button>
+    />
   );
 }
 
@@ -128,32 +131,65 @@ export function SettingsSelect(props: {
   options: Array<{ value: string; label: string }>;
   testId?: string;
   disabled?: boolean;
-  /** sm ≈ 7.5rem, md ≈ 11rem (default), lg ≈ 14rem for long i18n labels. */
-  size?: "sm" | "md" | "lg";
+  /** Layout width only — visual style stays default shadcn Select. */
+  size?: "sm" | "md" | "lg" | "default";
   className?: string;
+  fullWidth?: boolean;
 }) {
-  const sizeClass =
-    props.size === "sm"
-      ? "settings-select-sm"
+  // Radix Select disallows empty string item values.
+  const EMPTY = "__pix_settings_empty__";
+  const options = props.options.map((opt) => ({
+    ...opt,
+    value: opt.value === "" ? EMPTY : opt.value,
+  }));
+  const value = props.value === "" ? EMPTY : props.value;
+  const selected = options.find((opt) => opt.value === value);
+  const widthClass = props.fullWidth
+    ? "w-full min-w-0"
+    : props.size === "sm"
+      ? "w-28"
       : props.size === "lg"
-        ? "settings-select-lg"
-        : "settings-select-md";
+        ? "w-40"
+        : props.size === "md"
+          ? "w-36"
+          : undefined;
   return (
-    <select
-      data-testid={props.testId}
-      className={cn("settings-select", sizeClass, props.className)}
-      value={props.value}
-      disabled={props.disabled}
-      onChange={(e) => props.onChange(e.target.value)}
+    <Select
+      value={value}
+      onValueChange={(next) => props.onChange(next === EMPTY ? "" : next)}
+      {...(props.disabled !== undefined ? { disabled: props.disabled } : {})}
     >
-      {props.options.map((opt) => (
-        <option key={opt.value} value={opt.value}>
-          {opt.label}
-        </option>
-      ))}
-    </select>
+      <SelectTrigger
+        size="default"
+        data-testid={props.testId}
+        className={cn(widthClass, props.className)}
+      >
+        <SelectValue placeholder={selected?.label ?? props.value} />
+      </SelectTrigger>
+      <SelectContent className="z-[11000]" position="popper" align="end">
+        {options.map((opt) => (
+          <SelectItem key={opt.value} value={opt.value}>
+            {opt.label}
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
   );
 }
+
+export const SettingsInput = React.forwardRef<
+  HTMLInputElement,
+  React.ComponentProps<"input"> & { mono?: boolean }
+>(({ className, mono, type = "text", ...props }, ref) => (
+  <Input ref={ref} type={type} className={cn(mono && "font-mono", className)} {...props} />
+));
+SettingsInput.displayName = "SettingsInput";
+
+export const SettingsTextarea = React.forwardRef<
+  HTMLTextAreaElement,
+  React.ComponentProps<"textarea">
+>(({ className, ...props }, ref) => <Textarea ref={ref} className={cn(className)} {...props} />);
+SettingsTextarea.displayName = "SettingsTextarea";
 
 export function SettingsPillButton(props: {
   label: string;
@@ -161,24 +197,79 @@ export function SettingsPillButton(props: {
   testId?: string;
   disabled?: boolean;
   danger?: boolean;
+  type?: "button" | "submit" | "reset";
+  className?: string;
 }) {
   return (
-    <button
-      type="button"
+    <Button
+      type={props.type ?? "button"}
       data-testid={props.testId}
       disabled={props.disabled}
-      className={cn("settings-pill-btn", props.danger && "settings-pill-btn-danger")}
+      variant={props.danger ? "destructive" : "secondary"}
+      size="sm"
+      className={props.className}
       onClick={props.onClick}
     >
       {props.label}
-    </button>
+    </Button>
   );
 }
 
-export function SettingsLink(props: { children: ReactNode; onClick?: () => void }) {
+export function SettingsButton(props: React.ComponentProps<typeof Button> & { testId?: string }) {
+  const { testId, className, size = "sm", variant = "secondary", ...rest } = props;
   return (
-    <button type="button" className="settings-inline-link" onClick={props.onClick}>
-      {props.children}
-    </button>
+    <Button
+      {...(testId !== undefined ? { "data-testid": testId } : {})}
+      size={size}
+      variant={variant}
+      className={className}
+      {...rest}
+    />
   );
 }
+
+export function SettingsIconButton(
+  props: React.ComponentProps<typeof Button> & { testId?: string },
+) {
+  const { testId, className, size = "icon-sm", variant = "ghost", ...rest } = props;
+  return (
+    <Button
+      {...(testId !== undefined ? { "data-testid": testId } : {})}
+      size={size}
+      variant={variant}
+      className={className}
+      {...rest}
+    />
+  );
+}
+
+export function SettingsLink(props: {
+  children: ReactNode;
+  onClick?: () => void;
+  testId?: string;
+  className?: string;
+}) {
+  return (
+    <Button
+      type="button"
+      variant="link"
+      data-testid={props.testId}
+      className={cn("h-auto p-0", props.className)}
+      onClick={props.onClick}
+    >
+      {props.children}
+    </Button>
+  );
+}
+
+export {
+  Button,
+  buttonVariants,
+  Input,
+  Textarea,
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+};

@@ -10,15 +10,7 @@ import type {
 } from "@pix/contracts";
 import type { ReactNode } from "react";
 import { useEffect, useState } from "react";
-import {
-  Bot,
-  GitBranch,
-  Minimize2,
-  Settings2,
-  Tag,
-  User,
-  Wrench,
-} from "lucide-react";
+import { Bot, GitBranch, Minimize2, Settings2, Tag, User, Wrench } from "lucide-react";
 import { t, type Locale, type MessageKey } from "../lib/i18n.ts";
 import { cn } from "../lib/utils.ts";
 
@@ -66,12 +58,19 @@ export function SessionTreePanel(props: {
   tree: SessionTreeView | undefined;
   loading?: boolean | undefined;
   error?: string | undefined;
+  mode?: "navigate" | "fork";
   onClose: () => void;
-  onNavigate: (node: SessionTreeNodeView) => void | Promise<void>;
+  onNavigate: (
+    node: SessionTreeNodeView,
+    options?: { summarize?: boolean; customInstructions?: string },
+  ) => void | Promise<void>;
   onRefresh: () => void | Promise<void>;
 }) {
+  const [summaryMode, setSummaryMode] = useState<"none" | "auto" | "custom">("none");
+  const [customInstructions, setCustomInstructions] = useState("");
   if (!props.open) return null;
   const tr = (key: MessageKey, vars?: Record<string, string>) => t(props.locale, key, vars);
+  const forkMode = props.mode === "fork";
   const fileLabel = props.tree?.sessionFile
     ? props.tree.sessionFile.split(/[/\\]/).pop() || props.tree.sessionFile
     : props.tree?.sessionId?.slice(0, 8);
@@ -86,12 +85,14 @@ export function SessionTreePanel(props: {
         className="palette-panel session-tree-panel"
         role="dialog"
         aria-modal="true"
-        aria-label={tr("sessionTree.title")}
+        aria-label={tr(forkMode ? "sessionTree.forkTitle" : "sessionTree.title")}
         onClick={(event) => event.stopPropagation()}
       >
         <div className="session-tree-header">
           <div className="min-w-0 flex-1">
-            <div className="text-sm font-semibold tracking-tight">{tr("sessionTree.title")}</div>
+            <div className="text-sm font-semibold tracking-tight">
+              {tr(forkMode ? "sessionTree.forkTitle" : "sessionTree.title")}
+            </div>
             <div
               className="mt-0.5 truncate text-[11px] text-[var(--text-subtle)]"
               title={props.tree?.sessionFile ?? props.tree?.sessionId}
@@ -122,6 +123,37 @@ export function SessionTreePanel(props: {
           </div>
         ) : null}
 
+        <div className="px-4 py-2 text-xs text-[var(--text-subtle)]">
+          {tr(forkMode ? "sessionTree.forkHint" : "sessionTree.hint")}
+        </div>
+
+        {!forkMode ? (
+          <div className="flex flex-col gap-2 border-y border-[var(--border-subtle)] px-4 py-2">
+            <label className="flex items-center justify-between gap-3 text-xs">
+              <span>{tr("sessionTree.summary")}</span>
+              <select
+                className="palette-input max-w-[240px] py-1"
+                value={summaryMode}
+                onChange={(event) =>
+                  setSummaryMode(event.target.value as "none" | "auto" | "custom")
+                }
+              >
+                <option value="none">{tr("sessionTree.summary.none")}</option>
+                <option value="auto">{tr("sessionTree.summary.auto")}</option>
+                <option value="custom">{tr("sessionTree.summary.custom")}</option>
+              </select>
+            </label>
+            {summaryMode === "custom" ? (
+              <input
+                className="palette-input py-1"
+                value={customInstructions}
+                onChange={(event) => setCustomInstructions(event.target.value)}
+                placeholder={tr("sessionTree.summary.placeholder")}
+              />
+            ) : null}
+          </div>
+        ) : null}
+
         <ul className="session-tree-list" data-testid="session-tree-list">
           {props.loading ? (
             <li className="session-tree-empty">{tr("sessionTree.loading")}</li>
@@ -145,7 +177,22 @@ export function SessionTreePanel(props: {
                     data-testid={`session-tree-node-${node.id}`}
                     data-active={node.active ? "true" : "false"}
                     data-role={kind}
-                    onClick={() => void props.onNavigate(node)}
+                    disabled={forkMode && kind !== "user"}
+                    onClick={() =>
+                      void props.onNavigate(
+                        node,
+                        forkMode
+                          ? undefined
+                          : summaryMode === "none"
+                            ? { summarize: false }
+                            : summaryMode === "auto"
+                              ? { summarize: true }
+                              : {
+                                  summarize: true,
+                                  customInstructions: customInstructions.trim(),
+                                },
+                      )
+                    }
                     // Native tooltip: full message when the row is ellipsized.
                     title={fullText}
                   >
@@ -187,6 +234,7 @@ export function SessionInfoPanel(props: {
   onRefresh: () => void | Promise<void>;
   onRename: (name: string) => void | Promise<void>;
   onExport: (format: "html" | "jsonl") => void | Promise<void>;
+  onShare?: () => void | Promise<void>;
   onClone: () => void | Promise<void>;
   onCompact: () => void | Promise<void>;
 }) {
@@ -272,6 +320,16 @@ export function SessionInfoPanel(props: {
               </div>
             </div>
             <div className="flex flex-wrap gap-2 pt-1">
+              {props.onShare ? (
+                <button
+                  type="button"
+                  className="settings-pill-btn"
+                  data-testid="session-info-share"
+                  onClick={() => void props.onShare?.()}
+                >
+                  {tr("sessionInfo.share")}
+                </button>
+              ) : null}
               <button
                 type="button"
                 className="settings-pill-btn"

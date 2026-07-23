@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vite-plus/test";
-import { projectSessionHistory } from "../src/index.ts";
+import { projectHistoryFromSessionManager, projectSessionHistory } from "../src/index.ts";
 
 describe("session history projection", () => {
   it("preserves ordered thinking and assistant text blocks", () => {
@@ -19,6 +19,55 @@ describe("session history projection", () => {
     ).toEqual([
       { role: "thinking", text: "Inspect context", entryId: "entry-1" },
       { role: "assistant", text: "Here is the result", entryId: "entry-1" },
+    ]);
+  });
+
+  it("projects persisted shell executions with command metadata", () => {
+    expect(
+      projectSessionHistory(
+        [
+          {
+            role: "bashExecution",
+            command: "printf hello",
+            output: "hello",
+            exitCode: 0,
+            excludeFromContext: true,
+          },
+        ],
+        ["entry-shell"],
+      ),
+    ).toEqual([
+      {
+        role: "shell",
+        text: "hello",
+        command: "printf hello",
+        exitCode: 0,
+        excludeFromContext: true,
+        entryId: "entry-shell",
+      },
+    ]);
+  });
+
+  it("projects compaction entries instead of dropping them", () => {
+    expect(
+      projectHistoryFromSessionManager({
+        getEntries: () => [
+          {
+            type: "compaction",
+            id: "compact-1",
+            timestamp: "2026-01-01T00:00:00.000Z",
+            summary: "Earlier work summary",
+          },
+        ],
+      }),
+    ).toEqual([
+      {
+        role: "system",
+        title: "Compaction",
+        text: "Earlier work summary",
+        entryId: "compact-1",
+        timestamp: "2026-01-01T00:00:00.000Z",
+      },
     ]);
   });
 });

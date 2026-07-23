@@ -50,6 +50,42 @@ export function attachmentLabel(path: string): string {
   return normalized.split("/").pop() || path;
 }
 
+/**
+ * Token immediately before the caret that looks like a path segment (for Tab completion).
+ * Supports `@query` and bare relative paths like `src/co`.
+ */
+export function pathTokenBeforeCursor(
+  value: string,
+  cursor: number,
+): { start: number; end: number; query: string; atMention: boolean } | undefined {
+  const safeCursor = Math.max(0, Math.min(cursor, value.length));
+  const before = value.slice(0, safeCursor);
+  const match = /(?:^|[\s([{"'`])(@?)([^\s"'`()[\]{}]*)$/.exec(before);
+  if (!match) return undefined;
+  const at = match[1] === "@";
+  const query = match[2] ?? "";
+  if (!at && !query) return undefined;
+  // Bare tokens need a path-ish shape (slash, dot segment, or alnum start).
+  if (!at && !/[./\\]/.test(query) && !/^[A-Za-z0-9_-]+$/.test(query)) return undefined;
+  const raw = `${match[1] ?? ""}${query}`;
+  const start = safeCursor - raw.length;
+  return { start, end: safeCursor, query, atMention: at };
+}
+
+/** Replace the path token before the cursor with a completed relative path. */
+export function applyPathTokenCompletion(
+  value: string,
+  cursor: number,
+  completion: string,
+): { value: string; cursor: number } | undefined {
+  const token = pathTokenBeforeCursor(value, cursor);
+  if (!token) return undefined;
+  const insert = token.atMention ? `@${completion}` : completion;
+  const next = `${value.slice(0, token.start)}${insert}${value.slice(token.end)}`;
+  const nextCursor = token.start + insert.length;
+  return { value: next, cursor: nextCursor };
+}
+
 export type AttachmentKind =
   | "archive"
   | "code"
@@ -133,6 +169,10 @@ export function attachmentPresentation(path: string): AttachmentPresentation {
       typeLabel: extension.toLocaleUpperCase(),
     }
   );
+}
+
+export function isPromptImagePath(path: string): boolean {
+  return /\.(?:png|jpe?g|gif|webp)$/i.test(attachmentLabel(path));
 }
 
 function escapeXml(value: string): string {

@@ -1,8 +1,17 @@
 /**
  * App-level error modal (not used for pi agent timeline failures).
+ * Built on shadcn AlertDialog.
  */
-import { useEffect } from "react";
-import { createPortal } from "react-dom";
+import { useRef } from "react";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 
 export function ErrorDialog(props: {
   open: boolean;
@@ -12,62 +21,46 @@ export function ErrorDialog(props: {
   onClose: () => void;
   testId?: string;
 }) {
-  useEffect(() => {
-    if (!props.open) return;
-    const onKey = (ev: KeyboardEvent) => {
-      if (ev.key === "Escape" || ev.key === "Enter") {
-        ev.preventDefault();
-        props.onClose();
-      }
-    };
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  }, [props.open, props.onClose]);
+  const settledRef = useRef(false);
+  if (!props.message) return null;
 
-  if (!props.open || !props.message || typeof document === "undefined") return null;
-
-  return createPortal(
-    <div
-      className="fixed inset-0 z-[11000] flex items-center justify-center bg-black/50 p-4"
-      data-testid={props.testId ?? "error-dialog"}
-      role="alertdialog"
-      aria-modal="true"
-      aria-labelledby="error-dialog-title"
-      aria-describedby="error-dialog-message"
-      onMouseDown={(e) => {
-        if (e.target === e.currentTarget) props.onClose();
+  return (
+    <AlertDialog
+      open={props.open}
+      onOpenChange={(open) => {
+        if (open) {
+          settledRef.current = false;
+          return;
+        }
+        if (!settledRef.current) props.onClose();
       }}
     >
-      <div
-        className="surface-panel w-full max-w-sm p-4 shadow-2xl"
-        onMouseDown={(e) => e.stopPropagation()}
+      <AlertDialogContent
+        size="default"
+        className="max-w-sm gap-3 p-4"
+        data-testid={props.testId ?? "error-dialog"}
       >
-        <h2
-          id="error-dialog-title"
-          className="m-0 mb-2 text-[15px] font-semibold text-[var(--foreground)]"
-        >
-          {props.title}
-        </h2>
-        <p
-          id="error-dialog-message"
-          className="m-0 mb-4 text-[13px] leading-relaxed whitespace-pre-wrap text-[var(--muted-foreground)]"
-          data-testid="error-dialog-message"
-        >
-          {props.message}
-        </p>
-        <div className="flex justify-end">
-          <button
-            type="button"
+        <AlertDialogHeader>
+          <AlertDialogTitle className="text-[15px] font-semibold">{props.title}</AlertDialogTitle>
+          <AlertDialogDescription
+            className="text-[13px] leading-relaxed whitespace-pre-wrap"
+            data-testid="error-dialog-message"
+          >
+            {props.message}
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogAction
             data-testid="error-dialog-confirm"
-            className="h-8 rounded-lg bg-[#0a84ff] px-3.5 text-[13px] font-medium text-white hover:bg-[#0a84ff]/90"
-            autoFocus
-            onClick={props.onClose}
+            onClick={() => {
+              settledRef.current = true;
+              props.onClose();
+            }}
           >
             {props.confirmLabel}
-          </button>
-        </div>
-      </div>
-    </div>,
-    document.body,
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
   );
 }

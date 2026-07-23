@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from "electron";
+import { contextBridge, ipcRenderer, webUtils } from "electron";
 import type { HostEvent, PixDesktopApi } from "@pix/contracts";
 
 const api: PixDesktopApi = {
@@ -24,8 +24,11 @@ const api: PixDesktopApi = {
     openPath: (cwd, options) => ipcRenderer.invoke("pix:workspace:open-path", cwd, options),
     pickFolder: () => ipcRenderer.invoke("pix:workspace:pick-folder"),
     pickAttachments: () => ipcRenderer.invoke("pix:workspace:pick-attachments"),
+    pathForFile: (file) => webUtils.getPathForFile(file),
     searchPaths: (query, options) =>
       ipcRenderer.invoke("pix:workspace:search-paths", query ?? "", options),
+    saveClipboardImage: (options) =>
+      ipcRenderer.invoke("pix:workspace:save-clipboard-image", options),
     ensureDefault: () => ipcRenderer.invoke("pix:workspace:ensure-default"),
     ensureConversation: () => ipcRenderer.invoke("pix:workspace:ensure-conversation"),
     removeRecent: (cwd) => ipcRenderer.invoke("pix:workspace:remove-recent", cwd),
@@ -105,8 +108,8 @@ const api: PixDesktopApi = {
     patch: (patch) => ipcRenderer.invoke("pix:settings:patch", patch),
   },
   agent: {
-    prompt: (message, streamingBehavior) =>
-      ipcRenderer.invoke("pix:agent:prompt", message, streamingBehavior),
+    prompt: (message, streamingBehavior, imagePaths) =>
+      ipcRenderer.invoke("pix:agent:prompt", message, streamingBehavior, imagePaths),
     clearQueue: () => ipcRenderer.invoke("pix:agent:queue-clear"),
     abort: () => ipcRenderer.invoke("pix:agent:abort"),
   },
@@ -129,15 +132,19 @@ const api: PixDesktopApi = {
     importPick: () => ipcRenderer.invoke("pix:session:import-pick"),
     bash: (command, options) => ipcRenderer.invoke("pix:session:bash", command, options),
     copyLastAssistant: () => ipcRenderer.invoke("pix:session:copy-last"),
+    share: () => ipcRenderer.invoke("pix:session:share"),
   },
   runtime: {
     reload: () => ipcRenderer.invoke("pix:runtime:reload"),
   },
   packages: {
     list: () => ipcRenderer.invoke("pix:packages:list"),
-    install: (source, scope) => ipcRenderer.invoke("pix:packages:install", source, scope),
+    install: (source, scope, options) =>
+      ipcRenderer.invoke("pix:packages:install", source, scope, options),
     remove: (source, scope) => ipcRenderer.invoke("pix:packages:remove", source, scope),
     update: (source) => ipcRenderer.invoke("pix:packages:update", source),
+    setEnabled: (source, scope, enabled) =>
+      ipcRenderer.invoke("pix:packages:set-enabled", source, scope, enabled),
     searchCatalog: (query, size, from) =>
       ipcRenderer.invoke("pix:packages:search-catalog", query, size, from),
   },

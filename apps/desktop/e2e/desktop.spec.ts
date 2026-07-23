@@ -79,9 +79,9 @@ test.describe("Desktop shell Playwright E2E (macOS Electron)", () => {
     const image = timeline.locator(".content-image-button");
     await expect(image).toBeVisible();
     await image.click();
-    await expect(page.locator('.content-image-preview[role="dialog"]')).toBeVisible();
+    await expect(page.locator('.content-image-preview-dialog[role="dialog"]')).toBeVisible();
     await page.keyboard.press("Escape");
-    await expect(page.locator('.content-image-preview[role="dialog"]')).toHaveCount(0);
+    await expect(page.locator('.content-image-preview-dialog[role="dialog"]')).toHaveCount(0);
     await expect(timeline.locator("video.content-video")).toHaveAttribute("src", /demo\.mp4$/);
     await expect(timeline.locator("video.content-video")).toHaveAttribute("controls", "");
 
@@ -98,10 +98,12 @@ test.describe("Desktop shell Playwright E2E (macOS Electron)", () => {
     await startHost(page);
     await sendPrompt(page, "Render the structured timeline fixture.");
 
-    const thinking = page.locator('[data-kind="thinking"]');
+    const process = page.getByTestId("timeline-process");
+    await expect(process).toBeVisible();
+    await process.locator(".timeline-process-summary").click();
+    const thinking = process.locator('[data-kind="thinking"]');
     await expect(thinking).toBeVisible();
-    await expect(thinking.locator("details")).not.toHaveAttribute("open", "");
-    await thinking.locator("summary").click();
+    await thinking.locator(".content-thinking-trigger").click();
     await expect(thinking).toContainText("Check the structured timeline first.");
     await expect(page.locator('[data-kind="assistant"]')).toContainText(
       "Structured timeline ready.",
@@ -126,8 +128,8 @@ test.describe("Desktop shell Playwright E2E (macOS Electron)", () => {
     await page.getByTestId("prompt-input").fill("@");
     await expect(page.getByTestId("composer-attach-menu")).toBeVisible();
     await expect(page.getByTestId("composer-attach-files")).toBeVisible();
-    await expect(page.getByTestId("composer-attach-menu")).toContainText("/e2e-review");
-    await expect(page.getByTestId("composer-attach-menu")).not.toContainText("/skill:e2e-skill");
+    await expect(page.getByTestId("composer-attach-menu")).toContainText("fixture.txt");
+    await expect(page.getByTestId("composer-attach-menu")).not.toContainText("/e2e-review");
 
     // Default prompt asks the fake model to use the read tool.
     await page.getByTestId("prompt-input").fill("Use the read tool for the fixture file.");
@@ -143,10 +145,11 @@ test.describe("Desktop shell Playwright E2E (macOS Electron)", () => {
     await expect(page.getByTestId("event-log").first()).toContainText("tool.");
     await expect(page.getByTestId("runtime-snapshot").first()).toContainText('"id": "pix-fake"');
     await expect(page.getByTestId("event-log").first()).toContainText("message.delta");
+    await page.getByTestId("timeline-process").locator(".timeline-process-summary").click();
     const toolCard = page.locator('[data-kind="tool"]');
     await expect(toolCard).toHaveCount(1);
     await expect(toolCard).toHaveAttribute("data-status", "completed");
-    await toolCard.locator("summary").click();
+    await toolCard.locator(".content-tool-card-trigger").click();
     await expect(toolCard).toContainText("Pix Playwright E2E fixture");
 
     // Mid-stream abort: fake model hangs after the first abort delta.
@@ -359,7 +362,8 @@ test.describe("Desktop shell Playwright E2E (macOS Electron)", () => {
         };
       });
 
-    await page.getByTestId("appearance-theme").selectOption("light");
+    await page.getByTestId("appearance-theme").click();
+    await page.getByRole("option", { name: /Light|浅色/ }).click();
     await expect(page.getByTestId("pix-app")).toHaveAttribute("data-theme", "light");
     await expect
       .poll(() => pix.app.evaluate(({ nativeTheme }) => nativeTheme.themeSource))
@@ -374,7 +378,8 @@ test.describe("Desktop shell Playwright E2E (macOS Electron)", () => {
     await page.getByTestId("appearance-translucent").click();
     await expect(page.getByTestId("sidebar")).toHaveAttribute("data-translucent", "true");
 
-    await page.getByTestId("appearance-theme").selectOption("dark");
+    await page.getByTestId("appearance-theme").click();
+    await page.getByRole("option", { name: /Dark|深色/ }).click();
     await expect(page.getByTestId("pix-app")).toHaveAttribute("data-theme", "dark");
     await expect
       .poll(() => pix.app.evaluate(({ nativeTheme }) => nativeTheme.themeSource))
@@ -402,9 +407,14 @@ test.describe("Desktop shell Playwright E2E (macOS Electron)", () => {
     // Fork probe lives under Developer (not primary chrome).
     await page.getByTestId("developer-summary").click();
     await page.getByTestId("fork-thread").click();
+    const forkPanel = page.getByTestId("session-tree-panel");
+    await expect(forkPanel).toBeVisible();
+    await forkPanel.locator("button.session-tree-item:not([disabled])").last().click();
     await expect(page.getByTestId("host-status").first()).toContainText("Agent Host ready", {
       timeout: 30_000,
     });
+    await expect(page.getByTestId("prompt-input")).toHaveValue("fork base message");
+    await sendPrompt(page, "forked base message");
     await expect
       .poll(async () => conversationSessionButtons(page).count(), {
         timeout: 30_000,
@@ -741,7 +751,8 @@ test.describe("Desktop shell Playwright E2E (macOS Electron)", () => {
     // Locale may live on general
     const localeSelect = page.getByTestId("appearance-locale");
     if (await localeSelect.count()) {
-      await localeSelect.selectOption("en");
+      await localeSelect.click();
+      await page.getByRole("option", { name: "English" }).click();
     }
     await page.getByTestId("settings-nav-appearance").click();
     await expect(page.getByTestId("settings-appearance")).toBeVisible();
@@ -754,6 +765,10 @@ test.describe("Desktop shell Playwright E2E (macOS Electron)", () => {
   test("overlay scrollbar highlights, stays visible on hover, and follows dragging", async ({
     page,
   }) => {
+    // Keep geometry assertions independent of Electron's throttled animation clock.
+    await page.addStyleTag({
+      content: ".pix-scroll-thumb::before { transition: none !important; }",
+    });
     const scrollId = await page.evaluate(() => {
       const host = document.createElement("div");
       host.className = "pix-scroll";

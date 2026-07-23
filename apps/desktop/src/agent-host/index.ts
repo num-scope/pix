@@ -16,6 +16,7 @@ import {
 } from "@pix/contracts";
 import type { AgentSessionEvent } from "@earendil-works/pi-coding-agent";
 import { readFile } from "node:fs/promises";
+import { extname } from "node:path";
 import { ProviderOAuthCoordinator, type OAuthModelRuntime } from "./provider-oauth.ts";
 
 interface ElectronParentPort {
@@ -37,6 +38,26 @@ function post(event: HostEvent): void {
 
 const providerOAuth = new ProviderOAuthCoordinator(post);
 const testOAuthProviders = new Set<string>();
+
+const PROMPT_IMAGE_MIME_TYPES: Record<string, string> = {
+  ".gif": "image/gif",
+  ".jpeg": "image/jpeg",
+  ".jpg": "image/jpeg",
+  ".png": "image/png",
+  ".webp": "image/webp",
+};
+
+async function loadPromptImages(paths: string[]) {
+  return Promise.all(
+    paths.map(async (path) => {
+      const mimeType = PROMPT_IMAGE_MIME_TYPES[extname(path).toLowerCase()];
+      if (!mimeType) throw new Error(`Unsupported prompt image type: ${path}`);
+      const bytes = await readFile(path);
+      if (bytes.byteLength === 0) throw new Error(`Prompt image is empty: ${path}`);
+      return { type: "image" as const, data: bytes.toString("base64"), mimeType };
+    }),
+  );
+}
 
 function testOAuthRuntime(provider: string): OAuthModelRuntime | undefined {
   if (process.env.PIX_ENABLE_TEST_COMMANDS !== "1") return undefined;
@@ -127,7 +148,12 @@ function errorEvent(error: unknown, requestId?: string): HostEvent {
   const event: HostEvent = {
     protocolVersion: IPC_PROTOCOL_VERSION,
     type: "host.error",
-    code: "HOST_COMMAND_FAILED",
+    code:
+      error instanceof Error && error.name === "MissingSessionCwdError"
+        ? "SESSION_IMPORT_CWD_MISSING"
+        : error instanceof Error && error.name === "SessionImportFileNotFoundError"
+          ? "SESSION_IMPORT_FILE_NOT_FOUND"
+          : "HOST_COMMAND_FAILED",
     message: error instanceof Error ? error.message : "Unknown Agent Host error",
   };
   if (requestId) event.requestId = requestId;
@@ -181,6 +207,17 @@ function projectRuntimeEvent(event: AgentSessionEvent): RuntimeEvent | undefined
         steering: [...event.steering],
         followUp: [...event.followUp],
       };
+    case "compaction_start":
+      return { type: "compaction.started", reason: event.reason };
+    case "compaction_end": {
+      const completed: RuntimeEvent = {
+        type: "compaction.completed",
+        reason: event.reason,
+        aborted: event.aborted,
+      };
+      if (event.errorMessage) completed.errorMessage = event.errorMessage;
+      return completed;
+    }
     case "message_start": {
       const content = userMessageText(event.message);
       return content === undefined ? undefined : { type: "user.message", content };
@@ -325,9 +362,17 @@ async function handleCommand(command: HostCommand): Promise<void> {
       }
       case "agent.prompt": {
         if (!handle) throw new Error("Agent Host is not ready");
+        const promptOptions: {
+          streamingBehavior?: "steer" | "followUp";
+          images?: Awaited<ReturnType<typeof loadPromptImages>>;
+        } = {};
+        if (command.streamingBehavior) promptOptions.streamingBehavior = command.streamingBehavior;
+        if (command.imagePaths?.length) {
+          promptOptions.images = await loadPromptImages(command.imagePaths);
+        }
         await handle.runtime.session.prompt(
           command.message,
-          command.streamingBehavior ? { streamingBehavior: command.streamingBehavior } : undefined,
+          Object.keys(promptOptions).length > 0 ? promptOptions : undefined,
         );
         post({
           protocolVersion: IPC_PROTOCOL_VERSION,
@@ -420,14 +465,16 @@ async function handleCommand(command: HostCommand): Promise<void> {
         if (result.cancelled) throw new Error("Session fork was cancelled");
         sequence = 0;
         bindRuntimeEvents(handle);
-        post({
+        const opened: HostEvent = {
           protocolVersion: IPC_PROTOCOL_VERSION,
           type: "session.opened",
           requestId: command.requestId,
           snapshot: handle.snapshot(sequence),
           threads: await handle.listSessions(),
           history: handle.historyMessages(),
-        });
+        };
+        if (result.selectedText !== undefined) opened.selectedText = result.selectedText;
+        post(opened);
         break;
       }
       case "session.tree": {
@@ -444,9 +491,7 @@ async function handleCommand(command: HostCommand): Promise<void> {
         if (!handle) throw new Error("Agent Host is not ready");
         const nav = await handle.navigateTree(command.targetId, {
           ...(command.summarize !== undefined ? { summarize: command.summarize } : {}),
-          ...(command.customInstructions
-            ? { customInstructions: command.customInstructions }
-            : {}),
+          ...(command.customInstructions ? { customInstructions: command.customInstructions } : {}),
         });
         sequence = 0;
         post({
@@ -456,6 +501,7 @@ async function handleCommand(command: HostCommand): Promise<void> {
           snapshot: { ...nav.snapshot, sequence },
           threads: await handle.listSessions(),
           history: handle.historyMessages(),
+          cancelled: nav.cancelled,
         });
         break;
       }
@@ -517,9 +563,19 @@ async function handleCommand(command: HostCommand): Promise<void> {
         });
         break;
       }
+      case "session.share": {
+        if (!handle) throw new Error("Agent Host is not ready");
+        post({
+          protocolVersion: IPC_PROTOCOL_VERSION,
+          type: "session.share",
+          requestId: command.requestId,
+          result: await handle.shareSession(),
+        });
+        break;
+      }
       case "session.import": {
         if (!handle) throw new Error("Agent Host is not ready");
-        const result = await handle.importSession(command.inputPath);
+        const result = await handle.importSession(command.inputPath, command.cwdOverride);
         if (result.cancelled) throw new Error("Session import was cancelled");
         sequence = 0;
         bindRuntimeEvents(handle);
@@ -761,11 +817,13 @@ async function handleCommand(command: HostCommand): Promise<void> {
       }
       case "settings.patch": {
         if (!handle) throw new Error("Agent Host is not ready");
+        const settings = await handle.patchPiSettings(command.patch);
         post({
           protocolVersion: IPC_PROTOCOL_VERSION,
           type: "settings.view",
           requestId: command.requestId,
-          settings: await handle.patchPiSettings(command.patch),
+          settings,
+          snapshot: handle.snapshot(++sequence),
         });
         break;
       }
@@ -781,24 +839,46 @@ async function handleCommand(command: HostCommand): Promise<void> {
       }
       case "packages.install": {
         if (!handle) throw new Error("Agent Host is not ready");
-        const packages = await handle.installPackage(command.source, command.scope, (event) => {
-          const progress: HostEvent = {
-            protocolVersion: IPC_PROTOCOL_VERSION,
-            type: "packages.progress",
-            requestId: command.requestId,
-            action: event.action,
-            source: event.source,
-            phase: event.phase,
-          };
-          if (event.message) progress.message = event.message;
-          post(progress);
-        });
+        const packages = await handle.installPackage(
+          command.source,
+          command.scope,
+          (event) => {
+            const progress: HostEvent = {
+              protocolVersion: IPC_PROTOCOL_VERSION,
+              type: "packages.progress",
+              requestId: command.requestId,
+              action: event.action,
+              source: event.source,
+              phase: event.phase,
+            };
+            if (event.message) progress.message = event.message;
+            post(progress);
+          },
+          command.temporary ? { temporary: true } : undefined,
+        );
         post({
           protocolVersion: IPC_PROTOCOL_VERSION,
           type: "packages.changed",
           requestId: command.requestId,
           packages,
           action: "install",
+          source: command.source,
+        });
+        break;
+      }
+      case "packages.setEnabled": {
+        if (!handle) throw new Error("Agent Host is not ready");
+        const packages = await handle.setPackageEnabled(
+          command.source,
+          command.scope,
+          command.enabled,
+        );
+        post({
+          protocolVersion: IPC_PROTOCOL_VERSION,
+          type: "packages.changed",
+          requestId: command.requestId,
+          packages,
+          action: "update",
           source: command.source,
         });
         break;

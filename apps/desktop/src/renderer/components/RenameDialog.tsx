@@ -1,8 +1,17 @@
 /**
  * In-app rename modal (Electron disables window.prompt by default).
+ * Built on shadcn Dialog + Input.
  */
 import { useEffect, useRef, useState } from "react";
-import { createPortal } from "react-dom";
+import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
 
 export function RenameDialog(props: {
   open: boolean;
@@ -17,9 +26,11 @@ export function RenameDialog(props: {
 }) {
   const [value, setValue] = useState(props.initialValue);
   const inputRef = useRef<HTMLInputElement | null>(null);
+  const settledRef = useRef(false);
 
   useEffect(() => {
     if (!props.open) return;
+    settledRef.current = false;
     setValue(props.initialValue);
     const id = window.setTimeout(() => {
       inputRef.current?.focus();
@@ -28,48 +39,37 @@ export function RenameDialog(props: {
     return () => window.clearTimeout(id);
   }, [props.open, props.initialValue]);
 
-  useEffect(() => {
-    if (!props.open) return;
-    const onKey = (ev: KeyboardEvent) => {
-      if (ev.key === "Escape") {
-        ev.preventDefault();
-        props.onCancel();
-      }
-    };
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  }, [props.open, props.onCancel]);
-
-  if (!props.open || typeof document === "undefined") return null;
-
   function submit() {
-    props.onConfirm(value.trim());
+    const next = value.trim();
+    if (!next) return;
+    settledRef.current = true;
+    props.onConfirm(next);
   }
 
-  return createPortal(
-    <div
-      className="fixed inset-0 z-[11000] flex items-center justify-center bg-black/50 p-4"
-      data-testid={props.testId ?? "rename-dialog"}
-      role="dialog"
-      aria-modal="true"
-      aria-label={props.title}
-      onMouseDown={(e) => {
-        if (e.target === e.currentTarget) props.onCancel();
+  return (
+    <Dialog
+      open={props.open}
+      onOpenChange={(open) => {
+        if (open) {
+          settledRef.current = false;
+          return;
+        }
+        if (!settledRef.current) props.onCancel();
       }}
     >
-      <div
-        className="surface-panel w-full max-w-sm p-4 shadow-2xl"
-        onMouseDown={(e) => e.stopPropagation()}
+      <DialogContent
+        showCloseButton={false}
+        className="max-w-sm gap-3 p-4"
+        data-testid={props.testId ?? "rename-dialog"}
+        onOpenAutoFocus={(e) => e.preventDefault()}
       >
-        <h2 className="m-0 mb-3 text-[15px] font-semibold text-[var(--foreground)]">
-          {props.title}
-        </h2>
+        <DialogHeader>
+          <DialogTitle className="text-[15px] font-semibold">{props.title}</DialogTitle>
+        </DialogHeader>
         {props.label ? (
-          <label className="mb-1.5 block text-[12px] text-[var(--muted-foreground)]">
-            {props.label}
-          </label>
+          <label className="block text-[12px] text-muted-foreground">{props.label}</label>
         ) : null}
-        <input
+        <Input
           ref={inputRef}
           data-testid="rename-dialog-input"
           value={value}
@@ -80,29 +80,32 @@ export function RenameDialog(props: {
               submit();
             }
           }}
-          className="mb-4 h-9 w-full rounded-lg border border-[var(--border)] bg-transparent px-3 text-[13px] text-[var(--foreground)] outline-none focus:border-[var(--ring,#0a84ff)]"
+          className="h-9 text-[13px]"
         />
-        <div className="flex justify-end gap-2">
-          <button
+        <DialogFooter className="gap-2 sm:justify-end">
+          <Button
             type="button"
+            variant="ghost"
+            size="sm"
             data-testid="rename-dialog-cancel"
-            className="h-8 rounded-lg px-3 text-[13px] text-[var(--muted-foreground)] hover:bg-[var(--hover-fill)]"
-            onClick={props.onCancel}
+            onClick={() => {
+              settledRef.current = true;
+              props.onCancel();
+            }}
           >
             {props.cancelLabel ?? "Cancel"}
-          </button>
-          <button
+          </Button>
+          <Button
             type="button"
+            size="sm"
             data-testid="rename-dialog-confirm"
-            className="h-8 rounded-lg bg-[#0a84ff] px-3 text-[13px] font-medium text-white hover:bg-[#0a84ff]/90 disabled:opacity-40"
             disabled={!value.trim()}
             onClick={submit}
           >
             {props.confirmLabel ?? "OK"}
-          </button>
-        </div>
-      </div>
-    </div>,
-    document.body,
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }

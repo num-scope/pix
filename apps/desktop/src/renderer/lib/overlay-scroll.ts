@@ -112,16 +112,13 @@ export function thumbOffsetInTrack(input: {
  */
 function thumbRightEdge(host: HTMLElement, hostRect: DOMRect): number {
   // Nested menus / panels: always stick to the host's own right edge.
-  if (
-    host.classList.contains("composer-suggest-scroll") ||
-    host.closest("[data-floating-menu]")
-  ) {
+  if (host.classList.contains("composer-suggest-scroll") || host.closest("[data-floating-menu]")) {
     return hostRect.right;
   }
   const shell = document.querySelector<HTMLElement>('[data-testid="shell-main"]');
   if (shell?.isConnected) {
     const shellRect = shell.getBoundingClientRect();
-    if (shellRect.width > 0 && hostRect.right <= shellRect.right + 2) {
+    if (shellRect.width > 0 && Math.abs(hostRect.right - shellRect.right) <= 2) {
       return shellRect.right;
     }
   }

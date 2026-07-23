@@ -51,7 +51,10 @@ function extractText(content: unknown): string {
       parts.push(record.text);
     }
   }
-  return parts.join(" ").replace(/[\n\t]+/g, " ").trim();
+  return parts
+    .join(" ")
+    .replace(/[\n\t]+/g, " ")
+    .trim();
 }
 
 function hasTextContent(content: unknown): boolean {
@@ -112,7 +115,10 @@ function previewFromEntry(entry: TreeEntryLike, roleKind: SessionTreeNodeView["r
   // Keep enough text for hover tooltips; UI truncates with CSS ellipsis.
   const max = 4000;
   if (typeof entry.summary === "string" && entry.summary.trim()) {
-    return entry.summary.replace(/[\n\t]+/g, " ").trim().slice(0, max);
+    return entry.summary
+      .replace(/[\n\t]+/g, " ")
+      .trim()
+      .slice(0, max);
   }
   const content = entry.message?.content;
   const text = extractText(content);
@@ -156,8 +162,7 @@ function passesFilter(
   ) {
     const content = entry.message?.content;
     const stop = entry.message?.stopReason;
-    const isErrorOrAborted =
-      Boolean(stop) && stop !== "stop" && stop !== "toolUse";
+    const isErrorOrAborted = Boolean(stop) && stop !== "stop" && stop !== "toolUse";
     if (!hasTextContent(content) && !isErrorOrAborted) {
       return false;
     }
@@ -165,9 +170,7 @@ function passesFilter(
 
   switch (filterMode) {
     case "user-only":
-      return entry.type === "message" || entry.message
-        ? entry.message?.role === "user"
-        : false;
+      return entry.type === "message" || entry.message ? entry.message?.role === "user" : false;
     case "no-tools":
       if (isSettingsEntry(entry)) return false;
       if (
@@ -344,9 +347,8 @@ export function listBuiltinSlashCommands(): BuiltinSlashCommand[] {
     },
     {
       name: "share",
-      description: "Share session (requires GitHub token)",
+      description: "Share session as secret GitHub gist (requires gh auth)",
       source: "builtin",
-      upcoming: true,
     },
     { name: "copy", description: "Copy last assistant reply", source: "builtin" },
     { name: "reload", description: "Reload extensions and resources", source: "builtin" },

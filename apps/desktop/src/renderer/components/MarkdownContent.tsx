@@ -1,6 +1,5 @@
 /** Streaming-safe rich content renderer for assistant messages. */
-import { memo, useEffect, useState, type MouseEvent, type ReactNode } from "react";
-import { createPortal } from "react-dom";
+import { memo, useState, type MouseEvent, type ReactNode } from "react";
 import { ExternalLink, Maximize2, X } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import rehypeKatex from "rehype-katex";
@@ -8,6 +7,8 @@ import rehypeSanitize from "rehype-sanitize";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import "katex/dist/katex.min.css";
+import { Button } from "@/components/ui/button";
+import { Dialog, DialogClose, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { ContentCodeBlock } from "./ContentCodeBlock.tsx";
 import { contentMediaKind, contentSourceUrl, parseContentLink } from "../lib/content-rendering.ts";
 import { t, type Locale } from "../lib/i18n.ts";
@@ -67,15 +68,6 @@ function MediaContent(props: {
   const source = props.src ? contentSourceUrl(props.src, props.workspacePath) : "";
   const kind = contentMediaKind(props.src ?? "");
 
-  useEffect(() => {
-    if (!previewOpen) return;
-    const close = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setPreviewOpen(false);
-    };
-    window.addEventListener("keydown", close);
-    return () => window.removeEventListener("keydown", close);
-  }, [previewOpen]);
-
   if (!source) return null;
   if (kind === "video") {
     return (
@@ -98,32 +90,33 @@ function MediaContent(props: {
           <Maximize2 className="size-3.5" />
         </span>
       </button>
-      {previewOpen
-        ? createPortal(
-            <div
-              className="content-image-preview"
-              role="dialog"
-              aria-modal="true"
-              aria-label={props.alt || t(props.locale, "timeline.imagePreview")}
-              onClick={() => setPreviewOpen(false)}
+      <Dialog open={previewOpen} onOpenChange={setPreviewOpen}>
+        <DialogContent
+          showCloseButton={false}
+          className="content-image-preview-dialog max-h-[min(92vh,960px)] max-w-[min(96vw,1200px)] border-none bg-transparent p-0 shadow-none ring-0"
+          aria-label={props.alt || t(props.locale, "timeline.imagePreview")}
+        >
+          <DialogTitle className="sr-only">
+            {props.alt || t(props.locale, "timeline.imagePreview")}
+          </DialogTitle>
+          <DialogClose asChild>
+            <Button
+              type="button"
+              variant="secondary"
+              size="icon"
+              className="content-image-preview-close absolute top-3 right-3 z-10"
+              aria-label={t(props.locale, "timeline.imagePreviewClose")}
             >
-              <button
-                type="button"
-                className="content-image-preview-close"
-                onClick={() => setPreviewOpen(false)}
-                aria-label={t(props.locale, "timeline.imagePreviewClose")}
-              >
-                <X className="size-4" />
-              </button>
-              <img
-                src={source}
-                alt={props.alt ?? ""}
-                onClick={(event) => event.stopPropagation()}
-              />
-            </div>,
-            document.body,
-          )
-        : null}
+              <X className="size-4" />
+            </Button>
+          </DialogClose>
+          <img
+            src={source}
+            alt={props.alt ?? ""}
+            className="max-h-[min(90vh,920px)] w-full rounded-lg object-contain"
+          />
+        </DialogContent>
+      </Dialog>
     </>
   );
 }

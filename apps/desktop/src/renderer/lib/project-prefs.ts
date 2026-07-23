@@ -211,9 +211,7 @@ export function sortProjectPaths(
   if (list.length <= 1) return list;
 
   if (mode === "recent") {
-    const recentIndex = new Map(
-      (options?.recentOrder ?? []).map((p, i) => [normalizePath(p), i]),
-    );
+    const recentIndex = new Map((options?.recentOrder ?? []).map((p, i) => [normalizePath(p), i]));
     return list.sort((a, b) => {
       const ai = recentIndex.has(normalizePath(a))
         ? (recentIndex.get(normalizePath(a)) ?? Number.MAX_SAFE_INTEGER)

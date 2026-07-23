@@ -69,7 +69,6 @@ export function listDesktopBuiltinSlashCommands(locale: Locale = "zh"): BuiltinS
       name: "share",
       description: tr("slash.builtin.share"),
       source: "builtin",
-      upcoming: true,
     },
     { name: "copy", description: tr("slash.builtin.copy"), source: "builtin" },
     { name: "reload", description: tr("slash.builtin.reload"), source: "builtin" },
@@ -77,11 +76,7 @@ export function listDesktopBuiltinSlashCommands(locale: Locale = "zh"): BuiltinS
   ];
 }
 
-function localizeBuiltinDescription(
-  locale: Locale,
-  name: string,
-  fallback: string,
-): string {
+function localizeBuiltinDescription(locale: Locale, name: string, fallback: string): string {
   const key = BUILTIN_DESC_KEYS[name];
   return key ? t(locale, key) : fallback;
 }
@@ -112,7 +107,7 @@ export function buildUnifiedSlashCatalog(
   // Prefer localized builtin descriptions even when snapshot already listed them.
   return merged
     .map((item) => {
-      if (item.source === "builtin" || BUILTIN_DESC_KEYS[item.name]) {
+      if (item.source === "builtin") {
         return {
           ...item,
           description: localizeBuiltinDescription(locale, item.name, item.description),
@@ -176,15 +171,21 @@ export type BuiltinSlashAction =
   | { type: "clone" }
   | { type: "compact"; instructions?: string }
   | { type: "export"; format: "html" | "jsonl" }
-  | { type: "import" }
+  | { type: "import"; path?: string }
   | { type: "copy" }
+  | { type: "share" }
   | { type: "reload" }
   | { type: "hotkeys" }
   | { type: "upcoming"; name: string }
   | { type: "runtime"; command: string; args: string }
   | { type: "unknown"; name: string };
 
-export function resolveBuiltinSlash(name: string, args: string): BuiltinSlashAction {
+export function resolveBuiltinSlash(
+  name: string,
+  args: string,
+  source?: string,
+): BuiltinSlashAction {
+  if (source && source !== "builtin") return { type: "runtime", command: name, args };
   switch (name) {
     case "new":
       return { type: "new" };
@@ -210,19 +211,31 @@ export function resolveBuiltinSlash(name: string, args: string): BuiltinSlashAct
       return { type: "export", format };
     }
     case "import":
-      return { type: "import" };
+      return args ? { type: "import", path: stripMatchingQuotes(args) } : { type: "import" };
     case "copy":
       return { type: "copy" };
+    case "share":
+      return { type: "share" };
     case "reload":
       return { type: "reload" };
     case "hotkeys":
     case "keybindings":
       return { type: "hotkeys" };
-    case "share":
-      return { type: "upcoming", name };
     default:
       return { type: "runtime", command: name, args };
   }
+}
+
+function stripMatchingQuotes(value: string): string {
+  const trimmed = value.trim();
+  if (
+    trimmed.length >= 2 &&
+    ((trimmed.startsWith('"') && trimmed.endsWith('"')) ||
+      (trimmed.startsWith("'") && trimmed.endsWith("'")))
+  ) {
+    return trimmed.slice(1, -1);
+  }
+  return trimmed;
 }
 
 export function slashToPromptText(item: SlashCommandSummary | UnifiedSlashItem, args = ""): string {

@@ -11,6 +11,8 @@ import {
   useMemo,
   useRef,
   useState,
+  type ClipboardEvent,
+  type DragEvent,
   type FormEvent,
   type KeyboardEvent,
   type MouseEvent as ReactMouseEvent,
@@ -80,15 +82,27 @@ import {
   FloatingMenu,
   type AnchorRect,
 } from "./FloatingMenu.tsx";
-import { Button } from "./ui/button.tsx";
-import { Textarea } from "./ui/textarea.tsx";
+import {
+  Attachment,
+  AttachmentAction,
+  AttachmentActions,
+  AttachmentContent,
+  AttachmentDescription,
+  AttachmentGroup,
+  AttachmentMedia,
+  AttachmentTitle,
+} from "@/components/ui/attachment";
+import { Button } from "@/components/ui/button";
+import { Textarea } from "@/components/ui/textarea";
 import { t, type Locale } from "../lib/i18n.ts";
 import { groupModelsByProvider } from "../lib/model-groups.ts";
 import {
   addResourceQuery,
+  applyPathTokenCompletion,
   attachmentLabel,
   attachmentPresentation,
   filterSlashCommands,
+  pathTokenBeforeCursor,
   slashCommandQuery,
   type AttachmentKind,
 } from "../lib/composer-suggestions.ts";
@@ -787,7 +801,13 @@ export function Composer(props: ComposerProps) {
     }
     // Anchor to the card surface so the menu covers protrusion instead of clearing its full height.
     setSuggestionAnchor(anchorFromElement(composerCardRef.current ?? rootRef.current));
-  }, [slashPanelOpen, resourcePanelOpen, props.prompt, props.showProjectBar, props.attachments.length]);
+  }, [
+    slashPanelOpen,
+    resourcePanelOpen,
+    props.prompt,
+    props.showProjectBar,
+    props.attachments.length,
+  ]);
 
   useEffect(() => {
     setSuggestionIndex(-1);
@@ -868,6 +888,69 @@ export function Composer(props: ComposerProps) {
     requestAnimationFrame(() => props.composerRef.current?.focus());
   }
 
+  function commitResourceIndex(index: number) {
+    if (index === 0) {
+      void selectAttachments();
+      return;
+    }
+    if (index <= pathSuggestions.length) {
+      const hit = pathSuggestions[index - 1];
+      if (hit) selectProjectPath(hit.path);
+      return;
+    }
+    const pkg = packageSuggestions[index - 1 - pathSuggestions.length];
+    if (pkg) selectPackage(pkg);
+  }
+
+  async function completePathWithTab(textarea: HTMLTextAreaElement) {
+    const cursor = textarea.selectionStart ?? props.prompt.length;
+    const token = pathTokenBeforeCursor(props.prompt, cursor);
+    if (!token) return false;
+    // When @ menu already has path hits, Tab accepts highlighted/first path.
+    if (resourcePanelOpen && pathSuggestions.length > 0) {
+      const index =
+        suggestionIndex > 0 && suggestionIndex <= pathSuggestions.length ? suggestionIndex : 1;
+      const hit = pathSuggestions[index - 1];
+      if (hit) {
+        if (token.atMention) {
+          selectProjectPath(hit.path);
+        } else {
+          const applied = applyPathTokenCompletion(props.prompt, cursor, hit.relative);
+          if (applied) {
+            props.onPromptChange(applied.value);
+            requestAnimationFrame(() => {
+              textarea.setSelectionRange(applied.cursor, applied.cursor);
+              textarea.focus();
+            });
+          }
+        }
+        return true;
+      }
+    }
+    try {
+      const rows = await window.pix.workspace.searchPaths(token.query, {
+        ...(props.workspacePath ? { cwd: props.workspacePath } : {}),
+        limit: 8,
+      });
+      const hit = rows[0];
+      if (!hit) return false;
+      if (token.atMention) {
+        selectProjectPath(hit.path);
+        return true;
+      }
+      const applied = applyPathTokenCompletion(props.prompt, cursor, hit.relative);
+      if (!applied) return false;
+      props.onPromptChange(applied.value);
+      requestAnimationFrame(() => {
+        textarea.setSelectionRange(applied.cursor, applied.cursor);
+        textarea.focus();
+      });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   function handleComposerKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
     const panel = slashPanelOpen ? "slash" : resourcePanelOpen ? "resource" : undefined;
     if (panel) {
@@ -890,26 +973,95 @@ export function Composer(props: ComposerProps) {
         dismissSuggestions();
         return;
       }
+      // Tab completes path / accepts first resource suggestion (pi editor parity).
+      if (event.key === "Tab" && !event.shiftKey) {
+        event.preventDefault();
+        if (panel === "resource") {
+          if (suggestionIndex >= 0) commitResourceIndex(suggestionIndex);
+          else if (pathSuggestions.length > 0) commitResourceIndex(1);
+          else void selectAttachments();
+          return;
+        }
+        if (panel === "slash" && slashSuggestions.length > 0) {
+          const command = slashSuggestions[suggestionIndex >= 0 ? suggestionIndex : 0];
+          if (command) selectCommand(command);
+          return;
+        }
+      }
       // Only commit a menu choice when something is highlighted (keyboard or hover).
       if (event.key === "Enter" && !event.shiftKey && itemCount > 0 && suggestionIndex >= 0) {
         event.preventDefault();
-        if (panel === "resource") {
-          if (suggestionIndex === 0) void selectAttachments();
-          else if (suggestionIndex <= pathSuggestions.length) {
-            const hit = pathSuggestions[suggestionIndex - 1];
-            if (hit) selectProjectPath(hit.path);
-          } else {
-            const pkg = packageSuggestions[suggestionIndex - 1 - pathSuggestions.length];
-            if (pkg) selectPackage(pkg);
-          }
-        } else {
+        if (panel === "resource") commitResourceIndex(suggestionIndex);
+        else {
           const command = slashSuggestions[suggestionIndex];
           if (command) selectCommand(command);
         }
         return;
       }
+    } else if (event.key === "Tab" && !event.shiftKey && !event.metaKey && !event.ctrlKey) {
+      // Bare path Tab completion when no slash/@ panel is open.
+      const token = pathTokenBeforeCursor(
+        props.prompt,
+        event.currentTarget.selectionStart ?? props.prompt.length,
+      );
+      if (token) {
+        event.preventDefault();
+        void completePathWithTab(event.currentTarget);
+        return;
+      }
     }
     props.onKeyDown(event);
+  }
+
+  async function handleComposerPaste(event: ClipboardEvent<HTMLTextAreaElement>) {
+    const items = event.clipboardData?.items;
+    if (!items?.length) return;
+    let hasImage = false;
+    for (const item of items) {
+      if (item.kind === "file" && item.type.startsWith("image/")) {
+        hasImage = true;
+        break;
+      }
+    }
+    if (!hasImage) return;
+    event.preventDefault();
+    try {
+      // Prefer system clipboard image via main (handles OS paste reliably).
+      const saved = await window.pix.workspace.saveClipboardImage();
+      if (saved) {
+        props.onAddAttachments?.([saved]);
+        return;
+      }
+      // Fallback: file from clipboard data
+      for (const item of items) {
+        if (item.kind !== "file" || !item.type.startsWith("image/")) continue;
+        const file = item.getAsFile();
+        if (!file) continue;
+        const buffer = new Uint8Array(await file.arrayBuffer());
+        const ext = file.type.includes("jpeg") || file.type.includes("jpg") ? "jpg" : "png";
+        const path = await window.pix.workspace.saveClipboardImage({
+          bytes: Array.from(buffer),
+          ext,
+        });
+        if (path) props.onAddAttachments?.([path]);
+        break;
+      }
+    } catch {
+      // ignore paste failures — user can still attach via picker
+    }
+  }
+
+  function handleComposerDrop(event: DragEvent<HTMLTextAreaElement>) {
+    const files = event.dataTransfer?.files;
+    if (!files?.length) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const paths: string[] = [];
+    for (const file of files) {
+      const filePath = window.pix.workspace.pathForFile(file);
+      if (typeof filePath === "string" && filePath) paths.push(filePath);
+    }
+    if (paths.length) props.onAddAttachments?.(paths);
   }
 
   const filteredBranches = useMemo(() => {
@@ -1150,40 +1302,44 @@ export function Composer(props: ComposerProps) {
         onSubmit={(event) => props.onSubmit(event)}
       >
         {props.attachments.length > 0 ? (
-          <div className="composer-attachment-grid" data-testid="composer-attachments">
+          <AttachmentGroup className="composer-attachment-grid" data-testid="composer-attachments">
             {props.attachments.map((path) => {
               const presentation = attachmentPresentation(path);
               return (
-                <div
+                <Attachment
                   key={path}
-                  className="composer-attachment-card"
+                  state="done"
+                  size="sm"
                   data-kind={presentation.kind}
                   data-testid="composer-attachment-card"
+                  className="composer-attachment-card"
                   title={path}
                 >
-                  <span className="composer-attachment-icon">
+                  <AttachmentMedia variant="icon" className="composer-attachment-icon">
                     {attachmentKindIcon(presentation.kind)}
-                  </span>
-                  <span className="min-w-0 flex-1">
-                    <span className="block truncate text-[12px] font-medium text-[var(--foreground)]">
+                  </AttachmentMedia>
+                  <AttachmentContent>
+                    <AttachmentTitle className="text-[12px]">
                       {attachmentLabel(path)}
-                    </span>
-                    <span className="mt-0.5 block truncate text-[10px] font-medium uppercase tracking-[0.04em] text-[var(--text-subtle)]">
+                    </AttachmentTitle>
+                    <AttachmentDescription className="text-[10px] font-medium uppercase tracking-[0.04em]">
                       {presentation.typeLabel}
-                    </span>
-                  </span>
-                  <button
-                    type="button"
-                    className="composer-attachment-remove"
-                    aria-label={tr("composer.attach.remove")}
-                    onClick={() => props.onRemoveAttachment(path)}
-                  >
-                    <X className="size-3" strokeWidth={2} />
-                  </button>
-                </div>
+                    </AttachmentDescription>
+                  </AttachmentContent>
+                  <AttachmentActions>
+                    <AttachmentAction
+                      type="button"
+                      className="composer-attachment-remove"
+                      aria-label={tr("composer.attach.remove")}
+                      onClick={() => props.onRemoveAttachment(path)}
+                    >
+                      <X strokeWidth={2} />
+                    </AttachmentAction>
+                  </AttachmentActions>
+                </Attachment>
               );
             })}
-          </div>
+          </AttachmentGroup>
         ) : null}
 
         <Textarea
@@ -1193,6 +1349,14 @@ export function Composer(props: ComposerProps) {
           value={props.prompt}
           onChange={(event) => handlePromptChange(event.target.value)}
           onKeyDown={handleComposerKeyDown}
+          onPaste={(event) => void handleComposerPaste(event)}
+          onDrop={handleComposerDrop}
+          onDragOver={(event) => {
+            if (event.dataTransfer?.types?.includes("Files")) {
+              event.preventDefault();
+              event.dataTransfer.dropEffect = "copy";
+            }
+          }}
           placeholder={tr("composer.placeholder")}
           rows={2}
           className="min-h-[52px] border-0 bg-transparent px-3.5 pt-3 pb-1 text-[14px] focus-visible:ring-0"
@@ -1373,10 +1537,7 @@ export function Composer(props: ComposerProps) {
           className="composer-suggest-body"
           data-overflow={slashOverflow.overflows ? "true" : "false"}
         >
-          <div
-            ref={slashOverflow.scrollRef}
-            className="composer-suggest-scroll pt-0"
-          >
+          <div ref={slashOverflow.scrollRef} className="composer-suggest-scroll pt-0">
             {slashGroups.length === 0 ? (
               <p className="px-2.5 py-3 text-left text-[13px] text-[var(--text-subtle)]">
                 {tr("composer.slash.empty")}
@@ -1447,10 +1608,7 @@ export function Composer(props: ComposerProps) {
           className="composer-suggest-body"
           data-overflow={resourceOverflow.overflows ? "true" : "false"}
         >
-          <div
-            ref={resourceOverflow.scrollRef}
-            className="composer-suggest-scroll pt-0"
-          >
+          <div ref={resourceOverflow.scrollRef} className="composer-suggest-scroll pt-0">
             <div className="composer-suggest-group" data-testid="composer-attach-group-add">
               <div className="composer-suggest-group-label">{tr("composer.add.title")}</div>
               <button

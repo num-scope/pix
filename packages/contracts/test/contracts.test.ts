@@ -30,6 +30,7 @@ describe("host contract validation", () => {
         requestId: "request-2",
         message: "hello",
         streamingBehavior: "steer",
+        imagePaths: ["/tmp/image.png"],
       }),
     ).toBe(true);
     expect(
@@ -39,6 +40,15 @@ describe("host contract validation", () => {
         runtimeId: "runtime-1",
         sequence: 3,
         event: { type: "message.delta", delta: "hello" },
+      }),
+    ).toBe(true);
+    expect(
+      isHostEvent({
+        protocolVersion: IPC_PROTOCOL_VERSION,
+        type: "runtime.event",
+        runtimeId: "runtime-1",
+        sequence: 4,
+        event: { type: "compaction.completed", reason: "manual", aborted: false },
       }),
     ).toBe(true);
     expect(
@@ -193,6 +203,15 @@ describe("host contract validation", () => {
     expect(
       isHostCommand({
         protocolVersion: IPC_PROTOCOL_VERSION,
+        type: "session.import",
+        requestId: "i-1",
+        inputPath: "/tmp/session.jsonl",
+        cwdOverride: "/tmp/replacement",
+      }),
+    ).toBe(true);
+    expect(
+      isHostCommand({
+        protocolVersion: IPC_PROTOCOL_VERSION,
         type: "session.bash",
         requestId: "b-1",
         command: "echo hi",
@@ -259,6 +278,7 @@ describe("host contract validation", () => {
           enableAnalytics: false,
           httpIdleTimeoutMs: 60000,
           enabledModels: ["claude-*", "gpt-4o"],
+          inventory: [],
           readOnlyFields: ["thinkingBudgets"],
           degradedCapabilities: ["tui"],
         },
@@ -455,6 +475,7 @@ describe("host contract validation", () => {
             scope: "project",
             kind: "local",
             filtered: false,
+            enabled: true,
             installedPath: "/tmp/vendor/pkg",
           },
         ],
