@@ -3,7 +3,12 @@ import { IPC_PROTOCOL_VERSION } from "@pix/contracts";
 import { describe, expect, it } from "vite-plus/test";
 import {
   buildTimelineBlocks,
+  deriveLiveActivity,
+  deriveProcessActivity,
+  elapsedDurationLabel,
+  formatDurationMs,
   historyToTimeline,
+  processBlockCoversLiveActivity,
   projectEventsToTimeline,
   splitAttachedPaths,
 } from "./timeline.ts";
@@ -154,21 +159,244 @@ describe("runtime timeline", () => {
 
   it("groups thinking/tools into a process block before assistant", () => {
     const blocks = buildTimelineBlocks([
-      { id: "u1", kind: "user", text: "hi" },
-      { id: "t1", kind: "thinking", text: "plan" },
+      { id: "u1", kind: "user", text: "hi", timestamp: "2026-01-01T00:00:00.000Z" },
+      { id: "t1", kind: "thinking", text: "plan", timestamp: "2026-01-01T00:00:01.000Z" },
       {
         id: "tool1",
         kind: "tool",
         toolName: "bash",
         status: "completed",
         output: "ok",
+        timestamp: "2026-01-01T00:00:05.000Z",
       },
-      { id: "a1", kind: "assistant", text: "done" },
+      { id: "a1", kind: "assistant", text: "done", timestamp: "2026-01-01T00:00:45.000Z" },
     ]);
     expect(blocks.map((b) => b.type)).toEqual(["item", "process", "item"]);
-    expect(blocks[1]).toMatchObject({ type: "process" });
+    expect(blocks[1]).toMatchObject({
+      type: "process",
+      startedAt: "2026-01-01T00:00:01.000Z",
+      endedAt: "2026-01-01T00:00:45.000Z",
+    });
     if (blocks[1]?.type === "process") {
       expect(blocks[1].items).toHaveLength(2);
+      expect(blocks[1].open).toBeUndefined();
+      expect(blocks[1].durationLabel).toBe("44 s");
     }
+  });
+
+  it("keeps a single process for multi-step tool loops in one reply", () => {
+    const blocks = buildTimelineBlocks([
+      { id: "u1", kind: "user", text: "hi", timestamp: "2026-01-01T00:00:00.000Z" },
+      { id: "t1", kind: "thinking", text: "plan", timestamp: "2026-01-01T00:00:01.000Z" },
+      {
+        id: "tool1",
+        kind: "tool",
+        toolName: "bash",
+        status: "completed",
+        timestamp: "2026-01-01T00:00:02.000Z",
+      },
+      { id: "a-mid", kind: "assistant", text: "mid", timestamp: "2026-01-01T00:00:03.000Z" },
+      {
+        id: "tool2",
+        kind: "tool",
+        toolName: "read",
+        status: "completed",
+        timestamp: "2026-01-01T00:00:04.000Z",
+      },
+      { id: "a-final", kind: "assistant", text: "done", timestamp: "2026-01-01T00:00:20.000Z" },
+    ]);
+    const processes = blocks.filter((b) => b.type === "process");
+    expect(processes).toHaveLength(1);
+    expect(blocks.map((b) => b.type)).toEqual(["item", "process", "item"]);
+    if (processes[0]?.type === "process") {
+      // thinking + tool + mid assistant(as narrative) + tool
+      expect(processes[0].items).toHaveLength(4);
+      expect(processes[0].items.map((i) => i.kind)).toEqual([
+        "thinking",
+        "tool",
+        "thinking",
+        "tool",
+      ]);
+      expect(processes[0].startedAt).toBe("2026-01-01T00:00:01.000Z");
+      expect(processes[0].endedAt).toBe("2026-01-01T00:00:20.000Z");
+    }
+    expect(blocks[2]).toMatchObject({ type: "item", item: { id: "a-final", kind: "assistant" } });
+  });
+
+  it("does not span duration across earlier turns", () => {
+    const blocks = buildTimelineBlocks([
+      { id: "u0", kind: "user", text: "old", timestamp: "2026-01-01T00:00:00.000Z" },
+      { id: "t0", kind: "thinking", text: "old plan", timestamp: "2026-01-01T00:00:01.000Z" },
+      { id: "a0", kind: "assistant", text: "old done", timestamp: "2026-01-01T00:00:10.000Z" },
+      { id: "u1", kind: "user", text: "new", timestamp: "2026-01-01T01:00:00.000Z" },
+      { id: "t1", kind: "thinking", text: "new plan", timestamp: "2026-01-01T01:00:02.000Z" },
+      { id: "a1", kind: "assistant", text: "new done", timestamp: "2026-01-01T01:00:12.000Z" },
+    ]);
+    const processes = blocks.filter((b) => b.type === "process");
+    expect(processes).toHaveLength(2);
+    expect(processes[0]).toMatchObject({
+      startedAt: "2026-01-01T00:00:01.000Z",
+      endedAt: "2026-01-01T00:00:10.000Z",
+      durationLabel: "9 s",
+    });
+    expect(processes[1]).toMatchObject({
+      startedAt: "2026-01-01T01:00:02.000Z",
+      endedAt: "2026-01-01T01:00:12.000Z",
+      durationLabel: "10 s",
+    });
+  });
+
+  it("marks trailing process groups as open without endedAt", () => {
+    const blocks = buildTimelineBlocks([
+      { id: "u1", kind: "user", text: "hi", timestamp: "2026-01-01T00:00:00.000Z" },
+      { id: "t1", kind: "thinking", text: "plan", timestamp: "2026-01-01T00:00:01.000Z" },
+      {
+        id: "tool1",
+        kind: "tool",
+        toolName: "bash",
+        status: "running",
+        timestamp: "2026-01-01T00:00:02.000Z",
+      },
+    ]);
+    expect(blocks.map((b) => b.type)).toEqual(["item", "process"]);
+    expect(blocks[1]).toMatchObject({
+      type: "process",
+      open: true,
+      startedAt: "2026-01-01T00:00:01.000Z",
+    });
+    if (blocks[1]?.type === "process") {
+      expect(blocks[1].endedAt).toBeUndefined();
+    }
+  });
+});
+
+describe("process activity", () => {
+  it("derives thinking / executing / processed phases", () => {
+    expect(
+      deriveProcessActivity([{ id: "t", kind: "thinking", text: "x" }], {
+        open: true,
+        running: true,
+      }),
+    ).toEqual({ phase: "thinking" });
+
+    expect(
+      deriveProcessActivity(
+        [
+          { id: "t", kind: "thinking", text: "x" },
+          {
+            id: "tool",
+            kind: "tool",
+            toolName: "bash",
+            status: "running",
+            args: { command: "ls" },
+          },
+        ],
+        { open: true, running: true },
+      ),
+    ).toEqual({ phase: "executing", toolName: "bash", toolSummary: "ls" });
+
+    expect(
+      deriveProcessActivity([{ id: "t", kind: "thinking", text: "x" }], {
+        open: false,
+        running: false,
+      }),
+    ).toEqual({ phase: "processed" });
+  });
+
+  it("formats live elapsed duration from start to now (s/m/h/d)", () => {
+    expect(formatDurationMs(0)).toBe("0 s");
+    expect(formatDurationMs(1500)).toBe("1 s");
+    expect(formatDurationMs(65_000)).toBe("1 m 5 s");
+    expect(formatDurationMs(3_600_000)).toBe("1 h");
+    expect(formatDurationMs(90_000_000)).toBe("1 d 1 h");
+    expect(formatDurationMs(90_000, "en")).toBe("1 m 30 s");
+    expect(formatDurationMs(65_000, "zh")).toBe("1 分 5 秒");
+    expect(formatDurationMs(3_600_000, "zh")).toBe("1 时");
+    expect(formatDurationMs(90_000_000, "zh")).toBe("1 天 1 时");
+    expect(formatDurationMs(12_000, "zh")).toBe("12 秒");
+    expect(formatDurationMs(90_000, "zh")).toBe("1 分 30 秒");
+    expect(
+      elapsedDurationLabel(
+        "2026-01-01T00:00:00.000Z",
+        undefined,
+        Date.parse("2026-01-01T00:00:12.000Z"),
+        "en",
+      ),
+    ).toBe("12 s");
+    expect(
+      elapsedDurationLabel(
+        "2026-01-01T00:00:00.000Z",
+        "2026-01-01T00:01:00.000Z",
+        Date.parse("2026-01-01T00:99:00.000Z"),
+        "zh",
+      ),
+    ).toBe("1 分");
+  });
+
+  it("derives live activity from recent runtime events", () => {
+    const items = [
+      {
+        id: "u1",
+        kind: "user" as const,
+        text: "hi",
+        timestamp: "2026-01-01T00:00:00.000Z",
+      },
+    ];
+    expect(
+      deriveLiveActivity({
+        items: [
+          ...items,
+          { id: "th", kind: "thinking", text: "...", timestamp: "2026-01-01T00:00:03.000Z" },
+        ],
+        events: [runtimeEvent(1, { type: "thinking.delta", delta: "..." })],
+        running: true,
+      }),
+    ).toMatchObject({ phase: "thinking", startedAt: "2026-01-01T00:00:03.000Z" });
+
+    expect(
+      deriveLiveActivity({
+        items,
+        events: [
+          runtimeEvent(1, {
+            type: "tool.started",
+            toolCallId: "1",
+            toolName: "read",
+            args: { path: "a.ts" },
+          }),
+        ],
+        running: true,
+      }),
+    ).toMatchObject({
+      phase: "executing",
+      toolName: "read",
+      toolSummary: "a.ts",
+    });
+
+    expect(
+      deriveLiveActivity({
+        items,
+        events: [runtimeEvent(1, { type: "message.delta", delta: "hi" })],
+        running: true,
+      }),
+    ).toMatchObject({ phase: "responding" });
+
+    expect(
+      deriveLiveActivity({
+        items,
+        events: [runtimeEvent(1, { type: "compaction.started", reason: "threshold" })],
+        running: true,
+      }),
+    ).toMatchObject({ phase: "compacting" });
+  });
+
+  it("hides trailing live status when open process already covers it", () => {
+    const blocks = buildTimelineBlocks([
+      { id: "u1", kind: "user", text: "hi" },
+      { id: "t1", kind: "thinking", text: "plan" },
+    ]);
+    expect(processBlockCoversLiveActivity(blocks, { phase: "thinking" })).toBe(true);
+    // Responding is shown on the open process header (via livePhase).
+    expect(processBlockCoversLiveActivity(blocks, { phase: "responding" })).toBe(true);
+    expect(processBlockCoversLiveActivity(blocks, { phase: "compacting" })).toBe(false);
   });
 });

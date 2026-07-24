@@ -44,14 +44,23 @@ function cmd(
   return shortcutId ? withShortcut(shortcutId, base) : base;
 }
 
-export function buildShellCommands(handlers: CommandHandlers, locale: Locale = "en"): ShellCommand[] {
+export function buildShellCommands(
+  handlers: CommandHandlers,
+  locale: Locale = "en",
+): ShellCommand[] {
   const list: ShellCommand[] = [
     cmd(locale, "new-thread", "shortcuts.newThread", handlers.newThread, "new-thread"),
     cmd(locale, "packages", "shortcuts.packages", handlers.openPackages, "packages"),
     cmd(locale, "resources", "shortcuts.resources", handlers.openResources, "resources"),
     cmd(locale, "settings", "shortcuts.settings", handlers.openSettings, "settings"),
     cmd(locale, "thread", "shortcuts.thread", handlers.openThread, "thread"),
-    cmd(locale, "focus-composer", "shortcuts.focusComposer", handlers.focusComposer, "focus-composer"),
+    cmd(
+      locale,
+      "focus-composer",
+      "shortcuts.focusComposer",
+      handlers.focusComposer,
+      "focus-composer",
+    ),
     cmd(locale, "fork-thread", "shortcuts.forkThread", handlers.forkThread, "fork-thread"),
     cmd(locale, "toggle-theme", "shortcuts.toggleTheme", handlers.toggleTheme, "toggle-theme"),
     cmd(locale, "toggle-review", "command.toggleReview", handlers.toggleReview),

@@ -40,6 +40,7 @@ import { t, type Locale, type MessageKey } from "../lib/i18n.ts";
 import { SHELL_SIDEBAR } from "../lib/layout.ts";
 import { clampSidebarWidth, SIDEBAR_COLLAPSED_WIDTH } from "../lib/sidebar-prefs.ts";
 import { cn } from "../lib/utils.ts";
+import type { SessionMarker } from "../lib/session-markers.ts";
 import type { SettingsSection, ShellView } from "../store/shell-store.ts";
 import type { ThreadRunState } from "../lib/timeline.ts";
 import { SettingsSearchField } from "./settings/SettingsPrimitives.tsx";
@@ -55,6 +56,10 @@ export interface AppSidebarProps {
   hostPillState: string;
   runState: ThreadRunState;
   running: boolean;
+  /** Per-session run markers (sidebar glyphs). */
+  sessionMarkers?: Record<string, SessionMarker>;
+  /** @deprecated prefer sessionMarkers */
+  runningSessions?: Record<string, true>;
   collapsed: boolean;
   widthPx: number;
   translucent: boolean;
@@ -355,6 +360,8 @@ function ProductRail(
         threadTitle={props.threadTitle}
         runState={props.runState}
         running={props.running}
+        {...(props.sessionMarkers ? { sessionMarkers: props.sessionMarkers } : {})}
+        {...(props.runningSessions ? { runningSessions: props.runningSessions } : {})}
         onOpenRecent={props.onOpenRecent}
         onNewThread={(path) => {
           if (path) props.onNewThreadForProject(path);
@@ -539,12 +546,6 @@ function SettingsRail(props: {
           icon: <KeyRound className="size-3.5 shrink-0 opacity-70" strokeWidth={1.75} />,
         },
         {
-          section: "usage",
-          testId: "settings-nav-usage",
-          labelKey: "section.usage",
-          icon: <BarChart3 className="size-3.5 shrink-0 opacity-70" strokeWidth={1.75} />,
-        },
-        {
           section: "models",
           testId: "settings-nav-models",
           labelKey: "section.models",
@@ -555,6 +556,12 @@ function SettingsRail(props: {
           testId: "settings-nav-agent",
           labelKey: "section.piSettings",
           icon: <SlidersHorizontal className="size-3.5 shrink-0 opacity-70" strokeWidth={1.75} />,
+        },
+        {
+          section: "usage",
+          testId: "settings-nav-usage",
+          labelKey: "section.usage",
+          icon: <BarChart3 className="size-3.5 shrink-0 opacity-70" strokeWidth={1.75} />,
         },
       ],
     },

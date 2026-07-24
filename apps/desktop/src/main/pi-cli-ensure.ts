@@ -58,10 +58,7 @@ export function shouldAutoInstallPiCli(env: NodeJS.ProcessEnv = process.env): bo
   return true;
 }
 
-function emit(
-  onProgress: PiCliEnsureOptions["onProgress"],
-  event: PiCliProgressEvent,
-): void {
+function emit(onProgress: PiCliEnsureOptions["onProgress"], event: PiCliProgressEvent): void {
   // Always log so `pnpm dev` terminal shows install work even when UI chrome is hidden.
   console.log(`[pix:pi] ${event.phase}: ${event.message}`);
   try {
@@ -71,10 +68,7 @@ function emit(
   }
 }
 
-async function resolveOnPath(
-  command: string,
-  env: NodeJS.ProcessEnv,
-): Promise<string | undefined> {
+async function resolveOnPath(command: string, env: NodeJS.ProcessEnv): Promise<string | undefined> {
   try {
     if (process.platform === "win32") {
       const { stdout } = await execFileAsync("where.exe", [command], {
@@ -120,7 +114,10 @@ async function readPiVersion(piPath: string, env: NodeJS.ProcessEnv): Promise<st
 }
 
 /** npm global prefix (directory that contains the `pi` shim on Windows, or parent of bin/ on Unix). */
-async function npmGlobalPrefix(npmPath: string, env: NodeJS.ProcessEnv): Promise<string | undefined> {
+async function npmGlobalPrefix(
+  npmPath: string,
+  env: NodeJS.ProcessEnv,
+): Promise<string | undefined> {
   try {
     const { stdout } = await execFileAsync(npmPath, ["prefix", "-g"], {
       env,
@@ -142,10 +139,7 @@ function candidatePiPaths(prefix: string): string[] {
   return [join(prefix, "bin", "pi"), join(prefix, "pi")];
 }
 
-function detected(
-  path: string,
-  version: string | undefined,
-): { path: string; version?: string } {
+function detected(path: string, version: string | undefined): { path: string; version?: string } {
   return version ? { path, version } : { path };
 }
 
@@ -323,8 +317,7 @@ async function ensurePiCliOnce(options: PiCliEnsureOptions): Promise<PiCliEnsure
     return result;
   }
 
-  const npmPath =
-    (await resolveOnPath("npm", env)) ?? (await resolveOnPath("npm.cmd", env));
+  const npmPath = (await resolveOnPath("npm", env)) ?? (await resolveOnPath("npm.cmd", env));
   if (!npmPath) {
     const error =
       "npm was not found on PATH. Install Node.js/npm, then restart Pix to install pi automatically.";
@@ -399,9 +392,7 @@ async function ensurePiCliOnce(options: PiCliEnsureOptions): Promise<PiCliEnsure
   };
   emit(onProgress, {
     phase: "complete",
-    message: installed.version
-      ? `Installed pi ${installed.version}`
-      : "Installed pi successfully",
+    message: installed.version ? `Installed pi ${installed.version}` : "Installed pi successfully",
     path: installed.path,
     ...(installed.version ? { version: installed.version } : {}),
     installedNow: true,

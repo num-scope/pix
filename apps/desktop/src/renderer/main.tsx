@@ -42,7 +42,11 @@ import {
 import { PixLogo } from "./components/PixLogo.tsx";
 import { ThreadHeader } from "./components/ThreadHeader.tsx";
 import { WindowCaptionButtons } from "./components/WindowCaptionButtons.tsx";
-import { TimelineProcessBlock, TimelineRow } from "./components/TimelineRow.tsx";
+import {
+  TimelineLiveStatus,
+  TimelineProcessBlock,
+  TimelineRow,
+} from "./components/TimelineRow.tsx";
 import {
   MessageScroller,
   MessageScrollerButton,
@@ -84,14 +88,20 @@ import {
   prependRecentPath,
   workspaceLabel,
 } from "./lib/workspace.ts";
+import { appendHostEvent } from "./lib/host-events.ts";
 import {
   buildTimelineBlocks,
+  deriveLiveActivity,
   deriveRunState,
   historyToTimeline,
-  projectEventsToTimeline,
+  processBlockCoversLiveActivity,
   type TimelineItem,
 } from "./lib/timeline.ts";
-import { classifyRuntimeEventDelivery, useShellStore } from "./store/shell-store.ts";
+import {
+  classifyRuntimeEventDelivery,
+  sessionKeyFromSnapshot,
+  useShellStore,
+} from "./store/shell-store.ts";
 import "./styles.css";
 
 /** Surface app-level errors as a modal (agent timeline errors stay in-chat). */
@@ -178,12 +188,14 @@ function App() {
   const status = useShellStore((s) => s.status);
   const snapshot = useShellStore((s) => s.snapshot);
   const events = useShellStore((s) => s.events);
+  const liveStream = useShellStore((s) => s.liveStream);
   const history = useShellStore((s) => s.history);
   const threads = useShellStore((s) => s.threads);
   const prompt = useShellStore((s) => s.prompt);
   const sentPrompts = useShellStore((s) => s.sentPrompts);
   const queuedMessages = useShellStore((s) => s.queuedMessages);
   const running = useShellStore((s) => s.running);
+  const sessionMarkers = useShellStore((s) => s.sessionMarkers);
   const reviewOpen = useShellStore((s) => s.reviewOpen);
   const envPanelOpen = useShellStore((s) => s.envPanelOpen);
   const sidebarOpen = useShellStore((s) => s.sidebarOpen);
@@ -209,6 +221,8 @@ function App() {
   const setPrompt = useShellStore((s) => s.setPrompt);
   const setSentPrompts = useShellStore((s) => s.setSentPrompts);
   const setRunning = useShellStore((s) => s.setRunning);
+  const setSessionRunning = useShellStore((s) => s.setSessionRunning);
+  const setSessionMarker = useShellStore((s) => s.setSessionMarker);
   const setReviewOpen = useShellStore((s) => s.setReviewOpen);
   const setEnvPanelOpen = useShellStore((s) => s.setEnvPanelOpen);
   /** Whether env panel can be shown at current thread-column width. */
@@ -385,16 +399,30 @@ function App() {
   /** Session identity — used to pin scroll + remount timeline rows on switch. */
   const sessionKey = snapshot?.sessionFile ?? snapshot?.sessionId ?? "";
   const timeline = useMemo(() => {
-    const items = [
-      ...historyToTimeline(history),
-      ...projectEventsToTimeline(events, sentPrompts),
-    ].filter((item) => !(snapshot?.hideThinkingBlock && item.kind === "thinking"));
+    // history = session JSONL at open; liveStream = append-only log for this session
+    // (streamed text only grows). Do not re-project deltas from the events ring.
+    const items = [...historyToTimeline(history), ...liveStream.items].filter(
+      (item) => !(snapshot?.hideThinkingBlock && item.kind === "thinking"),
+    );
     // Prefix ids with session so React does not reuse rows across switches.
     if (!sessionKey) return items;
     return items.map((item) => ({ ...item, id: `${sessionKey}:${item.id}` }));
-  }, [history, events, sentPrompts, sessionKey, snapshot?.hideThinkingBlock]);
+  }, [history, liveStream, sessionKey, snapshot?.hideThinkingBlock]);
   const timelineBlocks = useMemo(() => buildTimelineBlocks(timeline), [timeline]);
   const hasActivity = timeline.length > 0;
+  const waitingForInput = runState === "waiting";
+  const liveActivity = useMemo(
+    () =>
+      deriveLiveActivity({
+        items: timeline,
+        events,
+        running,
+        waiting: waitingForInput,
+      }),
+    [timeline, events, running, waitingForInput],
+  );
+  const showLiveStatus =
+    liveActivity != null && !processBlockCoversLiveActivity(timelineBlocks, liveActivity);
   const activeThread = threads.find((thread) => thread.active);
   const threadTitle =
     activeThread?.title ||
@@ -406,16 +434,8 @@ function App() {
   const displayModel = snapshot?.model ?? lastComposerChromeRef.current.model;
   const displayThinkingLevel =
     snapshot?.thinkingLevel ?? lastComposerChromeRef.current.thinkingLevel ?? "off";
-  // Always surface the full pi ThinkingLevel set in the composer (localized labels).
-  // Model-specific availability is enforced when applying the level.
-  const displayThinkingLevels = [
-    "off",
-    "minimal",
-    "low",
-    "medium",
-    "high",
-    "xhigh",
-  ];
+  // Full pi ThinkingLevel set (docs: off…max). Model support enforced on apply.
+  const displayThinkingLevels = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 
   function normalizeCwdKey(path: string): string {
     return path.replace(/\\/g, "/").replace(/\/+$/, "");
@@ -647,6 +667,11 @@ function App() {
           store.setStatus("Agent Host restarted");
           void refreshPiStatus({ ensure: false });
         } else if (event.type === "host.crashed") {
+          // Background (parked) host death must not wipe the foreground session.
+          if (event.runtimeId && store.runtimeId && event.runtimeId !== store.runtimeId) {
+            store.settleSessionByRuntime(event.runtimeId, "crashed", event.message);
+            return;
+          }
           store.resetAfterCrash(event.message);
           maybeNotify("crash", event.message);
         } else if (event.type === "session.list") {
@@ -694,12 +719,40 @@ function App() {
             .catch(() => undefined);
         } else if (event.type === "runtime.event") {
           const delivery = classifyRuntimeEventDelivery(store, event);
-          if (delivery === "stale-runtime" || delivery === "duplicate") return;
+          // Background (parked) hosts only surface terminal events for sidebar markers.
+          if (delivery === "stale-runtime") {
+            if (event.event.type === "agent.settled") {
+              store.settleSessionByRuntime(event.runtimeId, "completed");
+              maybeNotify("complete");
+            } else if (event.event.type === "message.failed") {
+              const aborted = event.event.reason === "aborted";
+              store.settleSessionByRuntime(
+                event.runtimeId,
+                aborted ? "aborted" : "failed",
+                event.event.message,
+              );
+              maybeNotify("error", event.event.message);
+            }
+            // Ignore background agent.started — re-binding can re-light finished rows.
+            return;
+          }
+          if (delivery === "duplicate") return;
+
+          // Always fold into append-only liveStream first (sequence-deduped, text never
+          // shrinks). Do this even on "gap" so tokens we did receive are not discarded.
+          store.applyLiveStreamEvent(event.event, store.sentPrompts, {
+            sequence: event.sequence,
+          });
+
           if (delivery === "gap") {
+            // Recover host high-water mark; liveStream already has this event's tokens.
             void window.pix.host.snapshot().then(store.acceptSnapshot);
+            store.setEvents((current) => appendHostEvent(current, event));
+            if (event.sequence > store.lastSequence) store.setLastSequence(event.sequence);
             return;
           }
           if (event.sequence > store.lastSequence) store.setLastSequence(event.sequence);
+
           if (event.event.type === "queue.updated") {
             store.setQueuedMessages({
               steering: event.event.steering,
@@ -707,15 +760,40 @@ function App() {
             });
           } else if (event.event.type === "message.failed") {
             store.setLastFailure(event.event.message);
+            const aborted = event.event.reason === "aborted";
+            store.settleSessionByRuntime(
+              event.runtimeId,
+              aborted ? "aborted" : "failed",
+              event.event.message,
+            );
             maybeNotify("error", event.event.message);
           } else if (event.event.type === "agent.settled") {
+            store.settleSessionByRuntime(event.runtimeId, "completed");
             maybeNotify("complete");
           }
+          // Do NOT set running from agent.started / compaction.started — those can fire
+          // around host/session lifecycle without a user prompt and stuck the sidebar spinner.
+          // Busy markers are only set by sendPrompt → setSessionRunning(true).
         } else if (event.type === "extensionUi.request") {
           if (event.runtimeId !== store.runtimeId) return;
-          void respondToExtensionUi(event);
+          // Only show waiting if this session is already in a user-initiated turn.
+          const key = sessionKeyFromSnapshot(store.snapshot);
+          if (key && store.runningSessions[key]) {
+            store.setSessionMarker(key, "waiting", {
+              runtimeId: event.runtimeId,
+              reason: event.method,
+            });
+          }
+          void respondToExtensionUi(event).finally(() => {
+            const st = useShellStore.getState();
+            const k = sessionKeyFromSnapshot(st.snapshot);
+            if (k && st.runningSessions[k]) {
+              st.setSessionMarker(k, "running", { runtimeId: event.runtimeId });
+            }
+          });
         }
-        store.setEvents((current) => [...current.slice(-80), event]);
+        // Events ring is diagnostics / activity only — not the text authority.
+        store.setEvents((current) => appendHostEvent(current, event));
       }),
     [],
   );
@@ -1118,7 +1196,7 @@ function App() {
     options?: { skipConfirm?: boolean },
   ) {
     const next = text.trim();
-    if (!next || running) return;
+    if (!next || useShellStore.getState().running) return;
     if (!options?.skipConfirm && !isLastUserMessage(item)) {
       setEditResendConfirm({ item, text: next });
       return;
@@ -1141,13 +1219,11 @@ function App() {
         });
         requestContentReveal();
       }
-      setPrompt(next);
-      setAttachments(item.attachments ? [...item.attachments] : []);
-      // Defer so state commits before sendPrompt reads it.
-      await new Promise<void>((resolve) => {
-        window.setTimeout(() => resolve(), 0);
+      // Pass text/attachments explicitly — do not rely on setState + sendPrompt closure.
+      await sendPrompt(undefined, undefined, {
+        text: next,
+        attachments: item.attachments ? [...item.attachments] : [],
       });
-      await sendPrompt(undefined);
     } catch (error) {
       reportAppError(error, t(locale, "timeline.editFailed"));
       setTimelineReady(true);
@@ -1155,10 +1231,15 @@ function App() {
     }
   }
 
-  async function sendPrompt(event?: FormEvent, streamingBehavior?: "steer" | "followUp") {
+  async function sendPrompt(
+    event?: FormEvent,
+    streamingBehavior?: "steer" | "followUp",
+    overrides?: { text?: string; attachments?: string[] },
+  ) {
     event?.preventDefault();
-    const draft = prompt;
-    const attachedPaths = [...attachments];
+    // Always read prompt from the store so edit-resend / async paths are not stale.
+    const draft = overrides?.text ?? useShellStore.getState().prompt;
+    const attachedPaths = [...(overrides?.attachments ?? attachments)];
     const displayMessage =
       draft.trim() || (attachedPaths.length > 0 ? t(locale, "composer.attach.defaultPrompt") : "");
     if (!displayMessage) return;
@@ -1168,10 +1249,9 @@ function App() {
     if (slash && attachedPaths.length === 0) {
       try {
         if (!useShellStore.getState().snapshot) await ensureHost();
-        const source = buildUnifiedSlashCatalog(
-          useShellStore.getState().snapshot,
-          locale,
-        ).find((item) => item.name === slash.name)?.source;
+        const source = buildUnifiedSlashCatalog(useShellStore.getState().snapshot, locale).find(
+          (item) => item.name === slash.name,
+        )?.source;
         const handled = await runBuiltinSlash(slash.name, slash.args, source);
         if (handled) {
           setPrompt("");
@@ -1201,16 +1281,19 @@ function App() {
           excludeFromContext: shell.kind === "hidden-shell",
         });
         acceptSnapshot(result.snapshot);
-        setEvents((current) => [
-          ...current,
-          {
-            protocolVersion: IPC_PROTOCOL_VERSION,
-            type: "runtime.event",
-            runtimeId: result.snapshot.runtimeId,
-            sequence: result.snapshot.sequence,
-            event: { type: "shell.completed", ...result.result },
-          },
-        ]);
+        const shellEvent = {
+          protocolVersion: IPC_PROTOCOL_VERSION,
+          type: "runtime.event" as const,
+          runtimeId: result.snapshot.runtimeId,
+          sequence: result.snapshot.sequence,
+          event: { type: "shell.completed" as const, ...result.result },
+        };
+        setEvents((current) => appendHostEvent(current, shellEvent));
+        useShellStore
+          .getState()
+          .applyLiveStreamEvent(shellEvent.event, useShellStore.getState().sentPrompts, {
+            sequence: shellEvent.sequence,
+          });
         setStatus(
           result.result.exitCode === 0
             ? t(locale, "session.parity.shellDone")
@@ -1230,20 +1313,24 @@ function App() {
     const message = promptWithAttachedPaths(displayMessage, attachedPaths);
     const imagePaths = attachedPaths.filter(isPromptImagePath);
 
-    // If the user switches sessions mid-request, ignore late host results.
-    const sessionAtStart =
-      useShellStore.getState().snapshot?.sessionFile ??
-      useShellStore.getState().snapshot?.sessionId ??
-      "";
+    // If the user switches sessions mid-request, ignore late host results for this view.
+    const snapAtStart = useShellStore.getState().snapshot;
+    const sessionAtStart = sessionKeyFromSnapshot(snapAtStart);
+    const runtimeAtStart = snapAtStart?.runtimeId;
     const stillSameSession = () => {
-      const current = useShellStore.getState().snapshot;
-      const key = current?.sessionFile ?? current?.sessionId ?? "";
-      return key === sessionAtStart;
+      return sessionKeyFromSnapshot(useShellStore.getState().snapshot) === sessionAtStart;
     };
 
     setPrompt("");
     setAttachments([]);
     setSentPrompts((current) => [...current, displayMessage]);
+    // Optimistic user row (append-only live stream). Host user.message dedupes if same text.
+    useShellStore
+      .getState()
+      .applyLiveStreamEvent(
+        { type: "user.message", content: displayMessage },
+        useShellStore.getState().sentPrompts,
+      );
 
     if (queueBehavior) {
       // Already streaming — keep stop button; just queue follow-up / steer.
@@ -1266,18 +1353,30 @@ function App() {
     }
 
     // Flip send → stop immediately (before ensureHost / stream wait).
-    setRunning(true);
+    if (sessionAtStart) setSessionRunning(sessionAtStart, true, runtimeAtStart);
+    else setRunning(true);
     setLastFailure(undefined);
     setStatus("Agent running...");
+    let promptDispatched = false;
     try {
       if (!useShellStore.getState().snapshot) await ensureHost();
+      // User may have switched sessions during ensureHost — do not bind the new
+      // runtime to the old session key or prompt into the wrong host.
+      if (!stillSameSession()) {
+        if (sessionAtStart) setSessionRunning(sessionAtStart, false, runtimeAtStart);
+        else setRunning(false);
+        return;
+      }
+      const rid = useShellStore.getState().runtimeId ?? runtimeAtStart;
+      if (sessionAtStart && rid) setSessionRunning(sessionAtStart, true, rid);
+      promptDispatched = true;
       const next = await window.pix.agent.prompt(message, undefined, imagePaths);
       if (!stillSameSession()) return;
       acceptSnapshot(next);
       setStatus("Agent settled");
       await refreshThreads();
     } catch (error) {
-      // Switched away / aborted for navigation — do not restore draft into the new session.
+      // Switched away — do not restore draft into the new session.
       if (!stillSameSession()) return;
       // Host/workspace/IPC failures → modal + restore draft for retry.
       setPrompt(draft);
@@ -1289,7 +1388,18 @@ function App() {
       });
       reportAppError(error, "发送失败");
     } finally {
-      if (stillSameSession()) setRunning(false);
+      if (!sessionAtStart) {
+        if (stillSameSession()) setRunning(false);
+      } else if (stillSameSession()) {
+        // Still viewing this session: clear busy (settled events may already have
+        // set completed/failed — setSessionRunning keeps terminal markers).
+        setSessionRunning(sessionAtStart, false, runtimeAtStart);
+      } else if (!promptDispatched) {
+        // Switched away before prompt left the renderer — drop optimistic marker.
+        setSessionRunning(sessionAtStart, false, runtimeAtStart);
+      }
+      // Switched away after dispatch: leave marker for park + settleSessionByRuntime.
+      useShellStore.getState().syncForegroundRunning();
     }
   }
 
@@ -1317,13 +1427,19 @@ function App() {
   }
 
   async function abort() {
+    const snap = useShellStore.getState().snapshot;
+    const key = sessionKeyFromSnapshot(snap);
     try {
       acceptSnapshot(await window.pix.agent.abort());
       setStatus("Agent aborted");
     } catch (error) {
       reportAppError(error, "Abort failed");
     } finally {
-      setRunning(false);
+      if (key) {
+        setSessionMarker(key, "aborted", snap?.runtimeId ? { runtimeId: snap.runtimeId } : {});
+      } else {
+        setRunning(false);
+      }
     }
   }
 
@@ -1499,6 +1615,7 @@ function App() {
     setEvents([]);
     setSentPrompts([]);
     useShellStore.getState().setHistory([]);
+    useShellStore.getState().clearLiveStream();
     selectWorkspacePath(cwd);
     const snap = await window.pix.workspace.openPath(cwd, {
       resumeRecent: options?.resumeRecent === true && !options?.sessionFile,
@@ -1589,15 +1706,7 @@ function App() {
   }
 
   async function newSessionInCurrentWorkspace() {
-    if (useShellStore.getState().running) {
-      try {
-        acceptSnapshot(await window.pix.agent.abort());
-      } catch {
-        // Continue once the current run has already settled
-      } finally {
-        setRunning(false);
-      }
-    }
+    // Do not abort a generating session — main parks the busy host and starts a new one.
     try {
       // Always wait for a fully ready host (process + runtime), not only a runtimeId flag.
       await ensureHost();
@@ -1640,16 +1749,7 @@ function App() {
       // Let the in-flight call finish; the latest gen will re-enter via queue below.
     }
 
-    // Leaving a generating session — abort first so the host is free for a new thread.
-    if (useShellStore.getState().running) {
-      try {
-        acceptSnapshot(await window.pix.agent.abort());
-      } catch {
-        // ignore
-      } finally {
-        if (gen === newBlankTaskGenRef.current) setRunning(false);
-      }
-    }
+    // Do not abort a generating session — main parks the busy host for tab-like switching.
     if (gen !== newBlankTaskGenRef.current) return;
 
     setView("thread");
@@ -1661,6 +1761,7 @@ function App() {
     setLastFailure(undefined);
     setAttachments([]);
     useShellStore.getState().setHistory([]);
+    useShellStore.getState().clearLiveStream();
 
     const prevSnap = useShellStore.getState().snapshot;
     const prevProject = asProjectPath(selectedWorkspacePath) ?? asProjectPath(prevSnap?.cwd);
@@ -1725,15 +1826,7 @@ function App() {
 
   /** Project-row only: open that project if needed, then create a new session under it. */
   async function newThreadForProject(path: string) {
-    if (useShellStore.getState().running) {
-      try {
-        acceptSnapshot(await window.pix.agent.abort());
-      } catch {
-        // ignore
-      } finally {
-        setRunning(false);
-      }
-    }
+    // Do not abort a generating session — main parks the busy host.
     try {
       setView("thread");
       setSidebarOpen(false);
@@ -1744,6 +1837,7 @@ function App() {
       setLastFailure(undefined);
       setAttachments([]);
       useShellStore.getState().setHistory([]);
+      useShellStore.getState().clearLiveStream();
       selectWorkspacePath(path);
       const current = useShellStore.getState().snapshot?.cwd;
       if (!current || normalizeCwdKey(current) !== normalizeCwdKey(path)) {
@@ -1839,16 +1933,7 @@ function App() {
   }
 
   async function switchThread(sessionPath: string, projectCwd?: string) {
-    // Allow switching while AI is generating — abort the in-flight turn first.
-    if (useShellStore.getState().running) {
-      try {
-        acceptSnapshot(await window.pix.agent.abort());
-      } catch {
-        // Host may already be settling; still proceed with the switch.
-      } finally {
-        setRunning(false);
-      }
-    }
+    // Tab-like switch: never abort. Main parks a busy host and may promote a parked one.
     switchingSessionRef.current = true;
     // Blank immediately: no empty-hero, no project protrusion, no stale messages.
     markSessionOpenForBottomScroll();
@@ -1856,6 +1941,7 @@ function App() {
     setSentPrompts([]);
     // Drop prior history so empty chrome cannot paint even if ready flips early.
     useShellStore.getState().setHistory([]);
+    useShellStore.getState().clearLiveStream();
     try {
       const store = useShellStore.getState();
 
@@ -1920,6 +2006,7 @@ function App() {
       // Keep switchingSessionRef true until after apply+reveal so layout won't
       // treat the empty interim as a settled empty session.
       applySessionOpen(opened);
+      useShellStore.getState().syncForegroundRunning();
       const cwd = opened.snapshot.cwd || targetCwd;
       selectWorkspacePath(asProjectPath(cwd));
       if (cwd) {
@@ -2121,6 +2208,7 @@ function App() {
         hostPillState={hostPillState(status, running)}
         runState={runState}
         running={running}
+        sessionMarkers={sessionMarkers}
         collapsed={sidebarCollapsed}
         widthPx={sidebarWidthPx}
         translucent={sidebarTranslucent}
@@ -2235,87 +2323,113 @@ function App() {
                       aria-busy={!timelineReady}
                       data-ready={timelineReady ? "true" : "false"}
                     >
-                      <MessageScrollerContent className="thread-content-column thread-content-column-stack gap-0">
-                        <div
-                          className={cn(
-                            "thread-messages",
-                            hasActivity ? "pt-6 pb-4" : "empty flex min-h-0 flex-1 flex-col",
-                          )}
-                          data-testid="timeline"
-                        >
-                          {hasActivity ? (
-                            <>
-                              {timelineBlocks.map((block) => {
-                                const messageId =
-                                  block.type === "process" ? block.id : block.item.id;
-                                const isUser = block.type === "item" && block.item.kind === "user";
-                                return (
-                                  <MessageScrollerItem
-                                    key={messageId}
-                                    messageId={messageId}
-                                    scrollAnchor={isUser}
-                                    className="[content-visibility:visible]"
-                                  >
-                                    {block.type === "process" ? (
-                                      <TimelineProcessBlock
-                                        locale={locale}
-                                        items={block.items}
-                                        {...(block.durationLabel
-                                          ? { durationLabel: block.durationLabel }
-                                          : {})}
-                                        {...(workspacePath ? { workspacePath } : {})}
-                                      />
-                                    ) : (
-                                      <TimelineRow
-                                        item={block.item}
-                                        locale={locale}
-                                        workspacePath={workspacePath}
-                                        editingLocked={running}
-                                        onEditUser={(item, text) =>
-                                          void editUserAndResend(item, text)
-                                        }
-                                        onForkAssistant={(item) => {
-                                          // pi fork: new session file from this assistant entry.
-                                          void forkThread(item.entryId);
-                                        }}
-                                      />
-                                    )}
-                                  </MessageScrollerItem>
-                                );
-                              })}
-                              <div
-                                ref={timelineEndRef}
-                                className="h-px w-full shrink-0"
-                                aria-hidden
-                              />
-                            </>
-                          ) : timelineReady ? (
+                      {/*
+                        MessageScrollerItems MUST be direct children of Content.
+                        Nesting them under `.thread-messages` broke MutationObserver /
+                        item-count / scroll-height math (mid-stream collapse).
+                      */}
+                      <MessageScrollerContent
+                        className={cn(
+                          "thread-content-column thread-content-column-stack gap-0",
+                          hasActivity && "thread-messages-active pt-6 pb-0",
+                        )}
+                        data-testid="timeline"
+                      >
+                        {hasActivity ? (
+                          <>
+                            {timelineBlocks.map((block) => {
+                              const messageId = block.type === "process" ? block.id : block.item.id;
+                              return (
+                                <MessageScrollerItem
+                                  key={messageId}
+                                  messageId={messageId}
+                                  // Do not use scrollAnchor during agent turns: pin-to-user-message
+                                  // + spacer math fights streaming growth and collapses earlier rows.
+                                  // autoScroll following-bottom is enough for chat.
+                                  scrollAnchor={false}
+                                  className="w-full"
+                                >
+                                  {block.type === "process" ? (
+                                    <TimelineProcessBlock
+                                      locale={locale}
+                                      items={block.items}
+                                      open={block.open}
+                                      running={running}
+                                      waiting={waitingForInput}
+                                      {...(block.open && liveActivity?.phase
+                                        ? { livePhase: liveActivity.phase }
+                                        : {})}
+                                      {...(block.startedAt ? { startedAt: block.startedAt } : {})}
+                                      {...(block.endedAt ? { endedAt: block.endedAt } : {})}
+                                      {...(block.durationLabel
+                                        ? { durationLabel: block.durationLabel }
+                                        : {})}
+                                      {...(workspacePath ? { workspacePath } : {})}
+                                    />
+                                  ) : (
+                                    <TimelineRow
+                                      item={block.item}
+                                      locale={locale}
+                                      workspacePath={workspacePath}
+                                      editingLocked={running}
+                                      onEditUser={(item, text) =>
+                                        void editUserAndResend(item, text)
+                                      }
+                                      onForkAssistant={(item) => {
+                                        // pi fork: new session file from this assistant entry.
+                                        void forkThread(item.entryId);
+                                      }}
+                                    />
+                                  )}
+                                </MessageScrollerItem>
+                              );
+                            })}
+                            {showLiveStatus && liveActivity ? (
+                              <MessageScrollerItem
+                                messageId={`${sessionKey || "live"}:live-status`}
+                                className="w-full"
+                              >
+                                <TimelineLiveStatus locale={locale} activity={liveActivity} />
+                              </MessageScrollerItem>
+                            ) : null}
                             <div
-                              className="flex min-h-full flex-1 flex-col items-center justify-center px-4 text-center"
-                              data-testid="empty-hero"
-                            >
-                              <PixLogo className="mb-5 size-12" title={t(locale, "app.name")} />
-                              <h1 className="m-0 max-w-lg text-[26px] leading-snug font-semibold tracking-[-0.03em] text-[var(--text)]">
-                                {workspacePath
-                                  ? t(locale, "empty.title", { name: workspace.name })
-                                  : isPureConversation || snapshot || pendingPureConversation
-                                    ? t(locale, "empty.titleConversation")
-                                    : t(locale, "empty.titleNoWorkspace")}
-                              </h1>
-                              {!workspacePath ? (
-                                <p className="mt-3 max-w-md text-[13px] text-[var(--muted-foreground)]">
-                                  {isPureConversation || snapshot || pendingPureConversation
-                                    ? t(locale, "empty.subtitleConversation")
-                                    : t(locale, "empty.subtitleNoWorkspace")}
-                                </p>
-                              ) : null}
-                            </div>
-                          ) : null}
-                        </div>
+                              ref={timelineEndRef}
+                              className="h-px w-full shrink-0"
+                              aria-hidden
+                            />
+                          </>
+                        ) : timelineReady ? (
+                          <div
+                            className="thread-messages empty flex min-h-full flex-1 flex-col items-center justify-center px-4 text-center"
+                            data-testid="empty-hero"
+                          >
+                            <PixLogo className="mb-5 size-12" title={t(locale, "app.name")} />
+                            <h1 className="m-0 max-w-lg text-[26px] leading-snug font-semibold tracking-[-0.03em] text-[var(--text)]">
+                              {workspacePath
+                                ? t(locale, "empty.title", { name: workspace.name })
+                                : isPureConversation || snapshot || pendingPureConversation
+                                  ? t(locale, "empty.titleConversation")
+                                  : t(locale, "empty.titleNoWorkspace")}
+                            </h1>
+                            {!workspacePath ? (
+                              <p className="mt-3 max-w-md text-[13px] text-[var(--muted-foreground)]">
+                                {isPureConversation || snapshot || pendingPureConversation
+                                  ? t(locale, "empty.subtitleConversation")
+                                  : t(locale, "empty.subtitleNoWorkspace")}
+                              </p>
+                            ) : null}
+                          </div>
+                        ) : null}
 
+                        {/*
+                          mt-auto pins the dock to the bottom of the min-h-full column when
+                          messages are short; sticky keeps it glued to the scrollport bottom
+                          while scrolling long threads. (Flattened MessageScroller items no
+                          longer provide a flex-1 message wrapper that used to push this down.)
+                        */}
                         <div
                           ref={composerDockRef}
-                          className="composer-dock pointer-events-none sticky bottom-0 z-[2] w-full bg-[var(--canvas)] pt-1 pb-2"
+                          className="composer-dock pointer-events-none sticky bottom-0 z-[2] mt-auto w-full shrink-0 bg-[var(--canvas)] pt-1 pb-2"
                           data-mode="sticky"
                           data-testid="composer-dock"
                         >
@@ -2554,21 +2668,35 @@ function App() {
         onNavigate={async (node, options) => {
           try {
             if (sessionTreeMode === "fork") {
+              setStatus(t(locale, "sessionTree.busy.forking"));
               await forkThread(node.id);
               setSessionTreeOpen(false);
               focusComposer();
               return;
             }
+            if (options?.summarize) {
+              setStatus(t(locale, "session.parity.treeSummarizing"));
+            } else {
+              setStatus(t(locale, "sessionTree.busy.navigating"));
+            }
             const opened = await window.pix.session.navigateTree(node.id, options);
-            if (opened.cancelled) return;
+            if (opened.cancelled) {
+              setStatus(t(locale, "session.parity.treeFailed"));
+              return;
+            }
             markSessionOpenForBottomScroll();
             applySessionOpen({
               snapshot: opened.snapshot,
               threads: opened.threads,
               history: opened.history,
             });
+            // User-message targets: pi rewinds to parent and returns text for re-send.
+            if (opened.selectedText !== undefined) {
+              setPrompt(opened.selectedText);
+            }
             setSessionTreeOpen(false);
             setStatus(t(locale, "session.parity.treeNavigated"));
+            focusComposer();
           } catch (error) {
             reportAppError(error, t(locale, "session.parity.treeFailed"));
           }
@@ -3033,9 +3161,7 @@ function PackagesPage(props: {
                             disabled={installed || installing || busy || props.loading}
                             onClick={() => void installFromCatalog(item)}
                             title={
-                              temporary
-                                ? tr("packages.temporary")
-                                : tr("packages.discoverInstall")
+                              temporary ? tr("packages.temporary") : tr("packages.discoverInstall")
                             }
                           >
                             {installed

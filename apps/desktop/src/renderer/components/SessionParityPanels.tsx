@@ -13,6 +13,7 @@ import { useEffect, useState } from "react";
 import {
   Bot,
   GitBranch,
+  LoaderCircle,
   Minimize2,
   RefreshCw,
   Settings2,
@@ -22,12 +23,11 @@ import {
   X,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import {
-  SettingsInput,
-  SettingsSelect,
-} from "./settings/SettingsPrimitives.tsx";
+import { SettingsInput, SettingsSelect } from "./settings/SettingsPrimitives.tsx";
 import { t, type Locale, type MessageKey } from "../lib/i18n.ts";
 import { cn } from "../lib/utils.ts";
+
+type TreeBusyPhase = "idle" | "navigate" | "summarize" | "fork";
 
 function roleLabel(locale: Locale, kind: SessionTreeRoleKind | undefined): string {
   const key: MessageKey =
@@ -83,17 +83,76 @@ export function SessionTreePanel(props: {
 }) {
   const [summaryMode, setSummaryMode] = useState<"none" | "auto" | "custom">("none");
   const [customInstructions, setCustomInstructions] = useState("");
+  const [busy, setBusy] = useState<TreeBusyPhase>("idle");
+
+  // Reset progress chrome when the dialog is closed/reopened.
+  useEffect(() => {
+    if (!props.open) setBusy("idle");
+  }, [props.open]);
+
   if (!props.open) return null;
   const tr = (key: MessageKey, vars?: Record<string, string>) => t(props.locale, key, vars);
   const forkMode = props.mode === "fork";
+  const isBusy = busy !== "idle";
   const fileLabel = props.tree?.sessionFile
     ? props.tree.sessionFile.split(/[/\\]/).pop() || props.tree.sessionFile
     : props.tree?.sessionId?.slice(0, 8);
+
+  async function handleNavigate(
+    node: SessionTreeNodeView,
+    options?: { summarize?: boolean; customInstructions?: string },
+  ) {
+    if (isBusy) return;
+    const phase: TreeBusyPhase = forkMode ? "fork" : options?.summarize ? "summarize" : "navigate";
+    setBusy(phase);
+    try {
+      await props.onNavigate(node, options);
+    } finally {
+      // Parent closes the panel on success; if it stays open (cancel/error), clear busy.
+      setBusy("idle");
+    }
+  }
+
+  const busyLabel =
+    busy === "summarize"
+      ? tr("sessionTree.busy.summarizing")
+      : busy === "fork"
+        ? tr("sessionTree.busy.forking")
+        : busy === "navigate"
+          ? tr("sessionTree.busy.navigating")
+          : "";
+
+  // Full-screen mask only — no in-dialog progress chrome while busy.
+  if (isBusy) {
+    return (
+      <div
+        className="palette-backdrop session-tree-busy-backdrop"
+        data-testid="session-tree-panel"
+        data-busy={busy}
+        role="alertdialog"
+        aria-modal="true"
+        aria-busy="true"
+        aria-label={busyLabel}
+      >
+        <div
+          className="session-tree-busy"
+          data-testid="session-tree-busy"
+          data-phase={busy}
+          role="status"
+          aria-live="polite"
+        >
+          <LoaderCircle className="size-6 shrink-0 animate-spin" strokeWidth={1.75} />
+          <span className="session-tree-busy-label">{busyLabel}</span>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div
       className="palette-backdrop"
       data-testid="session-tree-panel"
+      data-busy="idle"
       onClick={props.onClose}
     >
       <div
@@ -217,7 +276,7 @@ export function SessionTreePanel(props: {
                     data-role={kind}
                     disabled={forkMode && kind !== "user"}
                     onClick={() =>
-                      void props.onNavigate(
+                      void handleNavigate(
                         node,
                         forkMode
                           ? undefined
@@ -290,11 +349,7 @@ export function SessionInfoPanel(props: {
     : props.info?.sessionId?.slice(0, 8);
 
   return (
-    <div
-      className="palette-backdrop"
-      data-testid="session-info-panel"
-      onClick={props.onClose}
-    >
+    <div className="palette-backdrop" data-testid="session-info-panel" onClick={props.onClose}>
       <div
         className="palette-panel session-tree-panel session-info-panel"
         role="dialog"

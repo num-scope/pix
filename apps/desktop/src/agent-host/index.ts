@@ -432,6 +432,19 @@ async function handleCommand(command: HostCommand): Promise<void> {
         });
         break;
       }
+      case "session.current": {
+        // Re-project the live session without teardown (host promote / tab re-focus).
+        if (!handle) throw new Error("Agent Host is not ready");
+        post({
+          protocolVersion: IPC_PROTOCOL_VERSION,
+          type: "session.opened",
+          requestId: command.requestId,
+          snapshot: handle.snapshot(sequence),
+          threads: await handle.listSessions(),
+          history: handle.historyMessages(),
+        });
+        break;
+      }
       case "session.switch": {
         if (!handle) throw new Error("Agent Host is not ready");
         const result = await handle.switchSession(command.sessionPath);
@@ -452,7 +465,8 @@ async function handleCommand(command: HostCommand): Promise<void> {
         if (!handle) throw new Error("Agent Host is not ready");
         // Default: fork at the current leaf so the branched JSONL includes an assistant
         // message and is flushed to disk (pi defers write when the branch has no assistant).
-        // Explicit entryId forks before that user message (tree-branch semantics).
+        // Explicit entryId: "before" only for user messages (pi re-prompt semantics);
+        // assistant/tool/etc. use "at" (include that entry in the new session).
         let entryId = command.entryId;
         let position: "before" | "at" = "before";
         if (!entryId) {
@@ -460,6 +474,16 @@ async function handleCommand(command: HostCommand): Promise<void> {
           if (!leafId) throw new Error("No session leaf available to fork from");
           entryId = leafId;
           position = "at";
+        } else {
+          const selected = handle.runtime.session.sessionManager.getEntry(entryId);
+          if (!selected) throw new Error("Invalid entry ID for forking");
+          const isUserMessage =
+            selected.type === "message" &&
+            selected.message &&
+            typeof selected.message === "object" &&
+            "role" in selected.message &&
+            selected.message.role === "user";
+          position = isUserMessage ? "before" : "at";
         }
         const result = await handle.fork(entryId, { position });
         if (result.cancelled) throw new Error("Session fork was cancelled");
@@ -494,7 +518,7 @@ async function handleCommand(command: HostCommand): Promise<void> {
           ...(command.customInstructions ? { customInstructions: command.customInstructions } : {}),
         });
         sequence = 0;
-        post({
+        const opened: HostEvent = {
           protocolVersion: IPC_PROTOCOL_VERSION,
           type: "session.opened",
           requestId: command.requestId,
@@ -502,7 +526,10 @@ async function handleCommand(command: HostCommand): Promise<void> {
           threads: await handle.listSessions(),
           history: handle.historyMessages(),
           cancelled: nav.cancelled,
-        });
+        };
+        // pi returns editorText when target is a user message (rewinds to parent).
+        if (typeof nav.editorText === "string") opened.selectedText = nav.editorText;
+        post(opened);
         break;
       }
       case "session.compact": {

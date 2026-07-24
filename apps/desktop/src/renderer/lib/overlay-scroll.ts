@@ -1,10 +1,11 @@
 /**
  * Floating overlay scrollbars — zero layout width, auto-hide, hover + drag.
- * Applies to all named scrollports (thread, settings, sidebars, / and @ menus).
+ * Applies to main named scrollports (thread, settings, sidebars, / and @ menus).
+ * Session tree / session info modals are excluded (no floating thumb).
  */
 
 export const OVERLAY_SCROLL_SELECTOR =
-  ".pix-scroll, .timeline-scroll, .page-body, .settings-page-body, .composer-suggest-scroll, .composer-prompt-scroll, .command-palette-scroll, .session-tree-list";
+  ".pix-scroll, .timeline-scroll, .page-body, .settings-page-body, .composer-suggest-scroll, .composer-prompt-scroll, .command-palette-scroll";
 
 const HIDE_MS = 900;
 const THUMB_CLASS = "pix-scroll-thumb";

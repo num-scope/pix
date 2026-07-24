@@ -74,9 +74,7 @@ export function ThreadHeader(props: {
   const titleTooltip = isFork
     ? [
         fullTitle,
-        parentFile
-          ? tr("session.forkedFrom", { name: parentFile })
-          : tr("session.forked"),
+        parentFile ? tr("session.forkedFrom", { name: parentFile }) : tr("session.forked"),
       ].join("\n")
     : fullTitle;
   const showEnvToggle = props.envToggleVisible !== false;

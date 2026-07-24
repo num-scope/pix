@@ -20,12 +20,20 @@ export interface ModelSummary {
   source: "builtin" | "custom";
 }
 
-/** pi-supported streaming API types for custom providers in models.json. */
+/**
+ * pi-supported streaming API types for custom providers in models.json.
+ * Full set from pi `docs/custom-provider.md` (API Types).
+ */
 export type CustomModelApi =
   | "openai-completions"
   | "openai-responses"
   | "anthropic-messages"
-  | "google-generative-ai";
+  | "google-generative-ai"
+  | "azure-openai-responses"
+  | "openai-codex-responses"
+  | "mistral-conversations"
+  | "google-vertex"
+  | "bedrock-converse-stream";
 
 /** Credential-blind projection of one model entry inside models.json. */
 export interface ModelsJsonModelView {
@@ -687,6 +695,12 @@ export type HostCommand =
       requestId: string;
     }
   | {
+      /** Re-project the currently bound session (no replacement). Used after host promote. */
+      protocolVersion: typeof IPC_PROTOCOL_VERSION;
+      type: "session.current";
+      requestId: string;
+    }
+  | {
       protocolVersion: typeof IPC_PROTOCOL_VERSION;
       type: "session.switch";
       requestId: string;
@@ -1026,7 +1040,7 @@ export type HostEvent =
       threads: SessionThreadSummary[];
       history: SessionHistoryMessage[];
       cancelled?: boolean;
-      /** Original user text restored into the editor after a pi-style fork. */
+      /** User text for the composer after fork, or after navigateTree to a user message. */
       selectedText?: string;
     }
   | {
@@ -1456,6 +1470,8 @@ export interface PixDesktopApi {
       threads: SessionThreadSummary[];
       history: SessionHistoryMessage[];
       cancelled: boolean;
+      /** When navigating to a user message, pi rewinds and returns text for the composer. */
+      selectedText?: string;
     }>;
     compact(instructions?: string): Promise<HostSnapshot>;
     setName(name: string): Promise<HostSnapshot>;
@@ -1618,6 +1634,11 @@ const CUSTOM_MODEL_APIS: readonly CustomModelApi[] = [
   "openai-responses",
   "anthropic-messages",
   "google-generative-ai",
+  "azure-openai-responses",
+  "openai-codex-responses",
+  "mistral-conversations",
+  "google-vertex",
+  "bedrock-converse-stream",
 ];
 
 function isCustomModelApi(value: unknown): value is CustomModelApi {
@@ -1988,7 +2009,13 @@ export function isHostCommand(value: unknown): value is HostCommand {
       (value.model === undefined || isModelSelector(value.model))
     );
   }
-  if (value.type === "session.list" || value.type === "session.new") return true;
+  if (
+    value.type === "session.list" ||
+    value.type === "session.new" ||
+    value.type === "session.current"
+  ) {
+    return true;
+  }
   if (value.type === "session.switch") return typeof value.sessionPath === "string";
   if (value.type === "session.fork") {
     return value.entryId === undefined || typeof value.entryId === "string";

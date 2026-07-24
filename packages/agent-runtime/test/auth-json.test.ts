@@ -2,11 +2,7 @@ import { describe, expect, it } from "vite-plus/test";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-  authJsonPath,
-  deleteProviderCredential,
-  persistProviderApiKey,
-} from "../src/auth-json.ts";
+import { authJsonPath, deleteProviderCredential, persistProviderApiKey } from "../src/auth-json.ts";
 
 describe("auth.json persistence", () => {
   it("writes durable api_key credentials and can delete them", async () => {
@@ -19,10 +15,7 @@ describe("auth.json persistence", () => {
 
       await persistProviderApiKey(dir, "other", "sk-2");
       await deleteProviderCredential(dir, "XTJ");
-      const next = JSON.parse(await readFile(authJsonPath(dir), "utf8")) as Record<
-        string,
-        unknown
-      >;
+      const next = JSON.parse(await readFile(authJsonPath(dir), "utf8")) as Record<string, unknown>;
       expect(next.XTJ).toBeUndefined();
       expect(next.other).toEqual({ type: "api_key", key: "sk-2" });
     } finally {

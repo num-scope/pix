@@ -95,9 +95,7 @@ export function SettingsSectionBlock(props: {
                 className="settings-section-label-help inline-flex shrink-0 cursor-help items-center text-[var(--text-subtle)] hover:text-[var(--muted-foreground)]"
                 title={props.labelHint}
                 aria-label={props.labelHint}
-                data-testid={
-                  props.testId ? `${props.testId}-help` : "settings-section-help"
-                }
+                data-testid={props.testId ? `${props.testId}-help` : "settings-section-help"}
               >
                 <CircleHelp className="size-3.5" strokeWidth={1.75} aria-hidden />
               </span>
@@ -186,18 +184,29 @@ export function SettingsSelect(props: {
 }) {
   // Radix Select disallows empty string item values.
   const EMPTY = "__pix_settings_empty__";
-  const options = props.options.map((opt) => ({
+  const value = props.value === "" ? EMPTY : props.value;
+  // Radix only paints SelectValue text when a matching SelectItem exists.
+  // Keep orphan stored values visible (e.g. pi TUI wrote a timeout not in our list).
+  let options = props.options.map((opt) => ({
     ...opt,
     value: opt.value === "" ? EMPTY : opt.value,
   }));
-  const value = props.value === "" ? EMPTY : props.value;
+  if (value && !options.some((opt) => opt.value === value)) {
+    options = [
+      ...options,
+      {
+        value,
+        label: props.value || value,
+      },
+    ];
+  }
   const selected = options.find((opt) => opt.value === value);
   const widthClass = props.fullWidth
     ? "w-full min-w-0"
     : props.size === "sm"
       ? "w-28"
       : props.size === "lg"
-        ? "w-40"
+        ? "w-44"
         : props.size === "md"
           ? "w-36"
           : undefined;
@@ -212,7 +221,10 @@ export function SettingsSelect(props: {
         data-testid={props.testId}
         className={cn(widthClass, props.className)}
       >
-        <SelectValue placeholder={selected?.label ?? props.value} />
+        {/* Explicit children so the trigger never goes blank when item text fails to project. */}
+        <SelectValue placeholder={selected?.label ?? (props.value || "—")}>
+          {selected?.label ?? (props.value || "—")}
+        </SelectValue>
       </SelectTrigger>
       <SelectContent className="z-[11000]" position="popper" align="end">
         {options.map((opt) => (
@@ -239,6 +251,13 @@ export const SettingsTextarea = React.forwardRef<
 >(({ className, ...props }, ref) => <Textarea ref={ref} className={cn(className)} {...props} />);
 SettingsTextarea.displayName = "SettingsTextarea";
 
+/**
+ * Danger hover shared with auth「清除」: keep neutral chrome at rest,
+ * only tint red on hover/focus (not solid destructive fill).
+ */
+export const SETTINGS_DANGER_HOVER_CLASS =
+  "hover:border-transparent hover:bg-red-500/10 hover:text-red-400 focus-visible:ring-red-500/20 dark:hover:bg-red-500/15 dark:hover:text-red-400";
+
 export function SettingsPillButton(props: {
   label: string;
   onClick?: () => void;
@@ -257,11 +276,7 @@ export function SettingsPillButton(props: {
       // Keep secondary chrome for danger — destructive paints solid red at rest.
       variant="secondary"
       size="sm"
-      className={cn(
-        props.danger &&
-          "hover:border-transparent hover:bg-red-500/10 hover:text-red-400 focus-visible:ring-red-500/20 dark:hover:bg-red-500/15 dark:hover:text-red-400",
-        props.className,
-      )}
+      className={cn(props.danger && SETTINGS_DANGER_HOVER_CLASS, props.className)}
       onClick={props.onClick}
     >
       {props.label}
@@ -269,29 +284,32 @@ export function SettingsPillButton(props: {
   );
 }
 
-export function SettingsButton(props: React.ComponentProps<typeof Button> & { testId?: string }) {
-  const { testId, className, size = "sm", variant = "secondary", ...rest } = props;
+export function SettingsButton(
+  props: React.ComponentProps<typeof Button> & { testId?: string; danger?: boolean },
+) {
+  const { testId, className, size = "sm", variant = "secondary", danger, ...rest } = props;
   return (
     <Button
       {...(testId !== undefined ? { "data-testid": testId } : {})}
       size={size}
-      variant={variant}
-      className={className}
+      // Danger actions stay secondary at rest (auth clear pattern), not solid destructive.
+      variant={danger ? "secondary" : variant}
+      className={cn(danger && SETTINGS_DANGER_HOVER_CLASS, className)}
       {...rest}
     />
   );
 }
 
 export function SettingsIconButton(
-  props: React.ComponentProps<typeof Button> & { testId?: string },
+  props: React.ComponentProps<typeof Button> & { testId?: string; danger?: boolean },
 ) {
-  const { testId, className, size = "icon-sm", variant = "ghost", ...rest } = props;
+  const { testId, className, size = "icon-sm", variant = "ghost", danger, ...rest } = props;
   return (
     <Button
       {...(testId !== undefined ? { "data-testid": testId } : {})}
       size={size}
       variant={variant}
-      className={className}
+      className={cn(danger && SETTINGS_DANGER_HOVER_CLASS, className)}
       {...rest}
     />
   );

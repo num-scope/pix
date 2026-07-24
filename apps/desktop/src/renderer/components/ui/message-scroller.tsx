@@ -42,7 +42,11 @@ function MessageScrollerViewport({
     <MessageScrollerPrimitive.Viewport
       data-slot="message-scroller-viewport"
       className={cn(
-        "size-full min-h-0 min-w-0 scroll-fade-b scrollbar-thin scrollbar-gutter-stable overflow-y-auto overscroll-contain contain-content data-autoscrolling:scrollbar-none",
+        // No contain-content: size containment + streaming autoscroll collapses scrollHeight
+        // mid-turn (content “eaten”, cannot scroll until remount).
+        // No scroll-fade-b: permanent bottom mask fades the latest AI tokens while pinned
+        // to the bottom; composer-dock-fade is gated on data-scrollable~="end" instead.
+        "size-full min-h-0 min-w-0 scrollbar-thin scrollbar-gutter-stable overflow-y-auto overscroll-contain data-autoscrolling:scrollbar-none",
         className,
       )}
       {...props}
@@ -73,7 +77,9 @@ function MessageScrollerItem({
       data-slot="message-scroller-item"
       scrollAnchor={scrollAnchor}
       className={cn(
-        "min-w-0 shrink-0 [contain-intrinsic-size:auto_10rem] [content-visibility:auto]",
+        // Never flex-shrink or content-visibility-skip: streaming rows must report real
+        // height or MessageScroller under-counts scrollHeight and earlier messages vanish.
+        "min-w-0 shrink-0 grow-0 basis-auto",
         className,
       )}
       {...props}

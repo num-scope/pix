@@ -14,6 +14,32 @@ interface PendingDialog {
   removeAbort?: () => void;
 }
 
+/**
+ * Headless stand-in for pi TUI `Theme`.
+ * Extensions (e.g. pi-mcp-adapter) call `ui.theme.fg("accent", text)` for status
+ * strings; in desktop/RPC mode there is no ANSI terminal — return plain text so
+ * init cannot throw on undefined theme.
+ */
+export function createPortableTheme() {
+  const pass = (text: string) => text;
+  const wrap = (_color: string, text: string) => text;
+  return {
+    name: "pix-portable",
+    fg: wrap,
+    bg: wrap,
+    bold: pass,
+    italic: pass,
+    underline: pass,
+    inverse: pass,
+    strikethrough: pass,
+    getFgAnsi: () => "",
+    getBgAnsi: () => "",
+    getColorMode: () => "256color" as const,
+    getThinkingBorderColor: () => pass,
+    getBashModeBorderColor: () => pass,
+  };
+}
+
 export interface PortableExtensionUiBridge {
   readonly uiContext: ExtensionUIContext;
   respond(response: ExtensionUiResponse): boolean;
@@ -34,6 +60,7 @@ export function createPortableExtensionUiBridge(
   const unsupported = new Set<string>();
   const statusKeys = new Set<string>();
   const widgetKeys = new Set<string>();
+  const portableTheme = createPortableTheme();
   let editorText = "";
   let titleSet = false;
   let workingMessageSet = false;
@@ -185,7 +212,7 @@ export function createPortableExtensionUiBridge(
     setEditorComponent: () => reportUnsupported("setEditorComponent"),
     getEditorComponent: () => undefined,
     getAllThemes: () => [],
-    getTheme: () => undefined,
+    getTheme: (_name?: string) => portableTheme as never,
     setTheme: () => ({ success: false, error: "Theme switching is unavailable in this mode" }),
     getToolsExpanded: () => false,
     setToolsExpanded: () => reportUnsupported("setToolsExpanded"),
@@ -193,7 +220,8 @@ export function createPortableExtensionUiBridge(
 
   const uiContext = new Proxy(portable, {
     get(target, property, receiver) {
-      if (property === "theme") return undefined;
+      // Must be a real object: many extensions style status/widgets via theme.fg.
+      if (property === "theme") return portableTheme;
       if (Reflect.has(target, property)) return Reflect.get(target, property, receiver);
       if (typeof property === "string") {
         return (..._args: unknown[]) => {

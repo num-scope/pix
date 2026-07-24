@@ -69,11 +69,7 @@ export {
   projectToolPresentation,
   sanitizeSerializable,
 } from "./generic-renderers.ts";
-export {
-  authJsonPath,
-  deleteProviderCredential,
-  persistProviderApiKey,
-} from "./auth-json.ts";
+export { authJsonPath, deleteProviderCredential, persistProviderApiKey } from "./auth-json.ts";
 export {
   ensureModelsJsonTemplate,
   modelsJsonPath,
@@ -222,7 +218,7 @@ export interface PixRuntimeHandle {
   navigateTree(
     targetId: string,
     options?: { summarize?: boolean; customInstructions?: string },
-  ): Promise<{ cancelled: boolean; snapshot: HostSnapshot }>;
+  ): Promise<{ cancelled: boolean; snapshot: HostSnapshot; editorText?: string }>;
   compact(instructions?: string): Promise<HostSnapshot>;
   setSessionName(name: string): HostSnapshot;
   getSessionName(): string | undefined;
@@ -451,24 +447,36 @@ export function projectSessionHistory(
   return history;
 }
 
-/** Build history from session tree entries so fork targets keep entry ids. */
+type SessionHistoryEntryLike = {
+  type: string;
+  id: string;
+  timestamp?: string;
+  summary?: string;
+  message?: {
+    role?: string;
+    content?: unknown;
+    toolName?: string;
+    isError?: boolean;
+    customType?: string;
+  };
+};
+
+/**
+ * Build timeline history from the active branch (root → leaf).
+ * Prefer getBranch() so navigateTree / edit-resend hide abandoned siblings;
+ * fall back to getEntries() for simple test doubles.
+ */
 export function projectHistoryFromSessionManager(sessionManager: {
-  getEntries(): Array<{
-    type: string;
-    id: string;
-    timestamp?: string;
-    summary?: string;
-    message?: {
-      role?: string;
-      content?: unknown;
-      toolName?: string;
-      isError?: boolean;
-      customType?: string;
-    };
-  }>;
+  getEntries(): SessionHistoryEntryLike[];
+  /** When present, project only the active path (pi SessionManager.getBranch). */
+  getBranch?: (fromId?: string) => SessionHistoryEntryLike[];
 }): SessionHistoryMessage[] {
   const history: SessionHistoryMessage[] = [];
-  for (const entry of sessionManager.getEntries()) {
+  const entries =
+    typeof sessionManager.getBranch === "function"
+      ? sessionManager.getBranch()
+      : sessionManager.getEntries();
+  for (const entry of entries) {
     if (entry.type === "message") {
       const projected = projectSessionHistory([entry.message], [entry.id]);
       for (const item of projected) {
@@ -504,9 +512,7 @@ function threadTitleFromSession(info: { name?: string; firstMessage: string; id:
  * Oldest by createdAt (fallback modifiedAt) keeps the bare title.
  * Pure helper — does not rewrite session files (pi does not auto-number forks).
  */
-export function disambiguateSessionTitles(
-  threads: SessionThreadSummary[],
-): SessionThreadSummary[] {
+export function disambiguateSessionTitles(threads: SessionThreadSummary[]): SessionThreadSummary[] {
   if (threads.length < 2) return threads;
   const groups = new Map<string, number[]>();
   for (let i = 0; i < threads.length; i++) {
@@ -1309,7 +1315,8 @@ export async function createPixRuntime(
       );
     },
     setThinkingLevel(level) {
-      const known = new Set(["off", "minimal", "low", "medium", "high", "xhigh"]);
+      // Full pi ThinkingLevel set (settings/rpc/usage + thinkingLevelMap keys).
+      const known = new Set(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
       const normalized = String(level).trim().toLowerCase();
       if (!known.has(normalized)) {
         throw new Error(`Unknown thinking level: ${level}`);
@@ -1394,7 +1401,10 @@ export async function createPixRuntime(
     },
     async removeCustomProvider(provider) {
       const providerId = provider.trim();
-      const config = await removeCustomProviderFromModelsJson(runtime.services.agentDir, providerId);
+      const config = await removeCustomProviderFromModelsJson(
+        runtime.services.agentDir,
+        providerId,
+      );
       await deleteProviderCredential(runtime.services.agentDir, providerId);
       try {
         await runtime.services.modelRuntime.removeRuntimeApiKey(providerId);
@@ -1439,6 +1449,8 @@ export async function createPixRuntime(
           extensionErrors,
           configDiagnostics,
         ),
+        // pi: navigating to a user message rewinds to its parent and returns text for the editor
+        ...(typeof result.editorText === "string" ? { editorText: result.editorText } : {}),
       };
     },
     async compact(instructions) {
@@ -1664,21 +1676,43 @@ export async function createPixRuntime(
 /** Pix product default: 60 minutes (pi upstream default is 5 minutes / 300_000). */
 export const PIX_DEFAULT_HTTP_IDLE_TIMEOUT_MS = 3_600_000;
 
+/**
+ * Pix product defaults for network/telemetry when the user never set them.
+ * pi defaults enableInstallTelemetry to true; Pix keeps both reporting switches off.
+ */
+export const PIX_DEFAULT_ENABLE_INSTALL_TELEMETRY = false;
+export const PIX_DEFAULT_ENABLE_ANALYTICS = false;
+
 function projectPiSettings(
   services: AgentSessionServices,
   _session?: AgentSessionRuntime["session"],
 ): PiSettingsView {
   const sm = services.settingsManager;
-  // If the user never set httpIdleTimeoutMs, promote Pix's 60-minute product default.
-  const globalSnap = sm.getGlobalSettings() as { httpIdleTimeoutMs?: unknown };
-  if (
-    globalSnap.httpIdleTimeoutMs === undefined ||
-    globalSnap.httpIdleTimeoutMs === null
-  ) {
+  // Promote product defaults only when the key was never written (do not override user choice).
+  const globalSnap = sm.getGlobalSettings() as {
+    httpIdleTimeoutMs?: unknown;
+    enableInstallTelemetry?: unknown;
+    enableAnalytics?: unknown;
+  };
+  if (globalSnap.httpIdleTimeoutMs === undefined || globalSnap.httpIdleTimeoutMs === null) {
     try {
       sm.setHttpIdleTimeoutMs(PIX_DEFAULT_HTTP_IDLE_TIMEOUT_MS);
     } catch {
       // Ignore if SettingsManager rejects (should not for a valid ms value).
+    }
+  }
+  if (globalSnap.enableInstallTelemetry === undefined) {
+    try {
+      sm.setEnableInstallTelemetry(PIX_DEFAULT_ENABLE_INSTALL_TELEMETRY);
+    } catch {
+      // Ignore write failures (settings may be read-only in tests).
+    }
+  }
+  if (globalSnap.enableAnalytics === undefined) {
+    try {
+      sm.setEnableAnalytics(PIX_DEFAULT_ENABLE_ANALYTICS);
+    } catch {
+      // Ignore write failures (settings may be read-only in tests).
     }
   }
   const thinking = sm.getDefaultThinkingLevel();
@@ -1697,9 +1731,9 @@ function projectPiSettings(
     hideThinkingBlock: sm.getHideThinkingBlock(),
     quietStartup: sm.getQuietStartup(),
     enableSkillCommands: sm.getEnableSkillCommands(),
-    // Global settings UI needs the full pi ThinkingLevel set. Session-model subsets
-    // (often just "off") are exposed on HostSnapshot for the composer only.
-    availableThinkingLevels: ["off", "minimal", "low", "medium", "high", "xhigh"],
+    // Global settings UI needs the full pi ThinkingLevel set (incl. max).
+    // Session-model subsets (often just "off") are on HostSnapshot for the composer only.
+    availableThinkingLevels: ["off", "minimal", "low", "medium", "high", "xhigh", "max"],
     steeringMode: sm.getSteeringMode(),
     followUpMode: sm.getFollowUpMode(),
     doubleEscapeAction: sm.getDoubleEscapeAction(),

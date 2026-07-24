@@ -118,4 +118,28 @@ describe("U01-U04 portable Extension UI bridge", () => {
     expect(JSON.stringify(requests)).not.toContain("function");
     bridge.dispose();
   });
+
+  it("exposes a portable theme so extensions can style status without TUI", () => {
+    const requests: Array<{ method: string; args: unknown }> = [];
+    const bridge = createPortableExtensionUiBridge({
+      runtimeId: "runtime-theme",
+      onRequest: (request) => requests.push(request),
+    });
+
+    // pi-mcp-adapter: ui.setStatus("mcp", ui.theme.fg("accent", `MCP: …`))
+    const theme = bridge.uiContext.theme as {
+      fg: (color: string, text: string) => string;
+      bold: (text: string) => string;
+    };
+    expect(theme).toBeTruthy();
+    const styled = theme.fg("accent", "MCP: 1/2 servers");
+    expect(styled).toBe("MCP: 1/2 servers");
+    expect(theme.bold("x")).toBe("x");
+    // ExtensionUIContext.getTheme requires a name argument in pi types.
+    expect(bridge.uiContext.getTheme("pix-portable")).toBe(theme);
+
+    bridge.uiContext.setStatus("mcp", styled);
+    expect(requests.some((r) => r.method === "setStatus")).toBe(true);
+    bridge.dispose();
+  });
 });

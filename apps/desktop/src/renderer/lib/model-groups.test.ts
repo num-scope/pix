@@ -25,12 +25,7 @@ describe("model-groups", () => {
     const groups = groupModelsByProvider(models, "自定义");
     // Custom first (Acme, XTJ), then builtin (Anthropic, OpenAI) — all provider labels.
     expect(groups.map((g) => g.label)).toEqual(["Acme", "XTJ", "Anthropic", "OpenAI"]);
-    expect(groups.map((g) => g.key)).toEqual([
-      "custom:acme",
-      "custom:XTJ",
-      "anthropic",
-      "openai",
-    ]);
+    expect(groups.map((g) => g.key)).toEqual(["custom:acme", "custom:XTJ", "anthropic", "openai"]);
     expect(groups.every((g) => g.key !== "custom")).toBe(true);
   });
 });

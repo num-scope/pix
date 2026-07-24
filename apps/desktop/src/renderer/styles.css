@@ -108,6 +108,9 @@
   --divider: color-mix(in srgb, #ffffff 9%, transparent);
   --input: #3c3c3c;
   --ring: oklch(0.62 0.09 255);
+  /* Interactive accent: switches (on) + hyperlinks */
+  --link: #379cfc;
+  --switch-on: #379cfc;
   --sidebar: #151515;
   --sidebar-foreground: oklch(0.985 0.004 260);
   --sidebar-primary: oklch(0.72 0.12 255);
@@ -193,6 +196,9 @@
   --divider: color-mix(in srgb, #9aa0ab 24%, #ffffff);
   --input: #d7d9e0;
   --ring: #0a84ff;
+  /* Interactive accent: switches (on) + hyperlinks */
+  --link: #379cfc;
+  --switch-on: #379cfc;
   --sidebar: #f1f2f4;
   --sidebar-foreground: #171717;
   --sidebar-primary: #171717;
@@ -667,8 +673,7 @@ html[data-custom-window-controls="true"] .page-header {
 .page-body,
 .settings-page-body,
 .composer-suggest-scroll,
-.command-palette-scroll,
-.session-tree-list {
+.command-palette-scroll {
   min-height: 0;
   min-width: 0;
   overflow-x: hidden;
@@ -693,8 +698,7 @@ html[data-custom-window-controls="true"] .page-header {
 .settings-page-body::-webkit-scrollbar,
 .composer-suggest-scroll::-webkit-scrollbar,
 .composer-prompt-scroll::-webkit-scrollbar,
-.command-palette-scroll::-webkit-scrollbar,
-.session-tree-list::-webkit-scrollbar {
+.command-palette-scroll::-webkit-scrollbar {
   width: 0 !important;
   height: 0 !important;
   background: transparent;
@@ -781,22 +785,62 @@ html[data-custom-window-controls="true"] .page-header {
   min-height: 100%;
   flex-direction: column;
 }
+/*
+ * Message list must NEVER flex-shrink below content height.
+ * `min-height: 0` + `flex-shrink: 1` was collapsing the list to the viewport
+ * while the AI reply grew — getBoundingClientRect then under-reported height,
+ * MessageScroller scroll range shrank, and earlier messages looked “eaten”.
+ */
 .thread-messages {
+  flex: 1 0 auto;
+  min-height: min-content;
+  width: 100%;
+}
+.thread-messages.empty {
   flex: 1 1 auto;
   min-height: 0;
-  width: 100%;
+}
+/* Direct MessageScroller items (no wrapping list) share the same non-shrink rule. */
+[data-slot="message-scroller-content"] > [data-slot="message-scroller-item"] {
+  flex: 0 0 auto;
+  min-height: min-content;
+}
+/*
+ * Composer sits after messages. `mt-auto` consumes free space in the min-h-full
+ * column so the dock stays at the visual bottom when the thread is short.
+ * `position: sticky; bottom: 0` keeps it fixed to the scrollport while scrolling.
+ */
+[data-slot="message-scroller-content"] > .composer-dock {
+  margin-top: auto;
+  position: sticky;
+  bottom: 0;
+  flex-shrink: 0;
 }
 
 /*
- * Fade just above the sticky composer (still part of the full-height scrollport).
+ * Fade just above the sticky composer — only when NOT pinned to the bottom.
+ * MessageScroller sets data-scrollable~="end" when more content exists below
+ * (user scrolled up). At the bottom there must be no gradient over the latest reply.
  */
 .composer-dock-fade {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.15s ease;
   background: linear-gradient(
     to bottom,
     color-mix(in srgb, var(--canvas, var(--background)) 0%, transparent) 0%,
     color-mix(in srgb, var(--canvas, var(--background)) 70%, transparent) 50%,
     var(--canvas, var(--background)) 100%
   );
+}
+[data-slot="message-scroller-viewport"][data-scrollable~="end"] .composer-dock-fade,
+[data-slot="message-scroller"][data-scrollable~="end"] .composer-dock-fade {
+  opacity: 1;
+}
+/* Never fade over an in-place user-message editor (textarea + actions). */
+[data-slot="message-scroller-viewport"]:has([data-editing="true"]) .composer-dock-fade,
+[data-slot="message-scroller"]:has([data-editing="true"]) .composer-dock-fade {
+  opacity: 0 !important;
 }
 .composer-dock {
   /* Keep solid canvas under the sticky input so scrolling messages don't show through. */
@@ -1197,7 +1241,8 @@ html[data-custom-window-controls="true"] .page-header {
   @apply my-0.5;
 }
 .pix-md a {
-  @apply text-[#0a84ff] underline-offset-2 hover:underline;
+  color: var(--link, #379cfc);
+  @apply underline-offset-2 hover:underline;
 }
 .pix-md code {
   @apply rounded bg-[var(--muted)] px-1 py-0.5 font-mono text-[0.9em];
@@ -1236,6 +1281,8 @@ html[data-custom-window-controls="true"] .page-header {
 /* Edit mode: expand to full message column width (like Codex). */
 .timeline-user-row[data-editing="true"] {
   justify-content: stretch;
+  position: relative;
+  z-index: 3;
 }
 .timeline-user-content {
   display: flex;
@@ -1274,6 +1321,7 @@ html[data-custom-window-controls="true"] .page-header {
   display: block;
   width: 100%;
   min-height: 5.5rem;
+  max-height: min(50vh, 22rem);
   resize: vertical;
   border: none;
   /* Match composer input card radius */
@@ -1285,11 +1333,19 @@ html[data-custom-window-controls="true"] .page-header {
   line-height: 1.45;
   outline: none;
   box-sizing: border-box;
+  /* No mask / fade on the editor itself */
+  -webkit-mask-image: none;
+  mask-image: none;
 }
 .timeline-user-edit-actions {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
+  position: relative;
+  z-index: 1;
+  flex-shrink: 0;
+  margin: 0;
+  padding: 2px 0 4px;
 }
 .timeline-user-edit-cancel,
 .timeline-user-edit-send {
@@ -1376,7 +1432,7 @@ html[data-custom-window-controls="true"] .page-header {
 .timeline-process-details {
   border: none;
 }
-/* Full-width row + permanent hairline under “已处理” (open or closed). */
+/* Full-width row + permanent hairline under process status (open or closed). */
 .timeline-process-summary {
   display: flex;
   width: 100%;
@@ -1396,6 +1452,19 @@ html[data-custom-window-controls="true"] .page-header {
   border-top: 0;
   text-align: left;
 }
+.timeline-process-summary:hover {
+  color: var(--muted-foreground);
+}
+.timeline-process-label {
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.timeline-process[data-active="true"] .timeline-process-summary {
+  color: var(--muted-foreground);
+}
 /* Collapsed → right; open → down */
 .timeline-process-chevron {
   transition: transform 0.16s ease;
@@ -1407,6 +1476,158 @@ html[data-custom-window-controls="true"] .page-header {
   margin-top: 10px;
   padding-top: 2px;
   border-top: none;
+}
+/*
+ * Codex-style process steps.
+ * Shared left edge: narrative text and tool icons start at the same x
+ * (no extra horizontal padding on rows that shifts icons past the prose).
+ */
+.process-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 2px 0 6px;
+  margin: 0;
+}
+.process-step-thinking {
+  margin: 8px 0 10px;
+  padding: 0;
+  color: var(--muted-foreground);
+  font-size: 13.5px;
+  line-height: 1.55;
+}
+.process-step-thinking-body {
+  color: inherit;
+  font-size: inherit;
+  line-height: inherit;
+}
+.process-step-thinking-body p {
+  margin: 0.35em 0;
+}
+.process-step-thinking-body > :first-child {
+  margin-top: 0;
+}
+.process-step-thinking-body > :last-child {
+  margin-bottom: 0;
+}
+.process-step-trigger {
+  display: block;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+.process-step-row {
+  /* Icon column starts at the same left edge as thinking prose. */
+  box-sizing: border-box;
+  width: 100%;
+  margin: 0;
+  border-radius: 8px;
+  padding: 5px 4px 5px 0;
+  gap: 8px;
+  color: var(--muted-foreground);
+  transition:
+    background-color 0.12s ease,
+    color 0.12s ease;
+}
+.process-step-row:hover,
+.process-step-trigger:hover .process-step-row {
+  background: color-mix(in srgb, var(--muted-foreground) 8%, transparent);
+  color: var(--foreground);
+}
+.process-step-row.is-running {
+  color: var(--muted-foreground);
+}
+.process-step-row.is-error {
+  color: var(--destructive, #ef4444);
+}
+/* Nested rows indent under the group label, not past the icon column of the group. */
+.process-step-row-nested {
+  padding-left: 0;
+  margin-left: calc(0.875rem + 8px); /* icon size-3.5 + gap */
+}
+.process-step-icon {
+  display: inline-flex;
+  width: 0.875rem; /* size-3.5 */
+  height: 0.875rem;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  opacity: 0.75;
+}
+.process-step-row:hover .process-step-icon,
+.process-step-trigger:hover .process-step-icon {
+  opacity: 1;
+}
+.process-step-content {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.process-step-verb {
+  color: inherit;
+}
+.process-step-detail {
+  color: color-mix(in srgb, var(--muted-foreground) 88%, var(--foreground));
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 0.92em;
+}
+.process-step-row:hover .process-step-detail,
+.process-step-trigger:hover .process-step-detail {
+  color: var(--foreground);
+}
+.process-step-path {
+  display: inline;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--link, #379cfc);
+  font: inherit;
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 0.92em;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+.process-step-path:hover {
+  color: color-mix(in srgb, var(--link, #379cfc) 85%, white);
+}
+.process-step-expand {
+  color: inherit;
+  margin-left: auto;
+}
+.process-step-body,
+.process-step-group-body {
+  margin: 2px 0 6px;
+  padding-left: calc(0.875rem + 8px);
+}
+.process-step-pre {
+  margin: 4px 0;
+  max-height: 220px;
+  overflow: auto;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--muted) 55%, transparent);
+  padding: 8px 10px;
+  color: var(--muted-foreground);
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 11.5px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.process-step-group {
+  margin: 1px 0;
+}
+.timeline-live-status {
+  margin: 2px 0 14px;
+  color: var(--muted-foreground);
 }
 .timeline-assistant-row {
   width: 100%;
@@ -1980,6 +2201,121 @@ html[data-custom-window-controls="true"] .page-header {
 .content-file-link:hover {
   background: color-mix(in srgb, #168fc7 16%, transparent);
 }
+/* File / path source citation chip */
+.content-source-cite {
+  display: inline-flex;
+  max-width: 100%;
+  align-items: baseline;
+  gap: 3px;
+  border-radius: 5px;
+  padding: 0 4px 0 3px;
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 0.9em;
+  line-height: 1.45;
+  text-decoration: none;
+  vertical-align: baseline;
+}
+.content-source-cite-icon {
+  display: inline-block;
+  width: 0.85em;
+  height: 0.85em;
+  flex-shrink: 0;
+  opacity: 0.7;
+  vertical-align: -0.05em;
+}
+.content-source-cite-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.content-source-line {
+  flex-shrink: 0;
+  color: var(--muted-foreground);
+  font-variant-numeric: tabular-nums;
+  opacity: 0.85;
+}
+/* GFM footnote superscript refs */
+.pix-md .content-cite-sup {
+  font-size: 0.72em;
+  line-height: 0;
+  margin-inline: 0.1em;
+  vertical-align: super;
+}
+.pix-md a.content-cite-ref {
+  display: inline-flex;
+  min-width: 1.15em;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--muted-foreground) 12%, transparent);
+  padding: 0.12em 0.38em;
+  color: var(--muted-foreground);
+  font-size: 0.92em;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.2;
+  text-decoration: none;
+  vertical-align: baseline;
+}
+.pix-md a.content-cite-ref:hover {
+  background: color-mix(in srgb, var(--link, #379cfc) 16%, transparent);
+  color: var(--link, #379cfc);
+}
+.pix-md a.content-cite-backref {
+  margin-left: 0.25em;
+  color: var(--muted-foreground);
+  text-decoration: none;
+  opacity: 0.75;
+}
+.pix-md a.content-cite-backref:hover {
+  color: var(--link, #379cfc);
+  opacity: 1;
+}
+/* Footnotes / sources block at end of message */
+.pix-md .content-footnotes {
+  margin-top: 1rem;
+  padding-top: 0.65rem;
+  border-top: 1px solid var(--divider, var(--border));
+  color: var(--muted-foreground);
+  font-size: 12.5px;
+}
+.pix-md .content-footnotes-marker {
+  margin-bottom: 0.35rem;
+  color: var(--muted-foreground);
+}
+.pix-md .content-footnotes > h2.sr-only,
+.pix-md .content-footnotes > .sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+.pix-md .content-footnotes > ol {
+  margin: 0.25rem 0 0;
+  padding-left: 1.25rem;
+  list-style: decimal;
+}
+.pix-md .content-footnotes li {
+  margin: 0.35rem 0;
+  color: var(--muted-foreground);
+}
+.pix-md .content-footnotes li > p {
+  margin: 0.15rem 0;
+}
+.pix-md .content-cite-flash {
+  border-radius: 4px;
+  outline: 1px solid color-mix(in srgb, var(--link, #379cfc) 45%, transparent);
+  background: color-mix(in srgb, var(--link, #379cfc) 10%, transparent);
+  transition:
+    background 0.8s ease,
+    outline-color 0.8s ease;
+}
 
 @media (max-width: 620px) {
   .content-image-preview {
@@ -2263,6 +2599,30 @@ a.btn-secondary:focus-visible {
   color: var(--text-subtle);
 }
 
+/*
+ * Error dialog body: long paths / stack traces without spaces must wrap.
+ * Grid min-width:auto is already broken in the component; this is the text policy.
+ */
+.error-dialog-message {
+  box-sizing: border-box;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  hyphens: auto;
+}
+
+/* Models settings: wildcard patterns stay fixed height and scroll inside. */
+.models-scoped-patterns-input,
+textarea.models-scoped-patterns-input[data-slot="textarea"] {
+  field-sizing: fixed;
+  height: 7.5rem;
+  min-height: 7.5rem;
+  max-height: 7.5rem;
+  resize: none;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
 /* Session tree — flat peer list (no indentation / branch connectors) */
 .session-tree-panel {
   display: flex;
@@ -2280,13 +2640,38 @@ a.btn-secondary:focus-visible {
   border-bottom: 1px solid color-mix(in srgb, var(--border) 80%, transparent);
   padding: 1rem 1.1rem 0.85rem;
 }
+
+/* In-flight navigate / path summary / fork — full-screen mask only (no in-panel chrome) */
+.session-tree-busy-backdrop {
+  /* Same viewport mask as palette-backdrop; block dismiss while busy. */
+  cursor: wait;
+  pointer-events: auto;
+}
+.session-tree-busy {
+  display: flex;
+  max-width: min(20rem, calc(100% - 2rem));
+  flex-direction: column;
+  align-items: center;
+  gap: 0.75rem;
+  color: #f5f5f7;
+  text-align: center;
+  pointer-events: none;
+  user-select: none;
+}
+.session-tree-busy-label {
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  line-height: 1.35;
+  text-shadow: 0 1px 2px rgb(0 0 0 / 35%);
+}
 .session-tree-list {
   margin: 0;
   list-style: none;
   flex: 1 1 auto;
   min-height: 200px;
   min-width: 0;
-  /* Unified overlay scrollbar (pix-scroll / command-palette-scroll family). */
+  /* Modal list: scrollable, no unified floating thumb and no native bar chrome. */
   overflow-x: hidden;
   overflow-y: auto;
   overscroll-behavior: contain;
@@ -2531,33 +2916,6 @@ a.btn-secondary:focus-visible {
   background: var(--hover-fill);
   border-color: color-mix(in srgb, var(--border) 80%, var(--foreground));
 }
-.shortcut-action-btn {
-  display: inline-flex;
-  width: 1.75rem;
-  height: 1.75rem;
-  flex: none;
-  align-items: center;
-  justify-content: center;
-  border: 0;
-  border-radius: 0.5rem;
-  background: transparent;
-  color: var(--muted-foreground);
-  transition:
-    color 0.12s ease,
-    background-color 0.12s ease,
-    opacity 0.12s ease;
-}
-.shortcut-action-btn:not(:disabled):hover {
-  background: var(--hover-fill);
-  color: var(--foreground);
-}
-.shortcut-action-delete:not(:disabled):hover {
-  color: var(--destructive);
-}
-.shortcut-action-btn:disabled {
-  cursor: default;
-  opacity: 0.28;
-}
 .shortcut-bind-empty {
   border-style: dashed;
   color: var(--text-subtle);
@@ -2765,9 +3123,6 @@ a.btn-secondary:focus-visible {
   background-repeat: no-repeat;
   background-position: right 10px center;
 }
-.archived-delete-all {
-  @apply inline-flex h-8 items-center gap-1.5 rounded-full border border-red-500/25 bg-red-500/10 px-3 text-[12.5px] font-medium text-red-400 transition-colors hover:bg-red-500/15;
-}
 .archived-group {
   @apply mb-6;
 }
@@ -2788,9 +3143,6 @@ a.btn-secondary:focus-visible {
   border-radius: var(--radius-panel);
   border-color: var(--border);
   background: var(--surface-panel);
-}
-.archived-group-menu-item {
-  @apply flex w-full items-center gap-2 px-3 py-2 text-left text-[13px] text-red-400 hover:bg-red-500/10;
 }
 .archived-card {
   @apply overflow-hidden border;
@@ -2824,12 +3176,6 @@ a.btn-secondary:focus-visible {
 }
 .archived-item-actions {
   @apply flex shrink-0 items-center gap-1.5;
-}
-.archived-icon-btn {
-  @apply inline-flex h-8 w-8 items-center justify-center rounded-lg text-[var(--muted-foreground)] hover:bg-[var(--hover-fill)] hover:text-red-500;
-}
-.archived-unarchive-btn {
-  @apply inline-flex h-8 items-center rounded-full border border-[var(--border)] bg-[var(--secondary,#f1f2f4)] px-3 text-[12.5px] text-[var(--foreground)] hover:bg-[var(--hover-fill)];
 }
 .settings-section-block {
   @apply flex flex-col gap-2;
@@ -3195,9 +3541,17 @@ a.btn-secondary:focus-visible {
 .settings-form-note {
   @apply m-0 text-[12px] text-[var(--muted-foreground)];
 }
+/* Auth provider row: configured vs missing badges */
 .settings-status-chip {
-  @apply rounded-full px-2 py-0.5 text-[11px] text-[var(--muted-foreground)];
-  background: color-mix(in srgb, var(--muted-foreground) 14%, transparent);
+  @apply inline-flex shrink-0 items-center rounded-full px-2 py-0.5 text-[11px] font-medium;
+}
+.settings-status-chip[data-configured="true"] {
+  background: color-mix(in srgb, var(--success) 13%, transparent);
+  color: color-mix(in srgb, var(--success) 78%, var(--foreground));
+}
+.settings-status-chip[data-configured="false"] {
+  background: color-mix(in srgb, var(--muted-foreground) 12%, transparent);
+  color: var(--muted-foreground);
 }
 .usage-provider-list {
   @apply flex flex-col gap-4;

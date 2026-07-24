@@ -1,10 +1,9 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import type { SessionThreadSummary } from "@pix/contracts";
 import { disambiguateSessionTitles } from "../src/index.ts";
 
 function row(
-  partial: Pick<SessionThreadSummary, "id" | "title"> &
-    Partial<SessionThreadSummary>,
+  partial: Pick<SessionThreadSummary, "id" | "title"> & Partial<SessionThreadSummary>,
 ): SessionThreadSummary {
   return {
     path: `/s/${partial.id}.jsonl`,

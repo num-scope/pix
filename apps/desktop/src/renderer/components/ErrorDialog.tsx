@@ -37,19 +37,27 @@ export function ErrorDialog(props: {
     >
       <AlertDialogContent
         size="default"
-        className="max-w-sm gap-3 p-4"
+        className="box-border w-[min(28rem,calc(100vw-2rem))] max-w-[min(28rem,calc(100vw-2rem))] gap-3 overflow-hidden p-4 sm:max-w-[min(28rem,calc(100vw-2rem))]"
         data-testid={props.testId ?? "error-dialog"}
       >
-        <AlertDialogHeader>
-          <AlertDialogTitle className="text-[15px] font-semibold">{props.title}</AlertDialogTitle>
-          <AlertDialogDescription
-            className="text-[13px] leading-relaxed whitespace-pre-wrap"
-            data-testid="error-dialog-message"
-          >
-            {props.message}
+        {/*
+          Grid children default to min-width:auto and grow with long unbroken paths.
+          Force min-w-0 on the whole chain so text can wrap inside the dialog width.
+        */}
+        <AlertDialogHeader className="grid w-full min-w-0 max-w-full grid-cols-1 place-items-stretch gap-1.5 text-left">
+          <AlertDialogTitle className="min-w-0 max-w-full text-[15px] font-semibold break-words [overflow-wrap:anywhere]">
+            {props.title}
+          </AlertDialogTitle>
+          <AlertDialogDescription asChild>
+            <div
+              className="error-dialog-message max-h-[min(50vh,360px)] w-full min-w-0 max-w-full overflow-x-hidden overflow-y-auto text-[13px] leading-relaxed text-muted-foreground"
+              data-testid="error-dialog-message"
+            >
+              {props.message}
+            </div>
           </AlertDialogDescription>
         </AlertDialogHeader>
-        <AlertDialogFooter>
+        <AlertDialogFooter className="w-full min-w-0">
           <AlertDialogAction
             data-testid="error-dialog-confirm"
             onClick={() => {

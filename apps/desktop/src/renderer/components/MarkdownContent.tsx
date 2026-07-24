@@ -1,6 +1,6 @@
 /** Streaming-safe rich content renderer for assistant messages. */
 import { memo, useState, type MouseEvent, type ReactNode } from "react";
-import { ExternalLink, Maximize2, X } from "lucide-react";
+import { BookMarked, ExternalLink, FileCode2, Maximize2, X } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import rehypeKatex from "rehype-katex";
 import rehypeSanitize from "rehype-sanitize";
@@ -9,8 +9,10 @@ import remarkMath from "remark-math";
 import "katex/dist/katex.min.css";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogClose, DialogContent, DialogTitle } from "@/components/ui/dialog";
+import { Marker, MarkerContent, MarkerIcon } from "@/components/ui/marker";
 import { ContentCodeBlock } from "./ContentCodeBlock.tsx";
 import { contentMediaKind, contentSourceUrl, parseContentLink } from "../lib/content-rendering.ts";
+import { markdownSanitizeSchema } from "../lib/markdown-sanitize.ts";
 import { t, type Locale } from "../lib/i18n.ts";
 import { cn } from "../lib/utils.ts";
 
@@ -20,17 +22,66 @@ function safeMarkdownUrl(url: string, key: string): string {
   return url;
 }
 
+function propFlag(value: unknown): boolean {
+  return value === true || value === "" || value === "true";
+}
+
+function scrollToMarkdownAnchor(from: HTMLElement, href: string): boolean {
+  if (!href.startsWith("#") || href.length < 2) return false;
+  const id = decodeURIComponent(href.slice(1));
+  if (!id) return false;
+  const root = from.closest(".pix-md");
+  if (!root) return false;
+  let target: Element | null = null;
+  try {
+    target = root.querySelector(`#${CSS.escape(id)}`);
+  } catch {
+    target = root.querySelector(`[id="${id.replace(/"/g, '\\"')}"]`);
+  }
+  if (!target || !(target instanceof HTMLElement)) return false;
+  target.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  target.classList.add("content-cite-flash");
+  window.setTimeout(() => target.classList.remove("content-cite-flash"), 1200);
+  return true;
+}
+
 function MarkdownLink(props: {
   href?: string | undefined;
   children: ReactNode;
   workspacePath?: string | undefined;
+  className?: string | undefined;
+  title?: string | undefined;
+  /** GFM footnote reference / backref flags (hast → React). */
+  "data-footnote-ref"?: unknown;
+  "data-footnote-backref"?: unknown;
+  dataFootnoteRef?: unknown;
+  dataFootnoteBackref?: unknown;
+  id?: string | undefined;
+  "aria-describedby"?: string | undefined;
+  "aria-label"?: string | undefined;
 }) {
   const href = props.href ?? "";
+  const className = props.className ?? "";
+  const isFootnoteRef =
+    propFlag(props["data-footnote-ref"]) ||
+    propFlag(props.dataFootnoteRef) ||
+    className.includes("data-footnote-ref");
+  const isFootnoteBackref =
+    propFlag(props["data-footnote-backref"]) ||
+    propFlag(props.dataFootnoteBackref) ||
+    className.includes("data-footnote-backref");
+
   const target = parseContentLink(href, props.workspacePath);
-  if (target.kind === "blocked") return <span>{props.children}</span>;
+  if (target.kind === "blocked" && !isFootnoteRef && !isFootnoteBackref) {
+    return <span>{props.children}</span>;
+  }
 
   function open(event: MouseEvent<HTMLAnchorElement>) {
-    if (target.kind === "anchor") return;
+    if (isFootnoteRef || isFootnoteBackref || target.kind === "anchor") {
+      event.preventDefault();
+      scrollToMarkdownAnchor(event.currentTarget, href);
+      return;
+    }
     event.preventDefault();
     if (target.kind === "external") {
       void window.pix.workspace.openExternal(target.href);
@@ -42,14 +93,63 @@ function MarkdownLink(props: {
     }
   }
 
+  if (isFootnoteRef) {
+    return (
+      <a
+        href={href}
+        id={props.id}
+        onClick={open}
+        className={cn("content-cite-ref", className)}
+        data-footnote-ref
+        aria-describedby={props["aria-describedby"]}
+        title={props.title}
+      >
+        {props.children}
+      </a>
+    );
+  }
+
+  if (isFootnoteBackref) {
+    return (
+      <a
+        href={href}
+        id={props.id}
+        onClick={open}
+        className={cn("content-cite-backref", className)}
+        data-footnote-backref
+        aria-label={props["aria-label"]}
+        title={props.title}
+      >
+        {props.children}
+      </a>
+    );
+  }
+
+  const fileTitle =
+    target.kind === "file"
+      ? target.line
+        ? `${target.path}:${target.line}${target.column ? `:${target.column}` : ""}`
+        : target.path
+      : undefined;
+
   return (
     <a
       href={href}
+      id={props.id}
       onClick={open}
-      className={cn(target.kind === "file" && "content-file-link")}
-      title={target.kind === "file" ? target.path : undefined}
+      className={cn(target.kind === "file" && "content-file-link content-source-cite", className)}
+      title={props.title ?? fileTitle}
     >
-      {props.children}
+      {target.kind === "file" ? (
+        <FileCode2 className="content-source-cite-icon" aria-hidden strokeWidth={1.75} />
+      ) : null}
+      <span className="content-source-cite-label">{props.children}</span>
+      {target.kind === "file" && target.line != null ? (
+        <span className="content-source-line" aria-hidden>
+          :{target.line}
+          {target.column != null ? `:${target.column}` : ""}
+        </span>
+      ) : null}
       {target.kind === "external" ? (
         <ExternalLink className="ml-0.5 inline size-[0.8em] align-baseline opacity-60" />
       ) : null}
@@ -121,6 +221,30 @@ function MediaContent(props: {
   );
 }
 
+function FootnotesSection(props: {
+  children: ReactNode;
+  locale: Locale;
+  className?: string | undefined;
+  id?: string | undefined;
+}) {
+  return (
+    <section
+      className={cn("content-footnotes footnotes", props.className)}
+      data-footnotes
+      data-testid="markdown-footnotes"
+      id={props.id}
+    >
+      <Marker variant="default" className="content-footnotes-marker min-h-0 gap-1.5 text-[12px]">
+        <MarkerIcon className="size-3.5">
+          <BookMarked className="size-3.5 opacity-80" strokeWidth={1.75} />
+        </MarkerIcon>
+        <MarkerContent>{t(props.locale, "timeline.sources")}</MarkerContent>
+      </Marker>
+      {props.children}
+    </section>
+  );
+}
+
 export const MarkdownContent = memo(function MarkdownContent(props: {
   children: string;
   className?: string | undefined;
@@ -135,12 +259,39 @@ export const MarkdownContent = memo(function MarkdownContent(props: {
     <div className={cn("pix-md", props.className)} data-testid="markdown-content">
       <ReactMarkdown
         remarkPlugins={[remarkGfm, remarkMath]}
-        rehypePlugins={[rehypeSanitize, rehypeKatex]}
+        rehypePlugins={[[rehypeSanitize, markdownSanitizeSchema], rehypeKatex]}
         urlTransform={safeMarkdownUrl}
         components={{
-          a({ href, children }) {
+          a({ href, children, className, title, id, ...rest }) {
+            const restProps = rest as Record<string, unknown>;
             return (
-              <MarkdownLink href={href} workspacePath={props.workspacePath}>
+              <MarkdownLink
+                href={href}
+                workspacePath={props.workspacePath}
+                className={className}
+                title={title}
+                id={id}
+                data-footnote-ref={restProps["data-footnote-ref"] ?? restProps.dataFootnoteRef}
+                data-footnote-backref={
+                  restProps["data-footnote-backref"] ?? restProps.dataFootnoteBackref
+                }
+                dataFootnoteRef={restProps.dataFootnoteRef}
+                dataFootnoteBackref={restProps.dataFootnoteBackref}
+                aria-describedby={
+                  typeof restProps["aria-describedby"] === "string"
+                    ? restProps["aria-describedby"]
+                    : typeof restProps.ariaDescribedBy === "string"
+                      ? restProps.ariaDescribedBy
+                      : undefined
+                }
+                aria-label={
+                  typeof restProps["aria-label"] === "string"
+                    ? restProps["aria-label"]
+                    : typeof restProps.ariaLabel === "string"
+                      ? restProps.ariaLabel
+                      : undefined
+                }
+              >
                 {children}
               </MarkdownLink>
             );
@@ -178,6 +329,28 @@ export const MarkdownContent = memo(function MarkdownContent(props: {
                 <table {...tableProps}>{children}</table>
               </div>
             );
+          },
+          section({ className, children, id, ...rest }) {
+            const restProps = rest as Record<string, unknown>;
+            const isFootnotes =
+              (typeof className === "string" && className.includes("footnotes")) ||
+              propFlag(restProps["data-footnotes"]) ||
+              propFlag(restProps.dataFootnotes);
+            if (isFootnotes) {
+              return (
+                <FootnotesSection locale={locale} className={className} id={id}>
+                  {children}
+                </FootnotesSection>
+              );
+            }
+            return (
+              <section className={className} id={id}>
+                {children}
+              </section>
+            );
+          },
+          sup({ className, children }) {
+            return <sup className={cn("content-cite-sup", className)}>{children}</sup>;
           },
         }}
       >

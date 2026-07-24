@@ -54,8 +54,14 @@ test.describe("Desktop shell Playwright E2E (macOS Electron)", () => {
     await expect(page.locator('.content-code-block[data-language="diff"]')).toBeVisible();
     await expect(page.getByTestId("mermaid-diagram")).toBeVisible({ timeout: 15_000 });
 
+    // GFM footnotes / source citations
+    await expect(page.getByTestId("markdown-footnotes")).toBeVisible();
+    await expect(page.getByTestId("markdown-footnotes")).toContainText(/Sources|来源/);
+    await expect(timeline.locator("a.content-cite-ref").first()).toBeVisible();
+    await expect(page.getByTestId("markdown-footnotes")).toContainText("Primary source");
+
     const fileLink = timeline.locator("a.content-file-link");
-    await expect(fileLink).toHaveAttribute("title", `${pix.workspace}/fixture.txt`);
+    await expect(fileLink).toHaveAttribute("title", `${pix.workspace}/fixture.txt:1:1`);
     await fileLink.click();
     await expect
       .poll(() =>
@@ -103,7 +109,7 @@ test.describe("Desktop shell Playwright E2E (macOS Electron)", () => {
     await process.locator(".timeline-process-summary").click();
     const thinking = process.locator('[data-kind="thinking"]');
     await expect(thinking).toBeVisible();
-    await thinking.locator(".content-thinking-trigger").click();
+    // Thinking renders as Codex-style narrative prose inside the process body.
     await expect(thinking).toContainText("Check the structured timeline first.");
     await expect(page.locator('[data-kind="assistant"]')).toContainText(
       "Structured timeline ready.",

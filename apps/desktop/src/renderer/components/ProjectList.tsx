@@ -14,7 +14,6 @@ import {
   Copy,
   ExternalLink,
   Folder,
-  Loader2,
   Mail,
   MailOpen,
   MoreHorizontal,
@@ -91,7 +90,11 @@ import {
 } from "../lib/sidebar-organize.ts";
 import { cn } from "../lib/utils.ts";
 import { isNonProjectWorkspacePath, workspaceLabel } from "../lib/workspace.ts";
+import type { SessionMarker } from "../lib/session-markers.ts";
+import { sessionMarkerFromThread } from "../lib/session-markers.ts";
+import { sessionRunKey } from "../store/shell-store.ts";
 import type { ThreadRunState } from "../lib/timeline.ts";
+import { markerLabel, ThreadRunMarker } from "./ThreadRunMarker.tsx";
 
 export interface ProjectListProps {
   locale: Locale;
@@ -102,6 +105,10 @@ export interface ProjectListProps {
   threadTitle: string;
   runState: ThreadRunState;
   running: boolean;
+  /** Per-session run markers (sidebar glyphs, including background sessions). */
+  sessionMarkers?: Record<string, SessionMarker>;
+  /** @deprecated prefer sessionMarkers — kept for busy-only callers */
+  runningSessions?: Record<string, true>;
   onOpenRecent: (path: string) => void;
   onNewThread: (path?: string) => void;
   onSwitchThread: (path: string, projectCwd?: string) => void;
@@ -551,14 +558,19 @@ export function ProjectList(props: ProjectListProps) {
     const tooltipParts = [title];
     if (isFork) {
       tooltipParts.push(
-        parentFile
-          ? tr("session.forkedFrom", { name: parentFile })
-          : tr("session.forked"),
+        parentFile ? tr("session.forkedFrom", { name: parentFile }) : tr("session.forked"),
       );
     }
     if (kind !== "conversation" && (thread.cwd || thread.path)) {
       tooltipParts.push(thread.cwd || thread.path);
     }
+    // Markers only — never fall back to global runState (that stuck a spinner on
+    // every active row after switching away from a generating session).
+    const runMarker = sessionMarkerFromThread(thread, props.sessionMarkers ?? {}, {
+      keyOf: sessionRunKey,
+    });
+    const stateLabel = markerLabel(runMarker?.state, tr, runMarker?.reason);
+    if (stateLabel) tooltipParts.push(stateLabel);
 
     return (
       <div key={`${kind}-${thread.id}`} className="relative min-w-0">
@@ -579,7 +591,7 @@ export function ProjectList(props: ProjectListProps) {
             data-active={thread.active ? "true" : "false"}
             data-kind={kind}
             data-fork={isFork ? "true" : "false"}
-            data-state={thread.active ? props.runState : "idle"}
+            data-state={runMarker?.state ?? "idle"}
             data-testid={
               thread.active && kind === "conversation"
                 ? "thread-item-current"
@@ -605,9 +617,7 @@ export function ProjectList(props: ProjectListProps) {
             <span className="sidebar-title-fade min-w-0 flex-1 overflow-hidden whitespace-nowrap leading-4 text-left">
               {title}
             </span>
-            {thread.active && props.running ? (
-              <Loader2 className="size-3 shrink-0 animate-spin text-blue-400" />
-            ) : null}
+            <ThreadRunMarker marker={runMarker} {...(stateLabel ? { label: stateLabel } : {})} />
           </button>
           {/* Hover: pin + archive only. Full menu via right-click. */}
           <RowActions open={showMenu} testIdPrefix={`${testPrefix}-${thread.id}`}>

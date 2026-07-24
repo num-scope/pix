@@ -20,11 +20,17 @@ const EMPTY_TEMPLATE = `{
 }
 `;
 
+/** Full pi custom-provider API set (docs/custom-provider.md). */
 const CUSTOM_APIS = new Set<string>([
   "openai-completions",
   "openai-responses",
   "anthropic-messages",
   "google-generative-ai",
+  "azure-openai-responses",
+  "openai-codex-responses",
+  "mistral-conversations",
+  "google-vertex",
+  "bedrock-converse-stream",
 ]);
 
 /** pi models.md defaults for full model entries. */

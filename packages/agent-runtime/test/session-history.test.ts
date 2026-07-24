@@ -70,4 +70,31 @@ describe("session history projection", () => {
       },
     ]);
   });
+
+  it("prefers getBranch so abandoned siblings are not shown after navigateTree", () => {
+    const allEntries = [
+      {
+        type: "message",
+        id: "u1",
+        message: { role: "user", content: "first" },
+      },
+      {
+        type: "message",
+        id: "a1",
+        message: { role: "assistant", content: [{ type: "text", text: "reply" }] },
+      },
+      {
+        type: "message",
+        id: "u2",
+        message: { role: "user", content: "second branch" },
+      },
+    ];
+    expect(
+      projectHistoryFromSessionManager({
+        getEntries: () => allEntries,
+        // Active path rewound to first user only (sibling branch hidden).
+        getBranch: () => [allEntries[0]!],
+      }),
+    ).toEqual([{ role: "user", text: "first", entryId: "u1" }]);
+  });
 });

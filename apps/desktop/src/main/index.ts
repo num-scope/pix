@@ -1667,6 +1667,26 @@ interface ActiveHost {
   stopping: boolean;
 }
 
+type PendingWaiter = {
+  resolve: (event: HostEvent) => void;
+  reject: (error: Error) => void;
+  timeout: NodeJS.Timeout;
+  commandType: string;
+};
+
+/**
+ * A live utility-process host that is not the UI foreground (still generating).
+ * Parked hosts keep receiving messages so in-flight prompts can finish.
+ */
+interface ParkedHost {
+  host: ActiveHost;
+  snapshot: HostSnapshot;
+  lastSequence: number;
+  pending: Map<string, PendingWaiter>;
+  sessionKey: string;
+  workspaceCwd?: string;
+}
+
 function deferred<T>(): Deferred<T> {
   let resolve!: (value: T) => void;
   let reject!: (error: Error) => void;
@@ -1689,6 +1709,23 @@ function normalizeHostCwd(path: string): string {
   return path.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
 }
 
+function normalizeSessionKey(path: string): string {
+  return path.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+}
+
+function sessionKeyFromSnapshot(snapshot: HostSnapshot | undefined): string | undefined {
+  if (!snapshot) return undefined;
+  const raw = snapshot.sessionFile?.trim() || snapshot.sessionId?.trim();
+  return raw ? normalizeSessionKey(raw) : undefined;
+}
+
+function pendingHasPrompt(pending: Map<string, PendingWaiter>): boolean {
+  for (const waiter of pending.values()) {
+    if (waiter.commandType === "agent.prompt") return true;
+  }
+  return false;
+}
+
 class HostSupervisor {
   #host: ActiveHost | undefined;
   #snapshot: HostSnapshot | undefined;
@@ -1709,14 +1746,12 @@ class HostSupervisor {
   #lastSequence = 0;
   #crashOnEvent: string | undefined;
   #eventCounts = new Map<string, number>();
-  #pending = new Map<
-    string,
-    {
-      resolve: (event: HostEvent) => void;
-      reject: (error: Error) => void;
-      timeout: NodeJS.Timeout;
-    }
-  >();
+  #pending = new Map<string, PendingWaiter>();
+  /**
+   * Generating hosts detached from the UI. Keyed by session file / session id.
+   * Only busy (in-flight prompt) hosts are parked; idle ones are stopped.
+   */
+  #parked = new Map<string, ParkedHost>();
 
   #exclusive<T>(fn: () => Promise<T>): Promise<T> {
     const run = this.#opQueue.then(fn, fn);
@@ -1733,6 +1768,159 @@ class HostSupervisor {
     // (loadDesktopPrefs already falls back to first recent real project).
     this.#workspaceCwd =
       process.env.PIX_WORKSPACE ?? durableWorkspacePath(prefs.lastWorkspace) ?? undefined;
+  }
+
+  #isForegroundBusy(): boolean {
+    return pendingHasPrompt(this.#pending);
+  }
+
+  #findParkedByHost(host: ActiveHost): ParkedHost | undefined {
+    for (const parked of this.#parked.values()) {
+      if (parked.host === host) return parked;
+    }
+    return undefined;
+  }
+
+  #findParkedBySession(sessionPath: string): ParkedHost | undefined {
+    const key = normalizeSessionKey(sessionPath);
+    const direct = this.#parked.get(key);
+    if (direct) return direct;
+    for (const parked of this.#parked.values()) {
+      if (normalizeSessionKey(parked.sessionKey) === key) return parked;
+      const file = parked.snapshot.sessionFile;
+      if (file && normalizeSessionKey(file) === key) return parked;
+      if (normalizeSessionKey(parked.snapshot.sessionId) === key) return parked;
+    }
+    return undefined;
+  }
+
+  /**
+   * Detach the foreground host without aborting. Keeps the utility process alive so
+   * an in-flight prompt can finish writing to its session file.
+   */
+  #parkForeground(): boolean {
+    const host = this.#host;
+    const snapshot = this.#snapshot;
+    if (!host || !snapshot || host.stopping || host.ignoreMessages) return false;
+    if (!this.#isForegroundBusy()) return false;
+    const sessionKey = sessionKeyFromSnapshot(snapshot);
+    if (!sessionKey) return false;
+
+    // Replace any older park for the same session.
+    const existing = this.#parked.get(sessionKey);
+    if (existing && existing.host !== host) {
+      void this.#killParked(existing, "replaced");
+    }
+
+    this.#parked.set(sessionKey, {
+      host,
+      snapshot,
+      lastSequence: this.#lastSequence,
+      pending: this.#pending,
+      sessionKey,
+      ...(this.#workspaceCwd ? { workspaceCwd: this.#workspaceCwd } : {}),
+    });
+    this.#host = undefined;
+    this.#snapshot = undefined;
+    this.#lastSequence = 0;
+    this.#pending = new Map();
+    return true;
+  }
+
+  async #killParked(parked: ParkedHost, reason: string): Promise<void> {
+    this.#parked.delete(parked.sessionKey);
+    // Also delete by any alias keys that might differ.
+    for (const [key, value] of this.#parked) {
+      if (value === parked) this.#parked.delete(key);
+    }
+    parked.host.stopping = true;
+    parked.host.ignoreMessages = true;
+    for (const waiter of parked.pending.values()) {
+      clearTimeout(waiter.timeout);
+      waiter.reject(new Error(`Parked Agent Host was stopped (${reason})`));
+    }
+    parked.pending.clear();
+    try {
+      parked.host.child.kill();
+    } catch {
+      // already dead
+    }
+    await parked.host.exit.promise.catch(() => undefined);
+  }
+
+  /** Stop idle parked hosts; keep ones still generating. */
+  async #retireIdleParked(parked: ParkedHost): Promise<void> {
+    if (pendingHasPrompt(parked.pending)) return;
+    if (this.#host === parked.host) return;
+    if (!this.#parked.has(parked.sessionKey) && !this.#findParkedByHost(parked.host)) return;
+    await this.#killParked(parked, "idle");
+  }
+
+  /**
+   * Bring a parked generating session back to the UI foreground.
+   * Parks or stops the current foreground first.
+   */
+  async #promoteParked(sessionPath: string): Promise<boolean> {
+    const parked = this.#findParkedBySession(sessionPath);
+    if (!parked) return false;
+
+    // Detach current foreground without aborting a live turn.
+    if (this.#host) {
+      if (this.#isForegroundBusy()) {
+        this.#parkForeground();
+      } else {
+        await this.#stopExclusive().catch(() => undefined);
+      }
+    }
+
+    // Re-find after possible re-park (map stable by identity).
+    const live = this.#findParkedBySession(sessionPath);
+    if (!live) return false;
+    this.#parked.delete(live.sessionKey);
+    for (const [key, value] of this.#parked) {
+      if (value === live) this.#parked.delete(key);
+    }
+
+    this.#host = live.host;
+    this.#snapshot = live.snapshot;
+    this.#lastSequence = live.lastSequence;
+    this.#pending = live.pending;
+    this.#sessionFile = live.snapshot.sessionFile ?? sessionPath;
+    if (live.workspaceCwd) {
+      this.#workspaceCwd = live.workspaceCwd;
+      this.#requireExplicitWorkspace = false;
+    } else if (live.snapshot.cwd) {
+      this.#workspaceCwd = live.snapshot.cwd;
+      this.#requireExplicitWorkspace = false;
+    }
+    return true;
+  }
+
+  /**
+   * Leave the foreground host: park if generating, otherwise stop.
+   * Used before openWorkspace / new blank / force spawn.
+   */
+  async #detachForeground(): Promise<void> {
+    if (!this.#host) return;
+    if (this.#isForegroundBusy() && this.#parkForeground()) return;
+    await this.#stopExclusive().catch(() => undefined);
+  }
+
+  async #openCurrentSessionProjection(): Promise<{
+    snapshot: HostSnapshot;
+    threads: SessionThreadSummary[];
+    history: SessionHistoryMessage[];
+  }> {
+    const event = await this.#request({
+      protocolVersion: IPC_PROTOCOL_VERSION,
+      type: "session.current",
+      requestId: randomUUID(),
+    });
+    if (event.type !== "session.opened") {
+      throw new Error("Agent Host returned an unexpected session.current response");
+    }
+    this.#acceptSnapshot(event.snapshot);
+    return { snapshot: event.snapshot, threads: event.threads, history: event.history };
   }
 
   getWorkspaceCwd(): string | undefined {
@@ -1800,17 +1988,12 @@ class HostSupervisor {
     if (options?.sessionFile !== undefined) this.#sessionFile = options.sessionFile;
     if (options?.resumeRecent !== undefined) this.#resumeRecent = options.resumeRecent;
 
-    const live =
-      this.#host &&
-      this.#snapshot &&
-      !this.#host.ignoreMessages &&
-      !this.#host.stopping;
+    const live = this.#host && this.#snapshot && !this.#host.ignoreMessages && !this.#host.stopping;
     if (
       !options?.force &&
       live &&
       options?.sessionFile === undefined &&
-      (!options?.cwd ||
-        normalizeHostCwd(this.#snapshot!.cwd) === normalizeHostCwd(options.cwd))
+      (!options?.cwd || normalizeHostCwd(this.#snapshot!.cwd) === normalizeHostCwd(options.cwd))
     ) {
       return this.#snapshot!;
     }
@@ -1820,9 +2003,9 @@ class HostSupervisor {
       Boolean(options?.force) ||
       Boolean(
         this.#host &&
-          options?.cwd &&
-          this.#snapshot &&
-          normalizeHostCwd(this.#snapshot.cwd) !== normalizeHostCwd(options.cwd),
+        options?.cwd &&
+        this.#snapshot &&
+        normalizeHostCwd(this.#snapshot.cwd) !== normalizeHostCwd(options.cwd),
       );
 
     return this.#start(forceSpawn);
@@ -1853,16 +2036,25 @@ class HostSupervisor {
   ): Promise<HostSnapshot> {
     return this.#exclusive(async () => {
       rememberWorkspace(cwd);
+      // Re-focus a session still generating in a parked host.
+      if (options?.sessionFile) {
+        const promoted = await this.#promoteParked(options.sessionFile);
+        if (promoted && this.#snapshot) {
+          this.#workspaceCwd = this.#snapshot.cwd || cwd;
+          this.#requireExplicitWorkspace = false;
+          this.#sessionFile = options.sessionFile;
+          return this.#snapshot;
+        }
+      }
       this.#workspaceCwd = cwd;
       this.#requireExplicitWorkspace = false;
       // Prefer explicit session when switching into a project (avoids open→default→switch flicker).
       this.#sessionFile = options?.sessionFile;
       this.#resumeRecent = options?.resumeRecent === true && !options?.sessionFile;
-      await this.#stopExclusive().catch(() => undefined);
-      // stop()'s child exit path may have run after our pre-clear; re-assert intent.
+      // Park generating hosts instead of aborting them.
+      await this.#detachForeground();
+      // stop/park may have cleared pointers; re-assert intent.
       this.#sessionFile = options?.sessionFile;
-      this.#snapshot = undefined;
-      this.#host = undefined;
       this.#resumeRecent = options?.resumeRecent === true && !options?.sessionFile;
       return this.#startExclusive({
         cwd,
@@ -1885,7 +2077,8 @@ class HostSupervisor {
 
   async #clearActiveExclusive(): Promise<void> {
     const previous = this.#workspaceCwd;
-    await this.#stopExclusive().catch(() => undefined);
+    // Keep generating sessions alive in the background.
+    await this.#detachForeground();
     this.#sessionFile = undefined;
     this.#snapshot = undefined;
     this.#host = undefined;
@@ -1914,8 +2107,7 @@ class HostSupervisor {
     history: SessionHistoryMessage[];
   }> {
     return this.#exclusive(async () => {
-      const convCwd =
-        process.env.PIX_WORKSPACE?.trim() || ensureConversationWorkspacePath();
+      const convCwd = process.env.PIX_WORKSPACE?.trim() || ensureConversationWorkspacePath();
       const alreadyOnConv =
         Boolean(this.#host && this.#snapshot) &&
         !this.#host!.stopping &&
@@ -1924,6 +2116,7 @@ class HostSupervisor {
         normalizeHostCwd(this.#snapshot!.cwd) === normalizeHostCwd(convCwd);
 
       if (!alreadyOnConv) {
+        // Park generating project sessions; do not abort them for a blank chat.
         await this.#clearActiveExclusive();
         // Fixture workspace (e2e) wins over conversation home when set.
         if (process.env.PIX_WORKSPACE?.trim()) {
@@ -1936,6 +2129,13 @@ class HostSupervisor {
         await this.#startExclusive({
           cwd: this.#workspaceCwd,
         });
+      } else if (this.#isForegroundBusy()) {
+        // Same conversation home but mid-turn: park and spawn a fresh host for new session.
+        this.#parkForeground();
+        await this.#startExclusive({
+          cwd: this.#workspaceCwd ?? convCwd,
+          force: true,
+        });
       }
 
       return this.#newSessionExclusive();
@@ -1944,12 +2144,15 @@ class HostSupervisor {
 
   async #start(forceSpawn = false): Promise<HostSnapshot> {
     if (forceSpawn && this.#host) {
-      this.#host.stopping = true;
-      this.#host.ignoreMessages = true;
-      this.#host.child.kill();
-      await this.#host.exit.promise.catch(() => undefined);
-      this.#host = undefined;
-      this.#snapshot = undefined;
+      // Prefer parking a generating host over killing mid-turn.
+      if (!(this.#isForegroundBusy() && this.#parkForeground())) {
+        this.#host.stopping = true;
+        this.#host.ignoreMessages = true;
+        this.#host.child.kill();
+        await this.#host.exit.promise.catch(() => undefined);
+        this.#host = undefined;
+        this.#snapshot = undefined;
+      }
     }
     const host = this.#host ?? this.#spawn();
     await Promise.race([
@@ -2031,6 +2234,7 @@ class HostSupervisor {
     imagePaths?: string[],
   ): Promise<HostSnapshot> {
     if (!this.#host) await this.start();
+    const boundHost = this.#host;
     const command: HostCommand = {
       protocolVersion: IPC_PROTOCOL_VERSION,
       type: "agent.prompt",
@@ -2042,7 +2246,11 @@ class HostSupervisor {
     const event = await this.#request(command);
     if (event.type !== "runtime.snapshot")
       throw new Error("Agent Host returned an unexpected prompt response");
-    this.#acceptSnapshot(event.snapshot);
+    // If the user switched away mid-turn, this host may now be parked — do not
+    // clobber the foreground snapshot with the background session's result.
+    if (this.#host === boundHost) {
+      this.#acceptSnapshot(event.snapshot);
+    }
     return event.snapshot;
   }
 
@@ -2096,6 +2304,10 @@ class HostSupervisor {
     history: SessionHistoryMessage[];
   }> {
     return this.#exclusive(async () => {
+      // Park a generating turn before session.new tears down the runtime.
+      if (this.#isForegroundBusy()) {
+        this.#parkForeground();
+      }
       await this.#ensureHostReady();
       return this.#newSessionExclusive();
     });
@@ -2106,6 +2318,11 @@ class HostSupervisor {
     threads: SessionThreadSummary[];
     history: SessionHistoryMessage[];
   }> {
+    // session.new tears down the live runtime — park a generating turn first.
+    if (this.#isForegroundBusy()) {
+      this.#parkForeground();
+      await this.#ensureHostReady();
+    }
     const event = await this.#request({
       protocolVersion: IPC_PROTOCOL_VERSION,
       type: "session.new",
@@ -2117,22 +2334,75 @@ class HostSupervisor {
     return { snapshot: event.snapshot, threads: event.threads, history: event.history };
   }
 
-  async switchSession(sessionPath: string): Promise<{
+  switchSession(sessionPath: string): Promise<{
     snapshot: HostSnapshot;
     threads: SessionThreadSummary[];
     history: SessionHistoryMessage[];
   }> {
+    return this.#exclusive(() => this.#switchSessionExclusive(sessionPath));
+  }
+
+  async #switchSessionExclusive(sessionPath: string): Promise<{
+    snapshot: HostSnapshot;
+    threads: SessionThreadSummary[];
+    history: SessionHistoryMessage[];
+  }> {
+    // Already showing this session.
+    const currentKey = sessionKeyFromSnapshot(this.#snapshot);
+    if (
+      currentKey &&
+      (currentKey === normalizeSessionKey(sessionPath) ||
+        (this.#snapshot?.sessionFile &&
+          normalizeSessionKey(this.#snapshot.sessionFile) === normalizeSessionKey(sessionPath)))
+    ) {
+      return this.#openCurrentSessionProjection();
+    }
+
+    // Re-focus a session still generating in a parked host (tab-like switch).
+    if (await this.#promoteParked(sessionPath)) {
+      const opened = await this.#openCurrentSessionProjection();
+      if (opened.snapshot.cwd) {
+        this.#workspaceCwd = opened.snapshot.cwd;
+        this.#requireExplicitWorkspace = false;
+        this.#sessionFile = opened.snapshot.sessionFile ?? sessionPath;
+        rememberWorkspace(opened.snapshot.cwd);
+      }
+      return opened;
+    }
+
+    // Foreground is mid-turn: park it and open the target on a fresh host.
+    // switchSession on a busy runtime would dispose/abort the live agent.
+    if (this.#isForegroundBusy()) {
+      this.#parkForeground();
+    }
+
     // Ensure a live runtime exists. Prefer opening the target session file directly
     // so we do not start a throwaway session then switch (flash + missing history).
     if (!this.#host || !this.#snapshot) {
       this.#sessionFile = sessionPath;
       this.#requireExplicitWorkspace = false;
-      await this.start({
+      // Use #startExclusive — already inside #exclusive; do not re-enter via start().
+      await this.#startExclusive({
         ...(this.#workspaceCwd ? { cwd: this.#workspaceCwd } : {}),
         sessionFile: sessionPath,
         force: true,
       });
+      // host.start with sessionFile already bound the target — project it.
+      if (
+        this.#snapshot?.sessionFile &&
+        normalizeSessionKey(this.#snapshot.sessionFile) === normalizeSessionKey(sessionPath)
+      ) {
+        const opened = await this.#openCurrentSessionProjection();
+        if (opened.snapshot.cwd) {
+          this.#workspaceCwd = opened.snapshot.cwd;
+          this.#requireExplicitWorkspace = false;
+          this.#sessionFile = opened.snapshot.sessionFile ?? sessionPath;
+          rememberWorkspace(opened.snapshot.cwd);
+        }
+        return opened;
+      }
     }
+
     const event = await this.#request({
       protocolVersion: IPC_PROTOCOL_VERSION,
       type: "session.switch",
@@ -2197,6 +2467,7 @@ class HostSupervisor {
     threads: SessionThreadSummary[];
     history: SessionHistoryMessage[];
     cancelled: boolean;
+    selectedText?: string;
   }> {
     if (!this.#host) await this.start();
     const command: HostCommand = {
@@ -2216,6 +2487,7 @@ class HostSupervisor {
       threads: event.threads,
       history: event.history,
       cancelled: event.cancelled === true,
+      ...(event.selectedText !== undefined ? { selectedText: event.selectedText } : {}),
     };
   }
 
@@ -2892,7 +3164,14 @@ class HostSupervisor {
   }
 
   async stop(): Promise<void> {
-    return this.#exclusive(() => this.#stopExclusive());
+    return this.#exclusive(async () => {
+      // Explicit stop tears down parked generators too (app quit / host stop).
+      const parked = [...this.#parked.values()];
+      for (const entry of parked) {
+        await this.#killParked(entry, "stop");
+      }
+      await this.#stopExclusive();
+    });
   }
 
   async #stopExclusive(): Promise<void> {
@@ -2943,23 +3222,49 @@ class HostSupervisor {
     });
 
     child.on("message", (message) => {
-      if (this.#host !== host || host.ignoreMessages || !isHostEvent(message)) return;
+      if (host.ignoreMessages || !isHostEvent(message)) return;
+      const isForeground = this.#host === host;
+      const parked = isForeground ? undefined : this.#findParkedByHost(host);
+      if (!isForeground && !parked) return;
+
       if (message.type === "host.hello") host.hello.resolve();
-      if (message.type === "host.ready" || message.type === "runtime.snapshot") {
-        this.#acceptSnapshot(message.snapshot);
-      }
-      if (message.type === "runtime.event") {
-        if (this.#snapshot && message.runtimeId !== this.#snapshot.runtimeId) return;
-        if (message.sequence !== this.#lastSequence + 1) {
-          this.#count("runtime.gap");
-          void this.snapshot().catch(() => undefined);
-          return;
+
+      if (isForeground) {
+        if (message.type === "host.ready" || message.type === "runtime.snapshot") {
+          this.#acceptSnapshot(message.snapshot);
         }
-        this.#lastSequence = message.sequence;
-        this.#count(message.event.type);
+        if (message.type === "runtime.event") {
+          if (this.#snapshot && message.runtimeId !== this.#snapshot.runtimeId) return;
+          if (message.sequence !== this.#lastSequence + 1) {
+            this.#count("runtime.gap");
+            void this.snapshot().catch(() => undefined);
+            return;
+          }
+          this.#lastSequence = message.sequence;
+          this.#count(message.event.type);
+        }
+      } else if (parked) {
+        // Background host: keep snapshot/sequence coherent for promote, resolve pending.
+        if (message.type === "host.ready" || message.type === "runtime.snapshot") {
+          parked.snapshot = message.snapshot;
+          parked.lastSequence = message.snapshot.sequence;
+          if (message.snapshot.sessionFile) {
+            parked.sessionKey = normalizeSessionKey(message.snapshot.sessionFile);
+          }
+        }
+        if (message.type === "runtime.event") {
+          if (message.runtimeId !== parked.snapshot.runtimeId) return;
+          if (message.sequence === parked.lastSequence + 1) {
+            parked.lastSequence = message.sequence;
+          }
+          this.#count(message.event.type);
+        }
       }
+
       if (message.type === "extensionUi.request") {
         this.#count("extensionUi.request");
+        // Only auto-answer / surface extension UI for the foreground host.
+        if (!isForeground) return;
         if (process.env.PIX_AUTO_EXTENSION_UI === "1") {
           const args =
             typeof message.args === "object" && message.args !== null
@@ -2987,13 +3292,28 @@ class HostSupervisor {
           } satisfies HostCommand);
         }
       }
-      this.#emit(message, false);
-      // Streaming events share the parent requestId but are not the final response.
-      if (message.type !== "packages.progress" && message.type !== "providers.oauth") {
-        this.#resolvePending(message);
+
+      // Foreground events go to the renderer as today. Parked hosts still emit
+      // agent.settled so the UI can clear per-session running indicators.
+      if (isForeground) {
+        this.#emit(message, false);
+      } else if (
+        message.type === "runtime.event" &&
+        (message.event.type === "agent.settled" || message.event.type === "message.failed")
+      ) {
+        this.#emit(message, false);
       }
 
-      if (message.type === "runtime.event" && message.event.type === this.#crashOnEvent) {
+      // Streaming events share the parent requestId but are not the final response.
+      if (message.type !== "packages.progress" && message.type !== "providers.oauth") {
+        this.#resolvePendingFor(host, message, parked);
+      }
+
+      if (
+        isForeground &&
+        message.type === "runtime.event" &&
+        message.event.type === this.#crashOnEvent
+      ) {
         this.#crashOnEvent = undefined;
         host.ignoreMessages = true;
         host.child.kill();
@@ -3003,6 +3323,34 @@ class HostSupervisor {
     child.on("exit", (code) => {
       const exitCode = code ?? -1;
       host.exit.resolve(exitCode);
+      const parked = this.#findParkedByHost(host);
+      if (parked) {
+        this.#parked.delete(parked.sessionKey);
+        for (const [key, value] of this.#parked) {
+          if (value === parked) this.#parked.delete(key);
+        }
+        const error = host.stopping
+          ? new Error("Agent Host was replaced or stopped")
+          : new Error(`Agent Host exited with code ${exitCode}`);
+        host.hello.reject(error);
+        for (const waiter of parked.pending.values()) {
+          clearTimeout(waiter.timeout);
+          waiter.reject(error);
+        }
+        parked.pending.clear();
+        if (!host.stopping) {
+          const crashed: HostEvent = {
+            protocolVersion: IPC_PROTOCOL_VERSION,
+            type: "host.crashed",
+            hostId: host.hostId,
+            exitCode,
+            message: `Background Agent Host exited unexpectedly with code ${exitCode}`,
+          };
+          if (parked.snapshot.runtimeId) crashed.runtimeId = parked.snapshot.runtimeId;
+          this.#emit(crashed);
+        }
+        return;
+      }
       if (this.#host !== host) return;
       this.#host = undefined;
       const runtimeId = this.#snapshot?.runtimeId;
@@ -3045,6 +3393,9 @@ class HostSupervisor {
   #request(command: HostCommand): Promise<HostEvent> {
     const host = this.#host;
     if (!host || host.ignoreMessages) return Promise.reject(new Error("Agent Host is not running"));
+    // Capture the map identity so timeouts still work after the host is parked
+    // (park moves this Map onto the ParkedHost entry).
+    const pendingMap = this.#pending;
 
     return new Promise((resolve, reject) => {
       const timeoutMs =
@@ -3060,10 +3411,15 @@ class HostSupervisor {
                 ? 180_000
                 : 15_000;
       const timeout = setTimeout(() => {
-        this.#pending.delete(command.requestId);
+        pendingMap.delete(command.requestId);
         reject(new Error(`Agent Host timed out handling ${command.type}`));
       }, timeoutMs);
-      this.#pending.set(command.requestId, { resolve, reject, timeout });
+      pendingMap.set(command.requestId, {
+        resolve,
+        reject,
+        timeout,
+        commandType: command.type,
+      });
       host.child.postMessage(command);
     });
   }
@@ -3074,17 +3430,25 @@ class HostSupervisor {
     host.child.postMessage(command);
   }
 
-  #resolvePending(message: HostEvent): void {
+  #resolvePendingFor(host: ActiveHost, message: HostEvent, parked: ParkedHost | undefined): void {
     if (!("requestId" in message) || !message.requestId) return;
-    const pending = this.#pending.get(message.requestId);
+    const pendingMap = parked ? parked.pending : this.#host === host ? this.#pending : undefined;
+    if (!pendingMap) return;
+    const pending = pendingMap.get(message.requestId);
     if (!pending) return;
     clearTimeout(pending.timeout);
-    this.#pending.delete(message.requestId);
+    pendingMap.delete(message.requestId);
     if (message.type === "host.error") {
       const error = new Error(message.message) as NodeJS.ErrnoException;
       error.code = message.code;
       pending.reject(error);
-    } else pending.resolve(message);
+    } else {
+      pending.resolve(message);
+    }
+    // When a parked generator finishes its last prompt, retire the process.
+    if (parked && !pendingHasPrompt(parked.pending)) {
+      void this.#retireIdleParked(parked);
+    }
   }
 
   #rejectPending(error: Error): void {
@@ -3403,11 +3767,20 @@ function openSystemNotificationSettings(): void {
 /** Keep Notification instances alive until closed (GC otherwise drops them before show). */
 const liveOsNotifications = new Set<InstanceType<typeof Notification>>();
 
+/**
+ * macOS UNErrorDomain code 1 = notifications not allowed (permission denied / unsigned
+ * Electron.app in dev). After a hard failure, cool down so agent.settled storms do not
+ * spam the console.
+ */
+let osNotificationBlockedUntil = 0;
+let osNotificationFailureLogged = false;
+const OS_NOTIFICATION_COOLDOWN_MS = 5 * 60_000;
+
 export type ShowOsNotificationPayload = {
   title: string;
   body?: string;
   silent?: boolean;
-  /** Always attempt (settings test). */
+  /** Always attempt (settings test). Bypasses cooldown so the user can re-test after fixing OS settings. */
   force?: boolean;
   /** Skip when the main window is focused (checked in main — not renderer hasFocus). */
   requireUnfocused?: boolean;
@@ -3421,6 +3794,27 @@ function focusMainWindow(): void {
   win.focus();
 }
 
+function noteOsNotificationFailure(error: unknown): void {
+  osNotificationBlockedUntil = Date.now() + OS_NOTIFICATION_COOLDOWN_MS;
+  if (osNotificationFailureLogged) return;
+  osNotificationFailureLogged = true;
+  const detail =
+    error instanceof Error
+      ? error.message
+      : typeof error === "string"
+        ? error
+        : error == null
+          ? "unknown"
+          : "unknown";
+  const hint =
+    process.platform === "darwin"
+      ? " macOS blocked desktop notifications (permission denied or unsigned Electron in dev). " +
+        "Enable notifications for Electron/Pix in System Settings → Notifications, " +
+        "or use a packaged/signed build. Further failures are quiet for 5 minutes."
+      : " Desktop notifications failed; further failures are quiet for 5 minutes.";
+  console.warn(`[pix] notification failed: ${detail}.${hint}`);
+}
+
 /**
  * Post a desktop OS notification from the main process.
  * Returns whether the OS accepted/showed it (listens for `show` / `failed`).
@@ -3428,11 +3822,19 @@ function focusMainWindow(): void {
 async function showOsNotification(payload: ShowOsNotificationPayload): Promise<boolean> {
   try {
     if (!Notification.isSupported()) {
-      console.warn("[pix] notifications unsupported on this platform");
+      if (!osNotificationFailureLogged) {
+        osNotificationFailureLogged = true;
+        console.warn("[pix] notifications unsupported on this platform");
+      }
       return false;
     }
     const title = payload?.title?.trim();
     if (!title) return false;
+
+    // Skip while OS previously rejected us (unless settings "test" forces a retry).
+    if (!payload.force && Date.now() < osNotificationBlockedUntil) {
+      return false;
+    }
 
     if (!payload.force && payload.requireUnfocused) {
       const focused = Boolean(mainWindow && !mainWindow.isDestroyed() && mainWindow.isFocused());
@@ -3472,9 +3874,13 @@ async function showOsNotification(payload: ShowOsNotificationPayload): Promise<b
         settled = true;
         resolve(ok);
       };
-      n.once("show", () => finish(true));
+      n.once("show", () => {
+        // Success: allow future notifications immediately.
+        osNotificationBlockedUntil = 0;
+        finish(true);
+      });
       n.once("failed", (_event, error) => {
-        console.warn("[pix] notification failed:", error);
+        noteOsNotificationFailure(error);
         drop();
         finish(false);
       });
@@ -3483,7 +3889,7 @@ async function showOsNotification(payload: ShowOsNotificationPayload): Promise<b
       try {
         n.show();
       } catch (error) {
-        console.warn("[pix] notification show() threw:", error);
+        noteOsNotificationFailure(error);
         drop();
         finish(false);
       }
@@ -3491,7 +3897,7 @@ async function showOsNotification(payload: ShowOsNotificationPayload): Promise<b
 
     return shown;
   } catch (error) {
-    console.warn("[pix] notification error:", error);
+    noteOsNotificationFailure(error);
     return false;
   }
 }

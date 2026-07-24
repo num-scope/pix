@@ -11,10 +11,8 @@ const api: PixDesktopApi = {
     close: () => ipcRenderer.invoke("pix:window:close"),
     isMaximized: () => ipcRenderer.invoke("pix:window:is-maximized"),
     onStateChange(listener) {
-      const handler = (
-        _event: Electron.IpcRendererEvent,
-        state: { isMaximized: boolean },
-      ) => listener(state);
+      const handler = (_event: Electron.IpcRendererEvent, state: { isMaximized: boolean }) =>
+        listener(state);
       ipcRenderer.on("pix:window:state", handler);
       return () => ipcRenderer.removeListener("pix:window:state", handler);
     },

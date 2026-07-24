@@ -90,7 +90,7 @@ import {
 } from "../../lib/settings-prefs.ts";
 import type { ThemePreference } from "../../lib/theme.ts";
 import { cn } from "../../lib/utils.ts";
-import { workspaceLabel } from "../../lib/workspace.ts";
+import { isConversationWorkspacePath, workspaceLabel } from "../../lib/workspace.ts";
 import { useShellStore, type SettingsSection } from "../../store/shell-store.ts";
 import {
   SettingsButton,
@@ -203,6 +203,8 @@ type ArchivedSessionRow = {
   title: string;
   cwd: string;
   projectName: string;
+  /** Pure conversation home (Pix/conversations) — not a project group. */
+  isConversation: boolean;
   archivedAt?: string;
 };
 
@@ -240,16 +242,21 @@ function ArchivedSection(props: {
     return sessionIds.map((id) => {
       const m: ArchivedThreadMeta | undefined = meta[id];
       const cwd = m?.cwd || m?.path || "";
-      const cwdKey = cwd ? normalizeCwdKey(cwd) : "__none__";
-      const projectName = cwd
-        ? projectDisplayName(cwd, projectAliases, workspaceLabel(cwd).name)
-        : tr("settings.archived.unknownProject");
+      const isConversation = Boolean(cwd && isConversationWorkspacePath(cwd));
+      // Collapse all pure-conversation homes into one logical bucket (not a project).
+      const cwdKey = isConversation ? "__conversations__" : cwd ? normalizeCwdKey(cwd) : "__none__";
+      const projectName = isConversation
+        ? tr("settings.archived.noProject")
+        : cwd
+          ? projectDisplayName(cwd, projectAliases, workspaceLabel(cwd).name)
+          : tr("settings.archived.unknownProject");
       const title = threadDisplayTitle(id, threadAliases, m?.title ?? `Session ${id.slice(0, 8)}`);
       const row: ArchivedSessionRow = {
         id,
         title,
         cwd: cwdKey,
         projectName,
+        isConversation,
       };
       if (m?.archivedAt) row.archivedAt = m.archivedAt;
       return row;
@@ -278,10 +285,18 @@ function ArchivedSection(props: {
   }, [rows, query, projectFilter]);
 
   const groups = useMemo(() => {
-    const map = new Map<string, { name: string; items: ArchivedSessionRow[] }>();
+    const map = new Map<
+      string,
+      { name: string; items: ArchivedSessionRow[]; isConversation: boolean }
+    >();
     for (const row of filtered) {
-      const g = map.get(row.cwd) ?? { name: row.projectName, items: [] };
+      const g = map.get(row.cwd) ?? {
+        name: row.projectName,
+        items: [],
+        isConversation: row.isConversation,
+      };
       g.items.push(row);
+      g.isConversation = g.isConversation || row.isConversation;
       map.set(row.cwd, g);
     }
     // sort items by archivedAt desc within group
@@ -314,6 +329,11 @@ function ArchivedSection(props: {
   }
 
   function deleteAllInProject(cwdKey: string) {
+    // Conversation buckets are not projects — bulk "delete all in project" is not offered.
+    if (cwdKey === "__conversations__" || rows.some((r) => r.cwd === cwdKey && r.isConversation)) {
+      setOpenGroupMenu(null);
+      return;
+    }
     const name = rows.find((r) => r.cwd === cwdKey)?.projectName ?? cwdKey;
     if (loadConfirmDelete()) {
       const ok = window.confirm(tr("confirm.deleteMessage", { name }));
@@ -352,13 +372,7 @@ function ArchivedSection(props: {
       testId="settings-archived"
       titleAction={
         sessionIds.length > 0 ? (
-          <SettingsButton
-            variant="secondary"
-            size="sm"
-            testId="archived-delete-all"
-            className="archived-delete-all"
-            onClick={deleteAll}
-          >
+          <SettingsButton size="sm" danger testId="archived-delete-all" onClick={deleteAll}>
             <Trash2 className="size-3.5" strokeWidth={1.75} />
             {tr("settings.archived.deleteAll")}
           </SettingsButton>
@@ -408,7 +422,12 @@ function ArchivedSection(props: {
         </p>
       ) : (
         groups.map(([cwdKey, group]) => (
-          <section key={cwdKey} className="archived-group" data-testid="archived-project-group">
+          <section
+            key={cwdKey}
+            className="archived-group"
+            data-testid="archived-project-group"
+            data-conversation={group.isConversation ? "true" : "false"}
+          >
             <div className="archived-group-header">
               <div className="archived-group-name">
                 <Folder className="size-4 shrink-0 opacity-70" strokeWidth={1.75} />
@@ -416,32 +435,36 @@ function ArchivedSection(props: {
               </div>
               <div className="archived-group-meta">
                 <span>{tr("settings.archived.count", { n: String(group.items.length) })}</span>
-                <div
-                  className="archived-group-menu"
-                  ref={openGroupMenu === cwdKey ? menuRef : null}
-                >
-                  <SettingsIconButton
-                    testId="archived-project-menu"
-                    aria-label="More"
-                    size="icon-sm"
-                    onClick={() => setOpenGroupMenu((v) => (v === cwdKey ? null : cwdKey))}
+                {/* Bulk "delete all in project" only applies to real projects, not 对话. */}
+                {!group.isConversation ? (
+                  <div
+                    className="archived-group-menu"
+                    ref={openGroupMenu === cwdKey ? menuRef : null}
                   >
-                    <MoreHorizontal className="size-3.5" strokeWidth={1.75} />
-                  </SettingsIconButton>
-                  {openGroupMenu === cwdKey ? (
-                    <div className="archived-group-menu-panel" role="menu">
-                      <SettingsButton
-                        variant="ghost"
-                        testId="archived-project-delete-all"
-                        className="archived-group-menu-item h-auto w-full justify-start rounded-none text-red-400"
-                        onClick={() => deleteAllInProject(cwdKey)}
-                      >
-                        <Trash2 className="size-3.5" strokeWidth={1.75} />
-                        {tr("settings.archived.deleteProjectAll")}
-                      </SettingsButton>
-                    </div>
-                  ) : null}
-                </div>
+                    <SettingsIconButton
+                      testId="archived-project-menu"
+                      aria-label="More"
+                      size="icon-sm"
+                      onClick={() => setOpenGroupMenu((v) => (v === cwdKey ? null : cwdKey))}
+                    >
+                      <MoreHorizontal className="size-3.5" strokeWidth={1.75} />
+                    </SettingsIconButton>
+                    {openGroupMenu === cwdKey ? (
+                      <div className="archived-group-menu-panel" role="menu">
+                        <SettingsButton
+                          size="sm"
+                          danger
+                          testId="archived-project-delete-all"
+                          className="h-auto w-full justify-start rounded-none px-3 py-2"
+                          onClick={() => deleteAllInProject(cwdKey)}
+                        >
+                          <Trash2 className="size-3.5" strokeWidth={1.75} />
+                          {tr("settings.archived.deleteProjectAll")}
+                        </SettingsButton>
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
               </div>
             </div>
             <div className="archived-card">
@@ -459,10 +482,11 @@ function ArchivedSection(props: {
                   </div>
                   <div className="archived-item-actions">
                     <SettingsIconButton
+                      size="icon-sm"
+                      danger
                       testId={`archived-session-delete-${item.id}`}
                       title={tr("settings.archived.delete")}
                       aria-label={tr("settings.archived.delete")}
-                      className="archived-icon-btn"
                       onClick={() => deleteSession(item.id)}
                     >
                       <Trash2 className="size-3.5" strokeWidth={1.75} />
@@ -471,7 +495,6 @@ function ArchivedSection(props: {
                       variant="secondary"
                       size="sm"
                       testId={`archived-session-unarchive-${item.id}`}
-                      className="archived-unarchive-btn"
                       onClick={() => unarchiveSession(item.id)}
                     >
                       {tr("settings.archived.unarchive")}
@@ -643,7 +666,7 @@ function ShortcutsSection(
                     )}
                   </SettingsButton>
                   <SettingsIconButton
-                    className="shortcut-action-btn"
+                    size="icon-sm"
                     testId={`shortcut-reset-${def.id}`}
                     title={tr("shortcuts.reset")}
                     aria-label={tr("shortcuts.reset")}
@@ -657,7 +680,8 @@ function ShortcutsSection(
                     <RotateCcw className="size-3.5" strokeWidth={1.75} />
                   </SettingsIconButton>
                   <SettingsIconButton
-                    className="shortcut-action-btn shortcut-action-delete"
+                    size="icon-sm"
+                    danger
                     testId={`shortcut-clear-${def.id}`}
                     title={tr("shortcuts.clear")}
                     aria-label={tr("shortcuts.clear")}
@@ -1987,6 +2011,7 @@ function ProvidersSection(
               <div className="flex shrink-0 items-center gap-2">
                 <span
                   className="settings-status-chip"
+                  data-configured={provider.configured ? "true" : "false"}
                   data-testid={`provider-configured-${provider.provider}`}
                 >
                   {provider.configured ? tr("auth.configured") : tr("auth.missing")}
@@ -2259,12 +2284,20 @@ function ProvidersSection(
   );
 }
 
+/** Full pi API Types (docs/custom-provider.md) — order matches common custom use first. */
 const CUSTOM_MODEL_API_OPTIONS: Array<{ value: CustomModelApi; label: string }> = [
   { value: "openai-completions", label: "openai-completions" },
   { value: "openai-responses", label: "openai-responses" },
   { value: "anthropic-messages", label: "anthropic-messages" },
   { value: "google-generative-ai", label: "google-generative-ai" },
+  { value: "azure-openai-responses", label: "azure-openai-responses" },
+  { value: "openai-codex-responses", label: "openai-codex-responses" },
+  { value: "mistral-conversations", label: "mistral-conversations" },
+  { value: "google-vertex", label: "google-vertex" },
+  { value: "bedrock-converse-stream", label: "bedrock-converse-stream" },
 ];
+
+const CUSTOM_MODEL_API_VALUES = new Set<string>(CUSTOM_MODEL_API_OPTIONS.map((opt) => opt.value));
 
 /** Split enabledModels into exact provider/id picks vs free-form globs (pi-style). */
 function splitEnabledModels(
@@ -2478,13 +2511,8 @@ function ModelsSection(
         return;
       }
       if (provider.baseUrl) setBaseUrl(provider.baseUrl);
-      if (
-        provider.api === "openai-completions" ||
-        provider.api === "openai-responses" ||
-        provider.api === "anthropic-messages" ||
-        provider.api === "google-generative-ai"
-      ) {
-        setApi(provider.api);
+      if (provider.api && CUSTOM_MODEL_API_VALUES.has(provider.api)) {
+        setApi(provider.api as CustomModelApi);
       }
       setAuthHeader(provider.authHeader === true);
       const entry = provider.models.find((row) => row.id === model.id);
@@ -2646,10 +2674,7 @@ function ModelsSection(
           </div>
         </div>
         <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
-          <div
-            className="flex items-center gap-1.5"
-            title={tr("models.scopeToggleHint")}
-          >
+          <div className="flex items-center gap-1.5" title={tr("models.scopeToggleHint")}>
             <span className="text-[11px] text-[var(--muted-foreground)] whitespace-nowrap">
               {tr("models.scopeToggle")}
             </span>
@@ -2777,7 +2802,8 @@ function ModelsSection(
         <div className="space-y-3 px-3 py-3">
           <SettingsTextarea
             data-testid="models-scoped-patterns"
-            className="min-h-[88px] w-full font-mono text-sm"
+            className="models-scoped-patterns-input h-[7.5rem] min-h-0 w-full resize-none overflow-y-auto font-mono text-sm field-sizing-fixed"
+            rows={6}
             value={scopedGlobText}
             onChange={(e) => setScopedGlobText(e.target.value)}
             placeholder={tr("models.scopedPatternsPh")}
@@ -3107,11 +3133,48 @@ function ModelsSection(
 }
 
 /**
- * Full pi ThinkingLevel set (pi-agent-core / thinkingLevelMap keys).
+ * Full pi ThinkingLevel set (thinkingLevelMap keys + settings/rpc/usage).
  * Used for global defaultThinkingLevel — not the per-model available subset.
- * @see https://pi.dev/docs and pi-coding-agent custom-provider thinkingLevelMap
+ * xhigh/max are opt-in per model map; UI still lists them so defaults can be set.
+ * @see packages/coding-agent/docs/settings.md, custom-provider.md, rpc.md
  */
-const PI_THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh"] as const;
+const PI_THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
+
+/** pi HTTP_IDLE_TIMEOUT_CHOICES + Pix longer presets (ms → i18n). */
+const HTTP_IDLE_TIMEOUT_PRESETS: ReadonlyArray<{ ms: number; labelKey: MessageKey }> = [
+  { ms: 30_000, labelKey: "piSettings.httpIdle30s" },
+  { ms: 60_000, labelKey: "piSettings.httpIdle1m" },
+  { ms: 120_000, labelKey: "piSettings.httpIdle2m" },
+  { ms: 300_000, labelKey: "piSettings.httpIdle5m" },
+  { ms: 900_000, labelKey: "piSettings.httpIdle15m" },
+  { ms: 1_800_000, labelKey: "piSettings.httpIdle30m" },
+  { ms: 3_600_000, labelKey: "piSettings.httpIdle60m" },
+  { ms: 0, labelKey: "piSettings.httpIdleDisabled" },
+];
+
+function httpIdleTimeoutOptions(
+  tr: (key: MessageKey, vars?: Record<string, string>) => string,
+  currentMs: number | undefined,
+): Array<{ value: string; label: string }> {
+  const options = HTTP_IDLE_TIMEOUT_PRESETS.map((row) => ({
+    value: String(row.ms),
+    label: tr(row.labelKey),
+  }));
+  if (currentMs === undefined || !Number.isFinite(currentMs)) return options;
+  const key = String(Math.floor(currentMs));
+  if (options.some((opt) => opt.value === key)) return options;
+  // Surface pi/custom values not in the preset list (so the select can echo them).
+  return [
+    {
+      value: key,
+      label:
+        currentMs === 0
+          ? tr("piSettings.httpIdleDisabled")
+          : tr("piSettings.httpIdleCustom", { seconds: String(Math.round(currentMs / 1000)) }),
+    },
+    ...options,
+  ];
+}
 
 /**
  * Only surface pi settings that help the desktop GUI.
@@ -3429,17 +3492,12 @@ function PiSettingsSection(
           control={
             <SettingsSelect
               testId="pi-http-idle"
-              size="md"
+              size="lg"
               // Pix product default: 60 minutes (pi upstream default is 5 minutes / 300000).
+              // Options cover pi HTTP_IDLE_TIMEOUT_CHOICES + longer product presets.
               value={String(view?.httpIdleTimeoutMs ?? 3_600_000)}
               onChange={(v) => void apply({ httpIdleTimeoutMs: Number(v) })}
-              options={[
-                { value: "60000", label: tr("piSettings.httpIdle1m") },
-                { value: "300000", label: tr("piSettings.httpIdle5m") },
-                { value: "900000", label: tr("piSettings.httpIdle15m") },
-                { value: "1800000", label: tr("piSettings.httpIdle30m") },
-                { value: "3600000", label: tr("piSettings.httpIdle60m") },
-              ]}
+              options={httpIdleTimeoutOptions(tr, view?.httpIdleTimeoutMs)}
               disabled={loading || !view}
             />
           }
@@ -3449,7 +3507,8 @@ function PiSettingsSection(
           description={tr("piSettings.installTelemetryHint")}
           control={
             <SettingsToggle
-              checked={Boolean(view?.enableInstallTelemetry)}
+              // Product default off (pi upstream defaults install telemetry on when unset).
+              checked={view?.enableInstallTelemetry === true}
               onChange={(on) => void apply({ enableInstallTelemetry: on })}
               testId="pi-install-telemetry"
               disabled={loading || !view}
@@ -3461,7 +3520,7 @@ function PiSettingsSection(
           description={tr("piSettings.analyticsHint")}
           control={
             <SettingsToggle
-              checked={Boolean(view?.enableAnalytics)}
+              checked={view?.enableAnalytics === true}
               onChange={(on) => void apply({ enableAnalytics: on })}
               testId="pi-analytics"
               disabled={loading || !view}
