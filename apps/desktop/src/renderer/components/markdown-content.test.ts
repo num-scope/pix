@@ -1,7 +1,7 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vite-plus/test";
-import { MarkdownContent } from "./MarkdownContent.tsx";
+import { MarkdownContent, normalizeLatexDelimiters } from "./MarkdownContent.tsx";
 
 function render(markdown: string, workspacePath?: string): string {
   return renderToStaticMarkup(
@@ -20,6 +20,38 @@ describe("MarkdownContent", () => {
     expect(render("```diff\n-old\n+new\n```")).toContain('data-diff="remove"');
     expect(render("| A | B |\n| - | - |\n| 1 | 2 |")).toContain("content-table-scroll");
     expect(render("```mermaid\ngraph TD; A--&gt;B\n```")).toContain("content-mermaid-loading");
+  });
+
+  it("renders LaTeX parenthesis and bracket delimiters", () => {
+    const html = render(
+      [
+        String.raw`Inline \(B_{\min}\le B_k\le B_{\max}\).`,
+        "",
+        String.raw`\[`,
+        String.raw`|\alpha|=|b+m\cos\theta|\le\alpha_{\max}`,
+        String.raw`\]`,
+      ].join("\n"),
+    );
+
+    expect(html).toContain("katex");
+    expect(html).toContain("katex-display");
+    expect(html).toContain("B");
+    expect(html).toContain("α");
+  });
+
+  it("preserves LaTeX-like delimiters in code and while streaming incomplete math", () => {
+    const markdown = [
+      "Inline code: `\\(not math\\)`",
+      "",
+      "```tex",
+      String.raw`\[also not math\]`,
+      "```",
+      "",
+      String.raw`Still streaming: \(x + y`,
+      String.raw`Escaped literal: \\(not math\\)`,
+    ].join("\n");
+
+    expect(normalizeLatexDelimiters(markdown)).toBe(markdown);
   });
 
   it("blocks executable link protocols and renders local images as previewable media", () => {

@@ -22,6 +22,128 @@ function safeMarkdownUrl(url: string, key: string): string {
   return url;
 }
 
+type CodeFence = { marker: "`" | "~"; length: number };
+
+function codeFenceAtLineStart(source: string, index: number): CodeFence | undefined {
+  if (index > 0 && source[index - 1] !== "\n") return undefined;
+
+  let markerIndex = index;
+  while (markerIndex < index + 3 && source[markerIndex] === " ") markerIndex += 1;
+  const marker = source[markerIndex];
+  if (marker !== "`" && marker !== "~") return undefined;
+
+  let end = markerIndex;
+  while (source[end] === marker) end += 1;
+  return end - markerIndex >= 3 ? { marker, length: end - markerIndex } : undefined;
+}
+
+function fencedCodeEnd(source: string, openingLineStart: number, fence: CodeFence): number {
+  let lineStart = source.indexOf("\n", openingLineStart);
+  if (lineStart < 0) return source.length;
+  lineStart += 1;
+
+  while (lineStart < source.length) {
+    const lineEnd = source.indexOf("\n", lineStart);
+    const contentEnd = lineEnd < 0 ? source.length : lineEnd;
+    let markerIndex = lineStart;
+    while (markerIndex < lineStart + 3 && source[markerIndex] === " ") markerIndex += 1;
+
+    let markerEnd = markerIndex;
+    while (source[markerEnd] === fence.marker) markerEnd += 1;
+    const remainder = source.slice(markerEnd, contentEnd);
+    if (markerEnd - markerIndex >= fence.length && /^[\t ]*$/.test(remainder)) {
+      return lineEnd < 0 ? source.length : lineEnd + 1;
+    }
+    if (lineEnd < 0) return source.length;
+    lineStart = lineEnd + 1;
+  }
+
+  return source.length;
+}
+
+function inlineCodeEnd(source: string, opening: number): number | undefined {
+  let openingEnd = opening;
+  while (source[openingEnd] === "`") openingEnd += 1;
+  const delimiterLength = openingEnd - opening;
+  let candidate = openingEnd;
+
+  while (candidate < source.length) {
+    candidate = source.indexOf("`", candidate);
+    if (candidate < 0) return undefined;
+    let candidateEnd = candidate;
+    while (source[candidateEnd] === "`") candidateEnd += 1;
+    if (candidateEnd - candidate === delimiterLength) return candidateEnd;
+    candidate = candidateEnd;
+  }
+
+  return undefined;
+}
+
+function isActiveBackslash(source: string, index: number): boolean {
+  let preceding = 0;
+  for (let cursor = index - 1; cursor >= 0 && source[cursor] === "\\"; cursor -= 1) {
+    preceding += 1;
+  }
+  return preceding % 2 === 0;
+}
+
+function latexDelimiterEnd(source: string, start: number, close: ")" | "]"): number | undefined {
+  let candidate = start;
+  while (candidate < source.length) {
+    candidate = source.indexOf(`\\${close}`, candidate);
+    if (candidate < 0) return undefined;
+    if (isActiveBackslash(source, candidate)) return candidate;
+    candidate += 2;
+  }
+  return undefined;
+}
+
+/** Convert common LaTeX delimiters to remark-math syntax without touching code. */
+export function normalizeLatexDelimiters(markdown: string): string {
+  let result = "";
+  let cursor = 0;
+
+  while (cursor < markdown.length) {
+    const fence = codeFenceAtLineStart(markdown, cursor);
+    if (fence) {
+      const end = fencedCodeEnd(markdown, cursor, fence);
+      result += markdown.slice(cursor, end);
+      cursor = end;
+      continue;
+    }
+
+    if (markdown[cursor] === "`") {
+      const end = inlineCodeEnd(markdown, cursor);
+      if (end != null) {
+        result += markdown.slice(cursor, end);
+        cursor = end;
+        continue;
+      }
+    }
+
+    const next = markdown[cursor + 1];
+    if (
+      markdown[cursor] === "\\" &&
+      (next === "(" || next === "[") &&
+      isActiveBackslash(markdown, cursor)
+    ) {
+      const close = next === "(" ? ")" : "]";
+      const end = latexDelimiterEnd(markdown, cursor + 2, close);
+      if (end != null) {
+        const delimiter = next === "(" ? "$" : "$$";
+        result += `${delimiter}${markdown.slice(cursor + 2, end)}${delimiter}`;
+        cursor = end + 2;
+        continue;
+      }
+    }
+
+    result += markdown[cursor];
+    cursor += 1;
+  }
+
+  return result;
+}
+
 function propFlag(value: unknown): boolean {
   return value === true || value === "" || value === "true";
 }
@@ -251,7 +373,7 @@ export const MarkdownContent = memo(function MarkdownContent(props: {
   workspacePath?: string | undefined;
   locale?: Locale | undefined;
 }) {
-  const text = props.children ?? "";
+  const text = normalizeLatexDelimiters(props.children ?? "");
   const locale = props.locale ?? "en";
   if (!text) return null;
 
