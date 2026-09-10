@@ -79,13 +79,14 @@ await test(
       assert.equal(realpathSync(env.NODE_BINARY), realpathSync(process.execPath));
       const shell = process.platform === "win32" ? process.env.ComSpec || "cmd.exe" : "/bin/sh";
       const shellArgs = (command) =>
-        process.platform === "win32" ? ["/d", "/s", "/c", command] : ["-c", command];
+        process.platform === "win32" ? ["/d", "/s", "/c", `"${command}"`] : ["-c", command];
       const run = (command) =>
         execFileSync(shell, shellArgs(command), {
           cwd: temporary,
           env,
           encoding: "utf8",
           timeout: 60_000,
+          windowsVerbatimArguments: process.platform === "win32",
         }).trim();
       assert.equal(run("node --version"), process.version);
       assert.equal(run("npm --version"), manifest.npm);
@@ -129,6 +130,7 @@ await test(
         readFileSync(join(layout.npmPrefix, "install-proof.json"), "utf8"),
       );
       assert.equal(realpathSync(installed.node), realpathSync(process.execPath));
+      assert.deepEqual(JSON.parse(run('pix-node-probe "two words"')).args, ["two words"]);
       const invoked = JSON.parse(run('npx --offline --no -- pix-node-probe "two words"'));
       assert.equal(realpathSync(invoked.node), realpathSync(process.execPath));
       assert.deepEqual(invoked.args, ["two words"]);
@@ -142,9 +144,10 @@ await test(
       resized.free();
       source.free();
       const pty = require("node-pty");
+      const terminalCommand = 'node --version && npm --version && pix-node-probe "terminal words"';
       const terminal = pty.spawn(
         shell,
-        shellArgs('node --version && npm --version && pix-node-probe "terminal words"'),
+        process.platform === "win32" ? `/d /s /c "${terminalCommand}"` : shellArgs(terminalCommand),
         { cwd: temporary, env, cols: 120, rows: 30 },
       );
       let output = "";

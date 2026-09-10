@@ -86,7 +86,7 @@ describe("resolveTarBinary", () => {
 describe("extractRuntimeArchives", () => {
   it("extracts node and python into dest root", () => {
     const { vendorRoot } = makeVendorWithArchives();
-    const dest = mkdtempSync(join(tmpdir(), "pix-extract-"));
+    const dest = mkdtempSync(join(tmpdir(), "Pix 解压 path "));
     try {
       extractRuntimeArchives(
         {

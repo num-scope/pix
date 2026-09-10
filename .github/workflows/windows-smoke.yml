@@ -34,7 +34,7 @@ jobs:
           Get-ChildItem installer -File | Select-Object Name, Length | Format-Table -AutoSize
           $installer = Get-ChildItem installer -Filter '*-setup.exe' | Select-Object -First 1
           if (!$installer) { throw 'Windows NSIS installer missing from release' }
-          $installDir = Join-Path $env:RUNNER_TEMP 'Pix Installed Smoke'
+          $installDir = Join-Path $env:RUNNER_TEMP 'Pix 安装 Smoke'
           $install = Start-Process -FilePath $installer.FullName -ArgumentList "/S /D=$installDir" -Wait -PassThru
           if ($install.ExitCode -ne 0) { throw "Installer exited with code $($install.ExitCode)" }
           $env:PIX_SMOKE_NODE = Join-Path $installDir 'node.exe'
@@ -54,7 +54,7 @@ jobs:
       - name: Exercise the installed Tauri window and model settings
         shell: pwsh
         run: |
-          $env:PIX_NATIVE_EXECUTABLE = Join-Path $env:RUNNER_TEMP 'Pix Installed Smoke/pix-desktop.exe'
+          $env:PIX_NATIVE_EXECUTABLE = Join-Path $env:RUNNER_TEMP 'Pix 安装 Smoke/pix-desktop.exe'
           # Hosted Windows runners are elevated; current WebView2 ignores env
           # debugger overrides there. Scope the policy to this app on this VM.
           $policy = 'HKLM:\SOFTWARE\Policies\Microsoft\Edge\WebView2'
