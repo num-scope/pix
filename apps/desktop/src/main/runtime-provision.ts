@@ -8,7 +8,16 @@
  * (no extract) so `pnpm runtimes:fetch` stays zero-friction.
  */
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+  closeSync,
+  existsSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -200,8 +209,19 @@ export function resolveTarBinary(
   return "tar";
 }
 
-function runTar(args: string[]): void {
-  execFileSync(resolveTarBinary(), args, { stdio: "ignore" });
+function extractTarArchive(archive: string, destination: string): void {
+  // Windows tar can misinterpret non-ASCII command-line paths. Node opens the
+  // archive and sets cwd using Unicode APIs, leaving tar only relative paths.
+  const input = openSync(archive, "r");
+  try {
+    execFileSync(resolveTarBinary(), ["-xzf", "-"], {
+      cwd: destination,
+      stdio: [input, "ignore", "pipe"],
+      encoding: "utf8",
+    });
+  } finally {
+    closeSync(input);
+  }
 }
 
 /**
@@ -219,12 +239,12 @@ export function extractRuntimeArchives(
     rmSync(nodeDest, { recursive: true, force: true });
     // Replacing the entire old tree also removes the previously extracted Node 22.
     // npm-prefix is a sibling and keeps the user's installed packages.
-    runTar(["-xzf", nodePayload, "-C", destRoot]);
+    extractTarArchive(nodePayload, destRoot);
   }
   if (archives.python) {
     const pyDest = join(destRoot, "python");
     rmSync(pyDest, { recursive: true, force: true });
-    runTar(["-xzf", archives.python, "-C", destRoot]);
+    extractTarArchive(archives.python, destRoot);
   }
 }
 
