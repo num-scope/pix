@@ -56,18 +56,18 @@ impl Sidecar {
             PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                 .join("binaries")
                 .join(if cfg!(windows) {
-                    "pix-node.exe"
+                    "node.exe"
                 } else {
-                    "pix-node"
+                    "node"
                 })
         } else {
             std::env::current_exe()?
                 .parent()
                 .ok_or("No executable directory")?
                 .join(if cfg!(windows) {
-                    "pix-node.exe"
+                    "node.exe"
                 } else {
-                    "pix-node"
+                    "node"
                 })
         };
         let data = match std::env::var_os("PIX_DATA_DIR") {

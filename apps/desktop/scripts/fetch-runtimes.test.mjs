@@ -8,9 +8,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   loadVersions,
-  nodeDistMeta,
   packShippingArchives,
-  pruneNodeRuntime,
   prunePythonRuntime,
   pythonDistMeta,
   resolveTarget,
@@ -41,8 +39,7 @@ function assertEqual(actual, expected, message) {
     typeof v.pythonReleaseTag === "string" && v.pythonReleaseTag.length > 0,
     "pythonReleaseTag pinned",
   );
-  // Sanity: matches engines.node major 22 line used by desktop
-  assert(/^\d+\.\d+\.\d+$/.test(v.node), `node semver-like: ${v.node}`);
+  assert(v.node === process.versions.node && v.node.startsWith("24."), "shares build Node 24");
   assert(/^\d+\.\d+\.\d+$/.test(v.python), `python semver-like: ${v.python}`);
 }
 
@@ -78,24 +75,6 @@ function assertEqual(actual, expected, message) {
 {
   const versions = { node: "22.19.0", python: "3.12.13", pythonReleaseTag: "20260807" };
 
-  const macNode = nodeDistMeta({ os: "darwin", arch: "arm64" }, versions);
-  assertEqual(
-    macNode.url,
-    "https://nodejs.org/dist/v22.19.0/node-v22.19.0-darwin-arm64.tar.gz",
-    "mac node url",
-  );
-  assertEqual(macNode.kind, "tar.gz", "mac node kind");
-
-  const winNode = nodeDistMeta({ os: "win32", arch: "x64" }, versions);
-  assert(winNode.url.endsWith("node-v22.19.0-win-x64.zip"), `win node url zip: ${winNode.url}`);
-  assertEqual(winNode.kind, "zip", "win node kind");
-
-  const linuxNode = nodeDistMeta({ os: "linux", arch: "x64" }, versions);
-  assert(
-    linuxNode.url.includes("node-v22.19.0-linux-x64.tar.gz"),
-    `linux node url: ${linuxNode.url}`,
-  );
-
   const macPy = pythonDistMeta({ os: "darwin", arch: "arm64" }, versions);
   assert(macPy.url.includes("aarch64-apple-darwin"), `mac python triple: ${macPy.url}`);
   assert(macPy.url.includes("install_only_stripped"), `python uses stripped install: ${macPy.url}`);
@@ -112,30 +91,6 @@ function assertEqual(actual, expected, message) {
     linuxPy.url.includes("aarch64-unknown-linux-gnu"),
     `linux arm python triple: ${linuxPy.url}`,
   );
-}
-
-// ── pruneNodeRuntime drops include/share, keeps bin/node ────────────────────
-{
-  const root = mkdtempSync(join(tmpdir(), "pix-prune-node-"));
-  try {
-    const nodeRoot = join(root, "node");
-    mkdirSync(join(nodeRoot, "bin"), { recursive: true });
-    mkdirSync(join(nodeRoot, "include"), { recursive: true });
-    mkdirSync(join(nodeRoot, "share"), { recursive: true });
-    writeFileSync(join(nodeRoot, "bin", "node"), "#!/bin/sh\n", { mode: 0o755 });
-    writeFileSync(join(nodeRoot, "include", "node.h"), "/* big headers */\n");
-    writeFileSync(join(nodeRoot, "share", "doc.txt"), "docs\n");
-    writeFileSync(join(nodeRoot, "CHANGELOG.md"), "# changelog\n");
-
-    pruneNodeRuntime(nodeRoot);
-
-    assert(existsSync(join(nodeRoot, "bin", "node")), "node binary kept");
-    assert(!existsSync(join(nodeRoot, "include")), "include removed");
-    assert(!existsSync(join(nodeRoot, "share")), "share removed");
-    assert(!existsSync(join(nodeRoot, "CHANGELOG.md")), "changelog removed");
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
 }
 
 // ── prunePythonRuntime drops Tcl/Tk + idle, keeps python bin ────────────────
@@ -201,23 +156,24 @@ function assertEqual(actual, expected, message) {
   assert(win === "C:\\Windows\\System32\\tar.exe" || win === "tar", `win tar: ${win}`);
 }
 
-// ── packShippingArchives produces node/python tar.gz ────────────────────────
+// ── packShippingArchives produces npm/python tar.gz without a Node binary ────────────────────────
 {
   const root = mkdtempSync(join(tmpdir(), "pix-pack-arch-"));
   try {
     mkdirSync(join(root, "node", "bin"), { recursive: true });
     mkdirSync(join(root, "python", "bin"), { recursive: true });
-    writeFileSync(join(root, "node", "bin", "node"), "#!/bin/sh\n", { mode: 0o755 });
+    writeFileSync(join(root, "node", "bin", "npm"), "#!/bin/sh\n", { mode: 0o755 });
     writeFileSync(join(root, "python", "bin", "python3"), "#!/bin/sh\n", { mode: 0o755 });
     writeFileSync(
       join(root, "manifest.json"),
       JSON.stringify({ node: "22.19.0", python: "3.12.13", key: "test" }),
     );
     packShippingArchives(root);
-    assert(existsSync(join(root, "archives", "node.tar.gz")), "node archive");
+    assert(!existsSync(join(root, "archives", "node.tar.gz")), "no legacy node archive");
+    assert(existsSync(join(root, "archives", "npm.tar.gz")), "npm archive");
     assert(existsSync(join(root, "archives", "python.tar.gz")), "python archive");
     const man = JSON.parse(readFileSync(join(root, "manifest.json"), "utf8"));
-    assert(man.archives?.node === "archives/node.tar.gz", "manifest node archive path");
+    assert(man.archives?.npm === "archives/npm.tar.gz", "manifest npm archive path");
     assert(man.archives?.python === "archives/python.tar.gz", "manifest python archive path");
   } finally {
     rmSync(root, { recursive: true, force: true });

@@ -1,79 +1,25 @@
-# Managed runtimes (Node + Python)
+# Shared Node 24 and managed Python
 
-WorkBuddy-style **managed runtimes**:
+Pix ships one Node 24 executable (`node.exe` on Windows, `node` on macOS/Linux). Tauri starts the Sidecar with it, Agent Hosts fork it, and managed tool environments use the same executable through `NODE_BINARY` and `PATH`.
 
-1. **Build** (`pnpm runtimes:fetch`) downloads, prunes, and packs platform archives
-2. **Ship** only `archives/*.tar.gz` + `manifest.json` in the installer (`extraResources`)
-3. **First launch** extracts into `userData/runtimes/` and creates isolation trees
+`prepare-sidecar.mjs` requires Node 24 and stages that build executable as a Tauri external binary. `fetch-runtimes.mjs` copies the npm package from that same Node installation; it no longer downloads another Node distribution. The manifest records the actual Node and npm versions. Install the official Node 24 distribution including npm on build machines.
 
-Default **ON** (Settings → 安全 → 运行时).
+The installer contains:
 
-## Why not expand full trees into the .app?
+- One external Node executable beside the application executable.
+- `runtimes/archives/npm.tar.gz`: npm/npx launchers and npm package files, with no Node executable.
+- `runtimes/archives/python.tar.gz` and `runtimes/manifest.json`.
 
-- Installer size: archives are smaller than double-copied expanded trees
-- Writable isolation: npm/pip installs go under userData, not into a signed .app
-- Upgrades: re-extract when `manifest` versions change
+On first launch, npm scripts and Python are extracted into the application user-data directory. `npm-prefix` and `python-venv` remain separate writable directories. npm/npx launchers resolve their scripts relative to themselves and use `NODE_BINARY`, so paths with spaces and relocated installations work.
 
-## Layout
+Layout version 3 replaces the old extracted `runtimes/node` directory, removing Node 22 while preserving `npm-prefix` packages. Stamp checks include Node, npm, Python, Python release, platform key and layout version. Disabling managed Node in Settings removes its PATH entries and npm isolation environment; the application backend continues using its own Node.
 
-### After fetch (dev machine)
+`versions.json` specifies the required Node major and pins Python. Node's exact patch version and npm come from the build installation.
 
-```text
-runtimes/
-  darwin-arm64/                 # expanded (pruned) for local smoke
-    node/
-    python/
-    archives/
-      node.tar.gz
-      python.tar.gz
-    manifest.json
-  current -> darwin-arm64       # symlink (no 2× disk)
+Validation after staging:
+
+```sh
+node apps/desktop/scripts/shared-node-smoke.test.mjs
 ```
 
-### Packaged app
-
-```text
-Contents/Resources/runtimes/
-  archives/node.tar.gz
-  archives/python.tar.gz
-  manifest.json
-```
-
-### After first launch (userData)
-
-```text
-~/Library/Application Support/Pix/runtimes/   # mac example
-  node/
-  python/
-  npm-prefix/          # NPM_CONFIG_PREFIX
-  python-venv/         # python -m venv
-  .provisioned.json
-  manifest.json
-```
-
-## Pins
-
-See `versions.json`. Bump versions, then:
-
-```bash
-pnpm --filter @pix/desktop runtimes:fetch -- --force
-```
-
-## Isolation env (when enabled)
-
-| Variable            | Purpose                                                         |
-| ------------------- | --------------------------------------------------------------- |
-| `NODE_BINARY`       | Absolute path to managed node                                   |
-| `NPM_CONFIG_PREFIX` | Agent npm installs stay under `npm-prefix/`                     |
-| `VIRTUAL_ENV`       | Managed Python venv                                             |
-| `PATH`              | `npm-prefix/bin` + `venv/bin` + `node/bin` + `python/bin` first |
-
-## Size
-
-After prune + archive (Apple Silicon, approx):
-
-- Expanded working tree: ~200MB
-- Shipped archives only: much smaller than a full dual expanded copy
-- Node binary alone remains ~100MB (official Node cost)
-
-Binary trees are **gitignored**. Only `versions.json` and this README are committed.
+This uses the staged executable and production modules to check npm/npx, a local offline npm install and lifecycle script, a real node-pty terminal, the clipboard N-API addon, and Photon WASM. `sidecar-smoke.test.mjs` also checks TypeScript extension loading/reloading in the Agent Host. Release CI runs the runtime compatibility check on every target; the Windows installed-app smoke workflow checks the relocated installed executable.

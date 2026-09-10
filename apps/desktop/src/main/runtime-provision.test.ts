@@ -17,7 +17,11 @@ import {
   resolveVendorRuntimeLayout,
   userRuntimesRoot,
 } from "./runtime-provision.ts";
-import { rootsFromRuntimeRoot } from "./bundled-runtimes.ts";
+import {
+  bundledBinDirs,
+  getBundledNodeExecutable,
+  rootsFromRuntimeRoot,
+} from "./bundled-runtimes.ts";
 
 function makeVendorWithArchives(): {
   vendorRoot: string;
@@ -103,6 +107,55 @@ describe("extractRuntimeArchives", () => {
 });
 
 describe("ensureProvisionedRuntimes", () => {
+  it("upgrades Node 22 to shared Node 24, preserves npm installs, and repairs missing npm", () => {
+    const { vendorRoot, userData } = makeVendorWithArchives();
+    const options = { userDataPath: userData, explicitVendorRoot: vendorRoot, skipVenv: true };
+    try {
+      ensureProvisionedRuntimes(options);
+      const userRoot = userRuntimesRoot(userData);
+      const savedPackage = join(npmPrefixDir(userData), "keep.txt");
+      writeFileSync(savedPackage, "installed extension");
+      rmSync(join(vendorRoot, "node"), { recursive: true });
+      const npmDir = join(vendorRoot, "node", "node_modules", "npm", "bin");
+      mkdirSync(npmDir, { recursive: true });
+      writeFileSync(join(npmDir, "npm-cli.js"), "// npm fixture");
+      const manifest = {
+        node: process.versions.node,
+        npm: "11.0.0",
+        nodeRuntime: "shared",
+        layoutVersion: 3,
+      };
+      writeFileSync(join(vendorRoot, "manifest.json"), JSON.stringify(manifest));
+      execFileSync(resolveTarBinary(), [
+        "-czf",
+        join(vendorRoot, "archives/npm.tar.gz"),
+        "-C",
+        vendorRoot,
+        "node",
+      ]);
+      rmSync(join(vendorRoot, "archives/node.tar.gz"));
+      const layout = ensureProvisionedRuntimes(options)!;
+      expect(getBundledNodeExecutable(layout.roots.nodeRoot)).toBe(process.execPath);
+      expect(existsSync(join(userRoot, "node/bin/node"))).toBe(false);
+      expect(readFileSync(savedPackage, "utf8")).toBe("installed extension");
+      expect(
+        bundledBinDirs(layout.roots, { useBundledNode: true, useBundledPython: false }),
+      ).toContain(layout.roots.nodeRoot);
+      expect(
+        bundledBinDirs(layout.roots, { useBundledNode: false, useBundledPython: false }),
+      ).toEqual([]);
+      const stamp = readFileSync(join(userRoot, ".provisioned.json"), "utf8");
+      ensureProvisionedRuntimes(options);
+      expect(readFileSync(join(userRoot, ".provisioned.json"), "utf8")).toBe(stamp);
+      const npmCli = join(layout.roots.nodeRoot, "node_modules/npm/bin/npm-cli.js");
+      rmSync(npmCli);
+      ensureProvisionedRuntimes(options);
+      expect(existsSync(npmCli)).toBe(true);
+    } finally {
+      rmSync(vendorRoot, { recursive: true, force: true });
+      rmSync(userData, { recursive: true, force: true });
+    }
+  });
   it("extracts archives into userData and creates isolation dirs", () => {
     const { vendorRoot, userData } = makeVendorWithArchives();
     try {

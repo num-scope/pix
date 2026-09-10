@@ -56,6 +56,10 @@ jobs:
       - name: Verify release version
         if: github.ref_type == 'tag'
         run: node scripts/release-assets.mjs check-version "${{ github.ref_name }}"
+      - name: Verify shared Node tools and native dependencies
+        run: pnpm --filter @pix/desktop test:shared-node
+      - name: Verify packaged Sidecar and TypeScript extensions
+        run: pnpm --filter @pix/desktop exec node scripts/sidecar-smoke.test.mjs --staged
       - name: Build installers
         shell: bash
         run: |
@@ -71,7 +75,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $env:PIX_SMOKE_NODE = (Resolve-Path 'apps/desktop/src-tauri/binaries/pix-node.exe').Path
+          $env:PIX_SMOKE_NODE = (Resolve-Path 'apps/desktop/src-tauri/binaries/node.exe').Path
           cargo test --release --locked --manifest-path apps/desktop/src-tauri/Cargo.toml sidecar::tests
       - name: Collect Tauri assets
         run: node scripts/release-assets.mjs collect apps/desktop/src-tauri/target/release/bundle artifacts --target ${{ matrix.target }}

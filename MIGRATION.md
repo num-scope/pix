@@ -2,20 +2,20 @@
 
 ## Preserved behavior
 
-| Area                                                              | Implementation                                                               |
-| ----------------------------------------------------------------- | ---------------------------------------------------------------------------- |
-| React, Tailwind, components, rich timeline, skins                 | Existing renderer, with a transport adapter and native drag/drop integration |
-| Public frontend API                                               | Existing `PixDesktopApi` / `window.pix` surface                              |
-| Models, API keys, OAuth, usage, settings                          | Existing pi SDK and agent-runtime modules                                    |
-| Session history, fork/tree, compaction, import/export/share       | Existing Agent Host command handlers                                         |
-| Background generation and parked sessions                         | Existing HostSupervisor lifecycle policy, now using Node child IPC           |
-| Extensions, prompts, skills, package management, trust            | Existing pi resource loader and extension UI bridge                          |
-| Git, branches, worktrees, project history                         | Existing Node implementations, moved out of Electron Main                    |
-| Terminal                                                          | Existing Ghostty frontend + Node `node-pty` + bundled/global pi CLI          |
-| Window chrome, resize persistence, scale, theme                   | Tauri window APIs and window-state plugin                                    |
-| File/folder dialogs, open/reveal, clipboard images, notifications | Rust native handlers via Tauri plugins                                       |
-| Managed Node/Python tools                                         | Existing runtime provisioner and runtime preferences                         |
-| Installers and updates                                            | Tauri bundler and signed updater artifacts                                   |
+| Area                                                              | Implementation                                                                    |
+| ----------------------------------------------------------------- | --------------------------------------------------------------------------------- |
+| React, Tailwind, components, rich timeline, skins                 | Existing renderer, with a transport adapter and native drag/drop integration      |
+| Public frontend API                                               | Existing `PixDesktopApi` / `window.pix` surface                                   |
+| Models, API keys, OAuth, usage, settings                          | Existing pi SDK and agent-runtime modules                                         |
+| Session history, fork/tree, compaction, import/export/share       | Existing Agent Host command handlers                                              |
+| Background generation and parked sessions                         | Existing HostSupervisor lifecycle policy, now using Node child IPC                |
+| Extensions, prompts, skills, package management, trust            | Existing pi resource loader and extension UI bridge                               |
+| Git, branches, worktrees, project history                         | Existing Node implementations, moved out of Electron Main                         |
+| Terminal                                                          | Existing Ghostty frontend + Node `node-pty` + bundled/global pi CLI               |
+| Window chrome, resize persistence, scale, theme                   | Tauri window APIs and window-state plugin                                         |
+| File/folder dialogs, open/reveal, clipboard images, notifications | Rust native handlers via Tauri plugins                                            |
+| Managed Node/Python tools                                         | Shared Node 24 + npm scripts, existing Python provisioner and runtime preferences |
+| Installers and updates                                            | Tauri bundler and signed updater artifacts                                        |
 
 ## Source layout
 
@@ -28,7 +28,7 @@
 
 ## Transport and lifecycle
 
-Tauri launches a bundled, explicitly resolved Node executable. Only the trusted main window can invoke the desktop bridge. Renderer requests carry a unique ID; sidecar responses and events have protocol version 1. Native requests run independently so a dialog or an active generation cannot block an abort or other concurrent RPC. stdout is reserved for JSON protocol traffic; diagnostics go to stderr.
+Tauri launches a bundled, explicitly resolved Node 24 executable (`node.exe` / `node`). Managed tools share that executable; only npm/npx scripts and Python are provisioned into user data. Only the trusted main window can invoke the desktop bridge. Renderer requests carry a unique ID; sidecar responses and events have protocol version 1. Native requests run independently so a dialog or an active generation cannot block an abort or other concurrent RPC. stdout is reserved for JSON protocol traffic; diagnostics go to stderr.
 
 The sidecar registers every business handler before sending readiness. Startup failures and sidecar exits reject outstanding requests. Agent Host crashes can be recovered by starting the host again. A fatal top-level sidecar failure is shown in the interface and requires restarting Pix; an in-progress prompt is never replayed automatically.
 

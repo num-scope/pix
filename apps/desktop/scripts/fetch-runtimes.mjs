@@ -1,12 +1,13 @@
 /**
- * Download platform-matched Node.js + Python into apps/desktop/runtimes/
- * and materialize runtimes/current/ for electron-builder extraResources.
+ * Stage npm for the shared Node 24 executable and download platform-matched Python into apps/desktop/runtimes/
+ * and materialize runtimes/current/ for Tauri resources.
  *
  * Usage:
  *   node scripts/fetch-runtimes.mjs
  *   node scripts/fetch-runtimes.mjs --platform darwin --arch arm64
  *   node scripts/fetch-runtimes.mjs --force
  */
+import { requireNode24, resolveBuildNpmRoot, stageSharedNpm } from "./shared-node.mjs";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import {
@@ -60,11 +61,11 @@ function parseArgs(argv) {
  */
 export function loadVersions(versionsPath = VERSIONS_PATH) {
   const raw = JSON.parse(readFileSync(versionsPath, "utf8"));
-  if (!raw?.node || !raw?.python || !raw?.pythonReleaseTag) {
-    throw new Error(`Invalid ${versionsPath}: need node, python, pythonReleaseTag`);
+  if (raw?.nodeMajor !== 24 || !raw?.python || !raw?.pythonReleaseTag) {
+    throw new Error(`Invalid ${versionsPath}: need nodeMajor: 24, python, pythonReleaseTag`);
   }
   return {
-    node: String(raw.node),
+    node: requireNode24(),
     python: String(raw.python),
     pythonReleaseTag: String(raw.pythonReleaseTag),
   };
@@ -97,42 +98,6 @@ export function resolveTarget(platform, arch) {
     a = "x64";
   }
   return { os, arch: a, key: `${os}-${a}` };
-}
-
-/**
- * @param {{ os: string, arch: string }} target
- * @param {RuntimeVersions} versions
- */
-export function nodeDistMeta(target, versions) {
-  const v = versions.node;
-  if (target.os === "darwin") {
-    const narch = target.arch === "arm64" ? "arm64" : "x64";
-    const name = `node-v${v}-darwin-${narch}.tar.gz`;
-    return {
-      url: `https://nodejs.org/dist/v${v}/${name}`,
-      archiveName: name,
-      kind: "tar.gz",
-      stripTop: true,
-    };
-  }
-  if (target.os === "linux") {
-    const narch = target.arch === "arm64" ? "arm64" : "x64";
-    const name = `node-v${v}-linux-${narch}.tar.gz`;
-    return {
-      url: `https://nodejs.org/dist/v${v}/${name}`,
-      archiveName: name,
-      kind: "tar.gz",
-      stripTop: true,
-    };
-  }
-  // win32
-  const name = `node-v${v}-win-x64.zip`;
-  return {
-    url: `https://nodejs.org/dist/v${v}/${name}`,
-    archiveName: name,
-    kind: "zip",
-    stripTop: true,
-  };
 }
 
 /**
@@ -242,20 +207,6 @@ function extractArchive(archive, destDir, kind) {
 }
 
 /**
- * If archive extracted a single top-level dir, return its path; else destDir.
- * @param {string} destDir
- */
-function unwrapSingleTopDir(destDir) {
-  const entries = readdirSync(destDir, { withFileTypes: true }).filter(
-    (e) => !e.name.startsWith("."),
-  );
-  if (entries.length === 1 && entries[0]?.isDirectory()) {
-    return join(destDir, entries[0].name);
-  }
-  return destDir;
-}
-
-/**
  * Copy directory tree (files only; follow symlinks as files when possible).
  * @param {string} src
  * @param {string} dest
@@ -305,20 +256,6 @@ function ensureUnixExecuteBits(root) {
       // ignore
     }
   }
-}
-
-/**
- * @param {string} nodeRoot
- */
-function findNodeBinary(nodeRoot) {
-  const candidates =
-    process.platform === "win32" || existsSync(join(nodeRoot, "node.exe"))
-      ? [join(nodeRoot, "node.exe"), join(nodeRoot, "bin", "node.exe")]
-      : [join(nodeRoot, "bin", "node"), join(nodeRoot, "node")];
-  for (const c of candidates) {
-    if (existsSync(c)) return c;
-  }
-  return undefined;
 }
 
 /**
@@ -373,40 +310,6 @@ function materializePython(extracted, destRoot) {
     }
   }
   prunePythonRuntime(destRoot);
-}
-
-/**
- * @param {string} extracted
- * @param {string} destRoot
- */
-function materializeNode(extracted, destRoot) {
-  rmSync(destRoot, { recursive: true, force: true });
-  copyTree(extracted, destRoot);
-  ensureUnixExecuteBits(destRoot);
-  pruneNodeRuntime(destRoot);
-}
-
-/**
- * Drop headers/docs we never compile against — keeps bin/node + npm only.
- * Official Node tarball ships ~50–60MB of include/ that is useless at runtime.
- * @param {string} nodeRoot
- * @returns {number} approximate bytes removed (best-effort)
- */
-export function pruneNodeRuntime(nodeRoot) {
-  if (!nodeRoot || !existsSync(nodeRoot)) return 0;
-  let removed = 0;
-  const drop = [
-    join(nodeRoot, "include"),
-    join(nodeRoot, "share"),
-    join(nodeRoot, "CHANGELOG.md"),
-    join(nodeRoot, "README.md"),
-    join(nodeRoot, "LICENSE"),
-  ];
-  for (const p of drop) {
-    removed += removePathBestEffort(p);
-  }
-  // Do not `strip` the node binary — Apple Silicon Node builds often break after strip.
-  return removed;
 }
 
 /**
@@ -586,10 +489,13 @@ async function fetchOne(target, versions, force) {
   const pythonDest = join(platformDir, "python");
   const manifestPath = join(platformDir, "manifest.json");
 
+  const npmRoot = resolveBuildNpmRoot();
+  const npmVersion = JSON.parse(readFileSync(join(npmRoot, "package.json"), "utf8")).version;
+
   if (
     !force &&
     existsSync(manifestPath) &&
-    findNodeBinary(nodeDest) &&
+    existsSync(join(nodeDest, "node_modules/npm/bin/npm-cli.js")) &&
     findPythonBinary(pythonDest)
   ) {
     try {
@@ -598,7 +504,10 @@ async function fetchOne(target, versions, force) {
         prev.node === versions.node &&
         prev.python === versions.python &&
         prev.pruned === true &&
-        prev.layoutVersion === 2
+        prev.layoutVersion === 3 &&
+        prev.nodeRuntime === "shared" &&
+        prev.npm === npmVersion &&
+        prev.pythonReleaseTag === versions.pythonReleaseTag
       ) {
         console.log(`[fetch-runtimes] ${target.key} already at pinned versions (pruned)`);
         return { platformDir, nodeDest, pythonDest, manifestPath };
@@ -611,20 +520,8 @@ async function fetchOne(target, versions, force) {
   mkdirSync(CACHE_ROOT, { recursive: true });
   mkdirSync(platformDir, { recursive: true });
 
-  // ── Node ──────────────────────────────────────────────────────────────
-  const nodeMeta = nodeDistMeta(target, versions);
-  const nodeArchive = join(CACHE_ROOT, nodeMeta.archiveName);
-  await download(nodeMeta.url, nodeArchive);
-  const nodeExtract = join(tmpdir(), `pix-node-${target.key}-${Date.now()}`);
-  try {
-    extractArchive(nodeArchive, nodeExtract, nodeMeta.kind);
-    const unwrapped = nodeMeta.stripTop ? unwrapSingleTopDir(nodeExtract) : nodeExtract;
-    materializeNode(unwrapped, nodeDest);
-  } finally {
-    rmSync(nodeExtract, { recursive: true, force: true });
-  }
-  const nodeBin = findNodeBinary(nodeDest);
-  if (!nodeBin) throw new Error(`Node binary missing after extract (${nodeDest})`);
+  // npm belongs to the same Node distribution that builds and runs the sidecar.
+  stageSharedNpm(nodeDest, npmRoot);
 
   // ── Python ────────────────────────────────────────────────────────────
   const pyMeta = pythonDistMeta(target, versions);
@@ -638,12 +535,10 @@ async function fetchOne(target, versions, force) {
     rmSync(pyExtract, { recursive: true, force: true });
   }
   // Prune again in case materialize skipped (upgrade path).
-  pruneNodeRuntime(nodeDest);
   prunePythonRuntime(pythonDest);
 
-  const nodeBinAfter = findNodeBinary(nodeDest);
+  const nodeBinAfter = process.execPath;
   const pyBin = findPythonBinary(pythonDest);
-  if (!nodeBinAfter) throw new Error(`Node binary missing after prune (${nodeDest})`);
   if (!pyBin) throw new Error(`Python binary missing after extract (${pythonDest})`);
 
   // Smoke
@@ -665,7 +560,7 @@ async function fetchOne(target, versions, force) {
   const nodeBytes = dirSizeBytes(nodeDest);
   const pyBytes = dirSizeBytes(pythonDest);
   console.log(
-    `[fetch-runtimes] sizes node=${formatMb(nodeBytes)} python=${formatMb(pyBytes)} total=${formatMb(nodeBytes + pyBytes)}`,
+    `[fetch-runtimes] sizes npm=${formatMb(nodeBytes)} python=${formatMb(pyBytes)} total=${formatMb(nodeBytes + pyBytes)}`,
   );
 
   const manifest = {
@@ -676,13 +571,13 @@ async function fetchOne(target, versions, force) {
     arch: target.arch,
     key: target.key,
     pruned: true,
-    layoutVersion: 2,
-    nodeBytes,
+    layoutVersion: 3,
+    nodeRuntime: "shared",
+    npm: npmVersion,
+    npmBytes: nodeBytes,
     pythonBytes: pyBytes,
-    nodeBinary: nodeBinAfter.replace(platformDir + (process.platform === "win32" ? "\\" : "/"), ""),
     pythonBinary: pyBin.replace(platformDir + (process.platform === "win32" ? "\\" : "/"), ""),
     fetchedAt: new Date().toISOString(),
-    nodeArchiveSha256: sha256File(nodeArchive),
     pythonArchiveSha256: sha256File(pyArchive),
   };
   writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
@@ -698,15 +593,19 @@ function formatMb(bytes) {
 }
 
 /**
- * Pack pruned trees into archives for shipping (WorkBuddy-style).
+ * Pack npm scripts and Python for shipping; Node itself is a Tauri external binary.
  * Archives extract to `node/` and `python/` under the destination root.
  * @param {string} platformDir
  */
 export function packShippingArchives(platformDir) {
+  for (const binary of ["node", "node.exe", "bin/node", "bin/node.exe"]) {
+    if (existsSync(join(platformDir, "node", binary)))
+      throw new Error("Refusing to ship a second Node executable in the npm archive");
+  }
   const archives = join(platformDir, "archives");
   rmSync(archives, { recursive: true, force: true });
   mkdirSync(archives, { recursive: true });
-  const nodeArchive = join(archives, "node.tar.gz");
+  const nodeArchive = join(archives, "npm.tar.gz");
   const pythonArchive = join(archives, "python.tar.gz");
   if (existsSync(join(platformDir, "node"))) {
     runTar(["-czf", nodeArchive, "-C", platformDir, "node"], { stdio: "ignore" });
@@ -723,7 +622,7 @@ export function packShippingArchives(platformDir) {
   try {
     const man = JSON.parse(readFileSync(manifestPath, "utf8"));
     man.archives = {
-      node: existsSync(nodeArchive) ? "archives/node.tar.gz" : undefined,
+      npm: existsSync(nodeArchive) ? "archives/npm.tar.gz" : undefined,
       python: existsSync(pythonArchive) ? "archives/python.tar.gz" : undefined,
     };
     writeFileSync(manifestPath, `${JSON.stringify(man, null, 2)}\n`, "utf8");
@@ -733,7 +632,7 @@ export function packShippingArchives(platformDir) {
 }
 
 /**
- * Point runtimes/current at the platform dir for electron-builder + local dev.
+ * Point runtimes/current at the platform dir for Tauri staging + local dev.
  * Prefer a directory symlink so we do not store two full copies (~2× disk).
  * Archives live under the platform dir (and thus under current via the link).
  * @param {string} platformDir

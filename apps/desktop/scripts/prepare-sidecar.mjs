@@ -11,6 +11,7 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
+import { requireNode24 } from "./shared-node.mjs";
 import { execFileSync } from "node:child_process";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -25,12 +26,11 @@ if (target !== host)
   throw new Error(
     "Build on the target OS/architecture so Node and native addons match the Tauri target",
   );
-if (Number(process.versions.node.split(".")[0]) < 24)
-  throw new Error("Building Pix requires Node.js 24 or newer");
+requireNode24();
 const binaries = join(root, "src-tauri/binaries");
 mkdirSync(binaries, { recursive: true });
 const ext = process.platform === "win32" ? ".exe" : "";
-for (const name of [`pix-node-${target}${ext}`, `pix-node${ext}`]) {
+for (const name of [`node-${target}${ext}`, `node${ext}`]) {
   const output = join(binaries, name);
   const temporary = `${output}.${process.pid}.tmp`;
   copyFileSync(process.execPath, temporary);
@@ -86,6 +86,7 @@ if (release) {
     stdio: "inherit",
   });
   const resources = join(root, "src-tauri/resources");
+  rmSync(join(resources, "runtimes"), { recursive: true, force: true });
   cpSync(join(root, "runtimes/current/archives"), join(resources, "runtimes/archives"), {
     recursive: true,
     dereference: true,

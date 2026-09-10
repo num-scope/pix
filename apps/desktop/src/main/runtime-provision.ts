@@ -27,6 +27,7 @@ export type VendorRuntimeLayout = {
   /** Packaged archives to extract into userData. */
   archives?: {
     node?: string;
+    npm?: string;
     python?: string;
     manifest: BundledRuntimeManifest;
   };
@@ -46,6 +47,7 @@ export type ProvisionedRuntimeLayout = {
 export type ProvisionStamp = {
   layoutVersion?: number;
   node?: string;
+  npm?: string;
   python?: string;
   pythonReleaseTag?: string;
   key?: string;
@@ -88,9 +90,11 @@ export function resolveVendorRuntimeLayout(options: {
     const archivesDir = join(vendorRoot, "archives");
     const manifestPath = join(vendorRoot, "manifest.json");
     const nodeArchive = join(archivesDir, "node.tar.gz");
+    const npmArchive = join(archivesDir, "npm.tar.gz");
     const pythonArchive = join(archivesDir, "python.tar.gz");
     const hasArchives =
-      existsSync(archivesDir) && (existsSync(nodeArchive) || existsSync(pythonArchive));
+      existsSync(archivesDir) &&
+      (existsSync(npmArchive) || existsSync(nodeArchive) || existsSync(pythonArchive));
     const manifest = readManifestFile(manifestPath);
 
     if (!expanded && !hasArchives) continue;
@@ -102,6 +106,7 @@ export function resolveVendorRuntimeLayout(options: {
         ? {
             archives: {
               ...(existsSync(nodeArchive) ? { node: nodeArchive } : {}),
+              ...(existsSync(npmArchive) ? { npm: npmArchive } : {}),
               ...(existsSync(pythonArchive) ? { python: pythonArchive } : {}),
               manifest: manifest ?? {},
             },
@@ -159,6 +164,10 @@ export function isProvisionStampCurrent(
   const expectedPython = manifest?.python;
   if (expectedNode && stamp.node !== expectedNode) return false;
   if (expectedPython && stamp.python !== expectedPython) return false;
+  if (manifest?.npm && stamp.npm !== manifest.npm) return false;
+  if (manifest?.key && stamp.key !== manifest.key) return false;
+  if (manifest?.pythonReleaseTag && stamp.pythonReleaseTag !== manifest.pythonReleaseTag)
+    return false;
   const nodeOk = !expectedNode || Boolean(getBundledNodeExecutable(roots.nodeRoot));
   const pyOk = !expectedPython || Boolean(getBundledPythonExecutable(roots.pythonRoot));
   return nodeOk && pyOk;
@@ -200,14 +209,17 @@ function runTar(args: string[]): void {
  * Uses system `tar` (macOS/Linux/modern Windows).
  */
 export function extractRuntimeArchives(
-  archives: { node?: string; python?: string },
+  archives: { node?: string; npm?: string; python?: string },
   destRoot: string,
 ): void {
   mkdirSync(destRoot, { recursive: true });
-  if (archives.node) {
+  const nodePayload = archives.npm ?? archives.node;
+  if (nodePayload) {
     const nodeDest = join(destRoot, "node");
     rmSync(nodeDest, { recursive: true, force: true });
-    runTar(["-xzf", archives.node, "-C", destRoot]);
+    // Replacing the entire old tree also removes the previously extracted Node 22.
+    // npm-prefix is a sibling and keeps the user's installed packages.
+    runTar(["-xzf", nodePayload, "-C", destRoot]);
   }
   if (archives.python) {
     const pyDest = join(destRoot, "python");
@@ -355,12 +367,13 @@ export function ensureProvisionedRuntimes(options: {
   }
 
   // Packaged: extract archives into userData
-  if (vendor.archives && (vendor.archives.node || vendor.archives.python)) {
+  if (vendor.archives && (vendor.archives.npm || vendor.archives.node || vendor.archives.python)) {
     try {
       mkdirSync(userRoot, { recursive: true });
       extractRuntimeArchives(
         {
           ...(vendor.archives.node ? { node: vendor.archives.node } : {}),
+          ...(vendor.archives.npm ? { npm: vendor.archives.npm } : {}),
           ...(vendor.archives.python ? { python: vendor.archives.python } : {}),
         },
         userRoot,
@@ -391,6 +404,7 @@ export function ensureProvisionedRuntimes(options: {
             ? { layoutVersion: vendor.archives.manifest.layoutVersion }
             : {}),
           ...(vendor.archives.manifest.node ? { node: vendor.archives.manifest.node } : {}),
+          ...(vendor.archives.manifest.npm ? { npm: vendor.archives.manifest.npm } : {}),
           ...(vendor.archives.manifest.python ? { python: vendor.archives.manifest.python } : {}),
           ...(vendor.archives.manifest.pythonReleaseTag
             ? { pythonReleaseTag: vendor.archives.manifest.pythonReleaseTag }

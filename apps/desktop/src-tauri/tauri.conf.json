@@ -32,7 +32,7 @@
     "category": "DeveloperTool",
     "shortDescription": "Desktop shell for the pi coding agent",
     "icon": ["../build/icon.png", "../build/icon.icns", "../build/icon.ico"],
-    "externalBin": ["binaries/pix-node"],
+    "externalBin": ["binaries/node"],
     "resources": {
       "resources/sidecar/": "sidecar/",
       "resources/runtimes/": "runtimes/"

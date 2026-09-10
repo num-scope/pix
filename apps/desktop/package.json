@@ -20,6 +20,7 @@
     "package": "pnpm run build && node scripts/prepare-sidecar.mjs --release && tauri build",
     "test": "vp test --run --config vite.renderer.config.ts && node scripts/fetch-runtimes.test.mjs && node --test scripts/dev-session.test.mjs",
     "test:runtimes": "node scripts/fetch-runtimes.test.mjs",
+    "test:shared-node": "node scripts/shared-node-smoke.test.mjs",
     "dev:frontend": "vp dev --config vite.renderer.config.ts",
     "tauri": "tauri",
     "sidecar:prepare": "node scripts/prepare-sidecar.mjs",

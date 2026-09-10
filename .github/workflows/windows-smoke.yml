@@ -36,13 +36,16 @@ jobs:
           $installDir = Join-Path $env:RUNNER_TEMP 'Pix Installed Smoke'
           $install = Start-Process -FilePath $installer.FullName -ArgumentList "/S /D=$installDir" -Wait -PassThru
           if ($install.ExitCode -ne 0) { throw "Installer exited with code $($install.ExitCode)" }
-          $env:PIX_SMOKE_NODE = Join-Path $installDir 'pix-node.exe'
+          $env:PIX_SMOKE_NODE = Join-Path $installDir 'node.exe'
           $env:PIX_SMOKE_ROOT = Join-Path $installDir 'sidecar'
           $env:PIX_RESOURCES_DIR = $installDir
           $env:PIX_PACKAGED = '1'
           $env:PIX_SIDECAR_DEBUG = '1'
           if (!(Test-Path $env:PIX_SMOKE_NODE)) { throw 'Bundled Node executable missing after installation' }
           node apps/desktop/scripts/sidecar-smoke.test.mjs
+          if ($LASTEXITCODE -ne 0) { throw 'Installed Sidecar smoke test failed' }
+          node apps/desktop/scripts/shared-node-smoke.test.mjs
+          if ($LASTEXITCODE -ne 0) { throw 'Installed shared Node compatibility test failed' }
       - name: Exercise the installed Tauri window and model settings
         shell: pwsh
         run: |

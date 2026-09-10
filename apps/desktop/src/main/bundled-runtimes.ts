@@ -23,6 +23,8 @@ export type BundledRuntimePrefs = {
 export type BundledRuntimeManifest = {
   layoutVersion?: number;
   node?: string;
+  nodeRuntime?: "shared";
+  npm?: string;
   python?: string;
   pythonReleaseTag?: string;
   platform?: string;
@@ -151,6 +153,19 @@ export function readBundledRuntimeManifest(
 
 export function getBundledNodeExecutable(nodeRoot: string | undefined): string | undefined {
   if (!nodeRoot || !existsSync(nodeRoot)) return undefined;
+  // Shared layouts contain npm scripts only. Always use this process's executable,
+  // including after relocating/updating the app; never persist an installation path.
+  try {
+    const manifest = JSON.parse(readFileSync(join(nodeRoot, "..", "manifest.json"), "utf8"));
+    if (manifest.nodeRuntime === "shared") {
+      return process.versions.node.startsWith("24.") &&
+        existsSync(join(nodeRoot, "node_modules/npm/bin/npm-cli.js"))
+        ? process.execPath
+        : undefined;
+    }
+  } catch {
+    // Legacy expanded runtime without a manifest.
+  }
   const candidates =
     process.platform === "win32"
       ? [
@@ -195,6 +210,8 @@ export function bundledBinDirs(
   const dirs: string[] = [];
   if (prefs.useBundledNode) {
     const nodeBin = getBundledNodeExecutable(roots.nodeRoot);
+    if (nodeBin && existsSync(join(roots.nodeRoot, "node_modules/npm/bin/npm-cli.js")))
+      dirs.push(roots.nodeRoot);
     if (nodeBin) dirs.push(dirname(nodeBin));
   }
   if (prefs.useBundledPython) {
@@ -227,7 +244,9 @@ export function buildBundledRuntimeStatus(options: {
     ...(roots ? { root: roots.root } : {}),
     node: {
       enabled: prefs.useBundledNode,
-      ...(manifest?.node ? { version: manifest.node } : {}),
+      ...(manifest?.node
+        ? { version: manifest.nodeRuntime === "shared" ? process.versions.node : manifest.node }
+        : {}),
       ...(nodePath ? { path: nodePath } : {}),
     },
     python: {

@@ -1,5 +1,5 @@
 {
-  "node": "22.19.0",
+  "nodeMajor": 24,
   "python": "3.12.13",
   "pythonReleaseTag": "20260807"
 }
