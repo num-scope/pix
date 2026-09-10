@@ -25,11 +25,18 @@ const desktop = resolve(import.meta.dirname, "..");
 const executable =
   process.env.PIX_SMOKE_NODE ||
   join(desktop, "src-tauri/binaries", process.platform === "win32" ? "node.exe" : "node");
-if (realpathSync(process.execPath) !== realpathSync(executable)) {
-  const result = spawnSync(executable, [fileURLToPath(import.meta.url)], {
-    stdio: "inherit",
-    env: { ...process.env, PIX_SMOKE_NODE: executable },
-  });
+// The Node test runner owns the worker lifetime. Some Windows native addons
+// retain handles after their API checks finish, so run them in an isolated worker.
+if (process.env.PIX_SHARED_NODE_TEST_CHILD !== "1") {
+  const result = spawnSync(
+    executable,
+    ["--test", "--test-force-exit", fileURLToPath(import.meta.url)],
+    {
+      stdio: "inherit",
+      env: { ...process.env, PIX_SMOKE_NODE: executable, PIX_SHARED_NODE_TEST_CHILD: "1" },
+      timeout: 180_000,
+    },
+  );
   if (result.error) throw result.error;
   process.exit(result.status ?? 1);
 }
@@ -134,8 +141,10 @@ await test(
       const invoked = JSON.parse(run('npx --offline --no -- pix-node-probe "two words"'));
       assert.equal(realpathSync(invoked.node), realpathSync(process.execPath));
       assert.deepEqual(invoked.args, ["two words"]);
+      console.log("Node, npm/npx, shell quoting and install scripts passed");
       const clipboard = require("@mariozechner/clipboard");
       assert.equal(typeof clipboard.getText, "function"); // Load the real N-API addon without modifying the clipboard.
+      console.log("Clipboard N-API addon loaded");
       const { PhotonImage, resize, SamplingFilter } = require("@silvia-odwyer/photon-node");
       const source = new PhotonImage(new Uint8Array([255, 0, 0, 255]), 1, 1);
       const resized = resize(source, 2, 2, SamplingFilter.Nearest);
@@ -143,6 +152,7 @@ await test(
       assert.ok(resized.get_bytes().length > 0);
       resized.free();
       source.free();
+      console.log("Photon WASM image resize passed");
       const pty = require("node-pty");
       const terminalCommand = 'node --version && npm --version && pix-node-probe "terminal words"';
       const terminal = pty.spawn(
