@@ -90,6 +90,20 @@ await test(
       assert.equal(run("node --version"), process.version);
       assert.equal(run("npm --version"), manifest.npm);
       assert.equal(run("npx --version"), manifest.npm);
+      if (process.platform === "win32") {
+        const powershell = join(
+          process.env.SystemRoot,
+          "System32/WindowsPowerShell/v1.0/powershell.exe",
+        );
+        for (const command of ["npm", "npx"]) {
+          const version = execFileSync(
+            powershell,
+            ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", `${command} --version`],
+            { cwd: temporary, env, encoding: "utf8", timeout: 30_000 },
+          ).trim();
+          assert.equal(version, manifest.npm, `${command}.ps1 uses the shared Node`);
+        }
+      }
       const fixture = join(temporary, "fixture");
       mkdirSync(fixture);
       writeFileSync(
