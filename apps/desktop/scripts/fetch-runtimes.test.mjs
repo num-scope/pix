@@ -73,7 +73,7 @@ function assertEqual(actual, expected, message) {
 
 // ── dist URL builders (cross-platform assets) ───────────────────────────────
 {
-  const versions = { node: "22.19.0", python: "3.12.13", pythonReleaseTag: "20260807" };
+  const versions = { node: process.versions.node, python: "3.12.13", pythonReleaseTag: "20260807" };
 
   const macPy = pythonDistMeta({ os: "darwin", arch: "arm64" }, versions);
   assert(macPy.url.includes("aarch64-apple-darwin"), `mac python triple: ${macPy.url}`);
@@ -166,7 +166,12 @@ function assertEqual(actual, expected, message) {
     writeFileSync(join(root, "python", "bin", "python3"), "#!/bin/sh\n", { mode: 0o755 });
     writeFileSync(
       join(root, "manifest.json"),
-      JSON.stringify({ node: "22.19.0", python: "3.12.13", key: "test" }),
+      JSON.stringify({
+        node: process.versions.node,
+        nodeRuntime: "shared",
+        python: "3.12.13",
+        key: "test",
+      }),
     );
     packShippingArchives(root);
     assert(!existsSync(join(root, "archives", "node.tar.gz")), "no legacy node archive");
@@ -175,6 +180,14 @@ function assertEqual(actual, expected, message) {
     const man = JSON.parse(readFileSync(join(root, "manifest.json"), "utf8"));
     assert(man.archives?.npm === "archives/npm.tar.gz", "manifest npm archive path");
     assert(man.archives?.python === "archives/python.tar.gz", "manifest python archive path");
+    writeFileSync(join(root, "node", "node.exe"), "old executable");
+    let refused = false;
+    try {
+      packShippingArchives(root);
+    } catch (error) {
+      refused = /second Node/.test(String(error));
+    }
+    assert(refused, "rejects accidentally bundling another Node executable");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
